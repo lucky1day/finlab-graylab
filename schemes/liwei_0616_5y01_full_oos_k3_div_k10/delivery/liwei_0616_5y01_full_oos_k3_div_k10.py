@@ -2273,20 +2273,44 @@ def _train_phase_a(
     return dict(result)
 
 
-def _digest_frame(frame: pd.DataFrame) -> str:
-    """试点按固定列序验证已见源前缀，不保存源数据副本。"""
-    digest = hashlib.sha256(json.dumps(list(frame.columns), ensure_ascii=True).encode())
-    for column in frame:
-        series = frame[column]
-        if pd.api.types.is_numeric_dtype(series.dtype):
-            values = np.array(series, dtype="<f8", copy=True)
-            values[np.isnan(values)] = np.nan
-            payload = values.tobytes()
-        else:
-            payload = json.dumps(series.astype(str).tolist(), ensure_ascii=True).encode()
-        digest.update(len(payload).to_bytes(8, "little"))
-        digest.update(payload)
-    return digest.hexdigest()
+# 带状态日更允许因历史修订而重算的已缓存OOS交易日上限。Mac实测每个OOS交易日的
+# 全grid Phase A约1.2-1.7秒/族（双族约3秒），日更总预算min(predict_timeout,120)秒，
+# 这里只用约一半预算给修订重算；超出时显式失败，由离线 rebuild-blackbox-state 承担。
+MAX_REVISED_OOS_ROWS = 15
+
+
+def _row_identities(prepared: Mapping[str, Any]) -> np.ndarray:
+    """逐输入行绑定已缓存Phase A的全部依赖：日期、收盘与完整特征行。
+
+    OOS第r行的Phase A只读取第r行及更早行：训练/校准窗与有效性、标签（j+horizon<r，
+    由收盘决定）、fallback（收盘）以及静态/年度筛选窗都如此，因此前缀身份不变即可复用；
+    周/月对齐与日历只经特征行进入Phase A。特征列结构作为每行公共前缀，变化时全部失效。
+    """
+    matrix = np.array(prepared["feat_all"], dtype="<f8", copy=True)
+    matrix[np.isnan(matrix)] = np.nan
+    close = np.array(prepared["close"], dtype="<f8", copy=True)
+    close[np.isnan(close)] = np.nan
+    columns = hashlib.sha256(json.dumps(
+        [prepared["n_self"], list(prepared["mf_cols"]),
+         sorted(prepared["mf_feat_cat"].items()), matrix.shape[1]],
+        ensure_ascii=True).encode()).digest()
+    days = prepared["df"]["date"].dt.strftime("%Y-%m-%d").tolist()
+    return np.array([
+        hashlib.sha256(columns + day.encode() + close[row].tobytes() + matrix[row].tobytes()).hexdigest()
+        for row, day in enumerate(days)
+    ], dtype="U64")
+
+
+def _reusable_rows(cached_rows: np.ndarray, new_rows: np.ndarray, oos_positions: np.ndarray,
+                   cached_dates: np.ndarray, new_dates: np.ndarray) -> int:
+    """返回首个行身份差异之前的OOS行数；修订、插入或删除日期都从首差异行起重算。"""
+    common = min(len(cached_rows), len(new_rows))
+    changed = np.flatnonzero(cached_rows[:common] != new_rows[:common])
+    first = int(changed[0]) if len(changed) else common
+    keep = int(np.searchsorted(oos_positions, first))
+    if keep > len(cached_dates) or not np.array_equal(new_dates[:keep], cached_dates[:keep]):
+        raise ContractError("private state rows are inconsistent with cached OOS dates")
+    return keep
 
 
 def _trial_identity() -> dict[str, Any]:
@@ -2296,7 +2320,7 @@ def _trial_identity() -> dict[str, Any]:
     if _HAS_NUMBA:
         import numba
         numba_version = numba.__version__
-    return {"schema": "full-oos-a2-private-4", "code": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    return {"schema": "full-oos-a2-private-5", "code": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "metadata": hashlib.sha256(Path(__file__).with_suffix('.json').read_bytes()).hexdigest(),
             "machine": platform.machine(), "numba": numba_version,
             "bottleneck": bn.__version__ if _HAS_BN else None,
@@ -2416,19 +2440,13 @@ def generate_with_private_state(args: argparse.Namespace, requests: list[dict[st
                 preds, probs = loaded["preds"].copy(), loaded["probs"].copy()
         if header["identity"] != identity or header["authority"] != authority:
             raise ContractError("private state identity mismatch")
-        if set(header) != {"identity", "authority", "cutoff", "input_prefixes", "payload_sha256"}:
+        if set(header) != {"identity", "authority", "cutoff", "payload_sha256"}:
             raise ContractError("invalid private state header")
         _date(header["cutoff"], "state cutoff")
-        if set(header["input_prefixes"]) != {"daily_df", "weekly_df", "monthly_df", "calendar_df"}:
-            raise ContractError("missing input prefix proof")
-        for proof in header["input_prefixes"].values():
-            if (set(proof) != {"rows", "sha256"} or type(proof["rows"]) is not int
-                    or proof["rows"] <= 0 or not re.fullmatch(r"[0-9a-f]{64}", proof["sha256"])):
-                raise ContractError("invalid input prefix proof")
         if (dates.ndim != 1 or dates.dtype != np.dtype('U10') or not len(dates)
                 or not np.all(dates[1:] > dates[:-1]) or dates[-1] != header["cutoff"]
                 or features.ndim != 1 or features.dtype != np.dtype('U64')
-                or len(features) != header["input_prefixes"]["daily_df"]["rows"]
+                or len(features) < len(dates)
                 or any(not re.fullmatch(r"[0-9a-f]{64}", str(value)) for value in features)
                 or header["payload_sha256"] != _payload_digest(dates, features, preds, probs)
                 or preds.dtype != np.dtype('int8') or probs.dtype != np.dtype('float64')
@@ -2449,50 +2467,19 @@ def generate_with_private_state(args: argparse.Namespace, requests: list[dict[st
                "weekly_df": weekly.loc[weekly.week_id.astype(str) <= week].reset_index(drop=True),
                "monthly_df": monthly.loc[monthly.month_id.astype(str) <= month].reset_index(drop=True),
                "date_to_week": date_to_week}
-        # 只证明真实算法依赖；当月输入尚未被上一月对齐消费，不冻结为历史依赖。
-        consumed_month = (pd.Timestamp(day).to_period('M') - 1).strftime('%Y%m')
-        proof_frames = {
-            "daily_df": raw["daily_df"].loc[:, ["date", *sorted(REQUIRED_DAILY)]],
-            "weekly_df": raw["weekly_df"].loc[:, ["week_id", *sorted(REQUIRED_WEEKLY)]],
-            "monthly_df": raw["monthly_df"].loc[
-                raw["monthly_df"].month_id <= consumed_month,
-                ["month_id", *sorted(REQUIRED_MONTHLY)]].reset_index(drop=True),
-            "calendar_df": calendar.loc[calendar.rdate <= pd.Timestamp(day)].reset_index(drop=True),
-        }
-        if header is not None:
-            for name, proof in header["input_prefixes"].items():
-                previous_frame = proof_frames[name]
-                if name == "monthly_df":
-                    # 补回旧支持域中缺失的末月也属于历史修订，不能冒充正常跨月追加。
-                    previous_month = (pd.Timestamp(header["cutoff"]).to_period('M') - 1).strftime('%Y%m')
-                    previous_frame = previous_frame.loc[previous_frame.month_id <= previous_month]
-                    if len(previous_frame) != proof["rows"]:
-                        raise ContractError("consumed monthly domain changed; explicit rebuild required")
-                if (len(previous_frame) < proof["rows"]
-                        or (name != "weekly_df"
-                            and _digest_frame(previous_frame.iloc[:proof["rows"]]) != proof["sha256"])):
-                    raise ContractError("source prefix changed; explicit rebuild required")
+        # 历史修订不再整体拒绝：逐行身份定位首个差异，只重算其后的OOS行；超出日更预算显式失败。
         prepared = prepare_prediction_inputs(model_config("STD", **raw))
         df = prepared["df"]
-        # 相同输入下逐行 SHA 仅保存摘要。相较保存控制器、标签和多种窗口，先选择较少状态种类。
-        matrix = np.array(prepared["feat_all"], dtype="<f8", copy=True)
-        matrix[np.isnan(matrix)] = np.nan
-        new_features = np.array([hashlib.sha256(row.tobytes()).hexdigest() for row in matrix], dtype="U64")
+        new_features = _row_identities(prepared)
         idx = np.flatnonzero((df.date >= pd.Timestamp("2024-01-01")) & ~np.isnan(prepared["close"]))
         new_dates = df.date.iloc[idx].dt.strftime("%Y-%m-%d").to_numpy(dtype="U10")
         if not len(new_dates) or new_dates[-1] != day:
             raise ContractError("no exact current full-OOS row")
-        keep = len(dates)
-        if keep and (len(new_dates) < keep or not np.array_equal(new_dates[:keep], dates)):
-            raise ContractError("OOS date prefix changed")
-        if len(features):
-            if len(new_features) < len(features):
-                raise ContractError("feature prefix shortened")
-            changed = np.flatnonzero(features != new_features[:len(features)])
-            if len(changed):
-                # 历史输入未修订时，周频投影仍可能改变旧尾部；保守重算全部受影响 suffix。
-                first_changed = df.date.iloc[int(changed[0])].strftime("%Y-%m-%d")
-                keep = min(keep, int(np.searchsorted(dates, first_changed)))
+        keep = _reusable_rows(features, new_features, idx, dates, new_dates)
+        if args.state_input is not None and len(dates) - keep > MAX_REVISED_OOS_ROWS:
+            raise ContractError(
+                f"source prefix changed; explicit rebuild required: first changed OOS date {dates[keep]}, "
+                f"{len(dates) - keep} cached rows exceed daily recompute budget {MAX_REVISED_OOS_ROWS}")
         pieces_preds, pieces_probs = [preds[:, :keep]], [probs[:, :keep]]
         remaining = new_dates[keep:]
         # 每个自然月一个训练调用，避免 Dataset 临时字典跨全历史无界积累。
@@ -2525,9 +2512,7 @@ def generate_with_private_state(args: argparse.Namespace, requests: list[dict[st
             raise ContractError("invalid direction")
         for request in batch:
             answers[request["request_id"]] = {key: request[key] for key in RESULT_FIELDS[:-1]} | {"predicted_direction": direction}
-        header = {"identity": identity, "authority": authority, "cutoff": day,
-                  "input_prefixes": {name: {"rows": len(proof_frames[name]), "sha256": _digest_frame(proof_frames[name])}
-                                     for name in ("daily_df", "weekly_df", "monthly_df", "calendar_df")}}
+        header = {"identity": identity, "authority": authority, "cutoff": day}
         print(json.dumps({"trial_cutoff": day, "oos_rows": len(dates), "reused_rows": keep,
                           "trained_rows": len(remaining), "seconds": time.perf_counter() - started}), file=sys.stderr, flush=True)
     if args.state_output is not None:
