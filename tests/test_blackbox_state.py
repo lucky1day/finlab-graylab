@@ -294,6 +294,29 @@ def test_stateful_memory_limit_env_override(
     assert runner._stateful_memory_limit_bytes(profile) == 4 * 1024**3
 
 
+def test_stateful_timeout_env_override(
+    delivery: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stateful 回测/冷重建时限可显式提高，但不超过 profile 的回测时限。"""
+    from scheduler import blackbox_v2_runner as runner
+
+    profile = replace(delivery["profile"], backtest_timeout_sec=14400)
+    monkeypatch.delenv(runner.STATEFUL_TIMEOUT_ENV, raising=False)
+    assert runner._stateful_timeout_sec(profile) == 7200
+
+    monkeypatch.setenv(runner.STATEFUL_TIMEOUT_ENV, "14400")
+    assert runner._stateful_timeout_sec(profile) == 14400
+
+    monkeypatch.setenv(runner.STATEFUL_TIMEOUT_ENV, "14401")
+    with pytest.raises(ValueError, match="between 1 and"):
+        runner._stateful_timeout_sec(profile)
+
+    monkeypatch.setenv(runner.STATEFUL_TIMEOUT_ENV, "2h")
+    with pytest.raises(ValueError, match="integer second count"):
+        runner._stateful_timeout_sec(profile)
+
+
 def test_private_state_seed_reads_without_advancing(
     delivery: dict,
     tmp_path: Path,

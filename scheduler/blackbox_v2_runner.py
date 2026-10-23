@@ -257,6 +257,26 @@ def _stateful_memory_limit_bytes(profile: RuntimeProfile) -> int:
     return min(profile.memory_limit_bytes, limit)
 
 
+STATEFUL_TIMEOUT_ENV = "BFL_BLACKBOX_STATEFUL_TIMEOUT_SEC"
+_STATEFUL_TIMEOUT_DEFAULT_SEC = 7200
+
+
+def _stateful_timeout_sec(profile: RuntimeProfile) -> int:
+    """解析 stateful 回测/冷重建的显式时限；默认 7200 秒，最大为 profile 的回测时限。"""
+    raw = os.environ.get(STATEFUL_TIMEOUT_ENV, "").strip()
+    limit = _STATEFUL_TIMEOUT_DEFAULT_SEC
+    if raw:
+        if not re.fullmatch(r"[0-9]+", raw):
+            raise ValueError(f"{STATEFUL_TIMEOUT_ENV} must be an integer second count")
+        limit = int(raw)
+        if limit <= 0 or limit > profile.backtest_timeout_sec:
+            raise ValueError(
+                f"{STATEFUL_TIMEOUT_ENV} must be between 1 and "
+                f"{profile.backtest_timeout_sec} seconds"
+            )
+    return min(profile.backtest_timeout_sec, limit)
+
+
 class BlackboxExecutionError(RuntimeError):
     pass
 
@@ -448,7 +468,7 @@ def run_blackbox_predict(
     )
     if state is not None:
         # 显式冷重建属于离线维护；日常 predict 不借用离线预算。
-        state_timeout = (min(profile.backtest_timeout_sec, 7200) if state.rebuild
+        state_timeout = (_stateful_timeout_sec(profile) if state.rebuild
                          else min(profile.predict_timeout_sec, 120))
         profile = replace(profile, cpu_threads=min(profile.cpu_threads, 8),
                           memory_limit_bytes=_stateful_memory_limit_bytes(profile),
@@ -510,7 +530,7 @@ def run_blackbox_backtest(
     if state is not None:
         profile = replace(profile, cpu_threads=min(profile.cpu_threads, 8),
                           memory_limit_bytes=_stateful_memory_limit_bytes(profile),
-                          backtest_timeout_sec=min(profile.backtest_timeout_sec, 7200))
+                          backtest_timeout_sec=_stateful_timeout_sec(profile))
     with tempfile.TemporaryDirectory(prefix="blackbox-v2-backtest-") as tmpdir:
         root = Path(tmpdir)
         requests_path = write_requests(batch, root / "requests.csv")

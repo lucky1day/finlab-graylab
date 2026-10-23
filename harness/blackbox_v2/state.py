@@ -6,6 +6,7 @@ import re
 from datetime import date
 from pathlib import Path
 
+from scheduler.blackbox_v2_runner import DEFAULT_RUNTIME_PROFILE, _stateful_timeout_sec
 from scheduler.discovery import load_scheme_config
 from scheduler.executor import DEFAULT_ALGO_ENV, run_blackbox_scheme_subprocess
 from shared.input_artifacts import create_input_engine
@@ -28,7 +29,7 @@ def rebuild_blackbox_state(*, project_root: Path, scheme_id: str, predict_date: 
     try:
         records = run_blackbox_scheme_subprocess(
             cfg, predict_date, engine=engine, algo_env=DEFAULT_ALGO_ENV,
-            timeout_sec=7200, rebuild_state=True,
+            timeout_sec=_stateful_timeout_sec(DEFAULT_RUNTIME_PROFILE), rebuild_state=True,
         )
     finally:
         engine.dispose()
