@@ -602,11 +602,11 @@ def feat_screen(feat_vals, labels, n_self, mf_feat_cat, mf_col_names,
     scores = _auc_scores(fv, ll_bin, n_feat)
 
     # --- selection logic (identical to original ic_screen) ---
-    self_order = np.argsort(-scores[:n_self])
+    self_order = np.argsort(-scores[:n_self], kind="stable")
     sel_self = self_order[:min(top_self, len(self_order))]
 
     mf_scores = scores[n_self:]
-    mf_order = np.argsort(-mf_scores)
+    mf_order = np.argsort(-mf_scores, kind="stable")
     sel_mf: list = []
     cat_count: dict = {}
     for idx in mf_order:
@@ -956,7 +956,7 @@ def select_combo_signals(sig_accs: np.ndarray, cat_indices: dict,
             elig = ci[ca >= min_acc]
             if len(elig) > 0:
                 selected.extend(
-                    elig[np.argsort(-sig_accs[elig])[:count]].tolist())
+                    elig[np.argsort(-sig_accs[elig], kind="stable")[:count]].tolist())
     return (np.unique(np.array(selected, dtype=int))
             if selected else np.array([], dtype=int))
 
@@ -991,7 +991,7 @@ def _diverse_topk(scores, config_windows, K):
     # Then: fill remaining slots with best overall
     remaining = K - len(selected)
     if remaining > 0:
-        all_sorted = np.argsort(-scores)
+        all_sorted = np.argsort(-scores, kind="stable")
         for idx in all_sorted:
             if idx not in selected:
                 selected.append(idx)
@@ -1668,7 +1668,7 @@ def run_prediction(cfg: dict) -> dict[str, Any]:
             if ens_mode == "diverse":
                 top_k = _diverse_topk(scores, config_windows, K)
             else:
-                top_k = np.argsort(-scores)[:K]
+                top_k = np.argsort(-scores, kind="stable")[:K]
 
             if ens_mode == "accwt":
                 # Accuracy-weighted probability averaging

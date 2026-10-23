@@ -2393,11 +2393,11 @@ def feat_screen(feat_vals, labels, n_self, mf_feat_cat, mf_col_names,
         raise ValueError(f"Unknown metric: {metric}")
 
     # --- selection logic (identical to original ic_screen) ---
-    self_order = np.argsort(-scores[:n_self])
+    self_order = np.argsort(-scores[:n_self], kind="stable")
     sel_self = self_order[:min(top_self, len(self_order))]
 
     mf_scores = scores[n_self:]
-    mf_order = np.argsort(-mf_scores)
+    mf_order = np.argsort(-mf_scores, kind="stable")
     sel_mf: list = []
     cat_count: dict = {}
     for idx in mf_order:
@@ -2618,7 +2618,10 @@ def _raw_direction(row, values, labels, signals, categories, market_columns):
     history = resolved[-SCHEME["train_window"]:]; binary = (labels[history] > 0).astype(np.int8)
     if len(np.unique(binary)) == 1: probability = float(binary[0])
     else:
-        model = _model(); model.fit(values[history][:, selected], binary, sample_weight=_weights(binary)); probability = float(model.predict_proba(values[row:row + 1, selected])[:, 1][0])
+        model = _model()
+        if SCHEME["model_family"] == "xgb":
+            model.set_params(feature_weights=np.ones(len(selected), dtype=np.float32))
+        model.fit(values[history][:, selected], binary, sample_weight=_weights(binary)); probability = float(model.predict_proba(values[row:row + 1, selected])[:, 1][0])
     score = SCHEME["tree_weight"] * (2.0 * probability - 1.0) + (1.0 - SCHEME["tree_weight"]) * int(signals.at[signals.index[row], SCHEME["signal"]])
     return 1 if score > SCHEME["margin"] else (-1 if score < -SCHEME["margin"] else 0)
 
