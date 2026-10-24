@@ -34,7 +34,7 @@ DATA_BRIDGE_LABEL = "com.bond-factor-lab.data-bridge-refresh"
 DATA_BRIDGE_PRODUCER = ("BFL_DATABRIDGE_PRODUCER", "launchd-one-shot")
 BACKEND_LABEL = "com.bond-factor-lab.backend"
 APPROVED_LOCAL_DIFFERENCES: dict[str, frozenset[str]] = {}
-DEFAULT_RUNTIME_ROOT = Path("/Users/macstudio0/bond-factor-lab-runtime")
+DEFAULT_RUNTIME_ROOT = Path("/Users/macstudio0/bond-factor-lab-production/runtime")
 
 SSH_TUNNEL_LOCAL_ARGUMENT_PLACEHOLDERS = {
     "/Users/macstudio0/.ssh/<TUNNEL_KEY>",

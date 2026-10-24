@@ -59,9 +59,9 @@
   <false/>
 
   <key>StandardOutPath</key>
-  <string>/Users/macstudio0/bond-factor-lab-runtime/logs/com.bond-factor-lab.actuals.log</string>
+  <string>/Users/macstudio0/bond-factor-lab-production/runtime/logs/com.bond-factor-lab.actuals.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/macstudio0/bond-factor-lab-runtime/logs/com.bond-factor-lab.actuals.err</string>
+  <string>/Users/macstudio0/bond-factor-lab-production/runtime/logs/com.bond-factor-lab.actuals.err</string>
 </dict>
 </plist>

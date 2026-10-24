@@ -26,7 +26,7 @@ SECRET_PATHS = {
         "/etc/bond-factor-lab/secrets/auth-bootstrap-password"
     ),
     "mac3-production": Path(
-        "/Users/macstudio0/bond-factor-lab-runtime/config/"
+        "/Users/macstudio0/bond-factor-lab-production/runtime/config/"
         "auth-bootstrap-password"
     ),
 }

@@ -18,6 +18,6 @@
     <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>3</integer></dict>
   </array>
   <key>RunAtLoad</key><false/>
-  <key>StandardOutPath</key><string>/Users/macstudio0/bond-factor-lab-runtime/logs/com.bond-factor-lab.daily-predictions.log</string>
-  <key>StandardErrorPath</key><string>/Users/macstudio0/bond-factor-lab-runtime/logs/com.bond-factor-lab.daily-predictions.err</string>
+  <key>StandardOutPath</key><string>/Users/macstudio0/bond-factor-lab-production/runtime/logs/com.bond-factor-lab.daily-predictions.log</string>
+  <key>StandardErrorPath</key><string>/Users/macstudio0/bond-factor-lab-production/runtime/logs/com.bond-factor-lab.daily-predictions.err</string>
 </dict></plist>

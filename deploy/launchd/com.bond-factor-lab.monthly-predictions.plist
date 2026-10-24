@@ -12,6 +12,6 @@
   </dict>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>
   <key>RunAtLoad</key><false/>
-  <key>StandardOutPath</key><string>/Users/macstudio0/bond-factor-lab-runtime/logs/com.bond-factor-lab.monthly-predictions.log</string>
-  <key>StandardErrorPath</key><string>/Users/macstudio0/bond-factor-lab-runtime/logs/com.bond-factor-lab.monthly-predictions.err</string>
+  <key>StandardOutPath</key><string>/Users/macstudio0/bond-factor-lab-production/runtime/logs/com.bond-factor-lab.monthly-predictions.log</string>
+  <key>StandardErrorPath</key><string>/Users/macstudio0/bond-factor-lab-production/runtime/logs/com.bond-factor-lab.monthly-predictions.err</string>
 </dict></plist>
