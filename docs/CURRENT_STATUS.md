@@ -28,7 +28,7 @@
 - Dashboard Backend 仍运行 `1073d68a`，与现行代码在 backend/frontend 及其依赖上无差异；按已授权计划，周一观察通过后重启到 current release。
 - 产品接口为 `factor-lab-dashboard-v7`（见 [Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)）；输入为五文件 DataBridge，存量 `factor_version` 为 `V1.0`（见 [DataBridge](blackbox_v2/data_bridge_v1/README.md)）。两端各标记 9 个生产方案 target（外置 `production_schemes.json`，规则见 [Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#生产方案标记)）。
 - **访问入口**：只用公网域名（中继 Nginx → `18101` 反向隧道 → Mac Backend `8101`，自 2026-10-18 起）或 ECS Dashboard。Mac 本地 `8100` Backend 与 `18100` 回退隧道已于 2026-10-24 退役，原 LaunchAgent 备份在 `~/.config/bond-factor-lab/launchagents-retired-20261024`。切换回执见[公网切换](/Users/macstudio0/bond-factor-lab-production/runtime/releases/public-cutover-20261018-1631/README.md)。
-- **数据入库**在独立仓库 `bond-prediction`（两端 `0d3baf2`）：统一入口 `bin/run_job.py`，Mac crontab 由 `config/jobs.toml` 渲染，ECS 由 22 个 systemd timer 驱动。数据问题在入库层修复，不在模型或缓存侧补偿。
+- **数据入库**在独立仓库 `bond-prediction`（两端 `9d5ee29`）：统一入口 `bin/run_job.py`，Mac crontab 由 `config/jobs.toml` 渲染，ECS 由 22 个 systemd timer 驱动。数据问题在入库层修复，不在模型或缓存侧补偿。
 - Mac 源表上写 `sync_outbox` 的 36 个触发器已于 2026-10-24 删除（下游消费者自 09-24 起已停）；两端现均无源表触发器。
 - 集成分支为 `codex/develop`（代码 = `4d362931`）。开发分支提交不代表新的生产 release；发布以目标机 manifest、current/previous 和进程 cwd 为准。
 
