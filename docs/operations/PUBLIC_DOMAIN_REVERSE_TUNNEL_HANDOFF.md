@@ -2,11 +2,11 @@
 
 **文档用途**：让读者只凭本文，就能理解“域名 → 云服务器 Nginx → SSH 反向隧道 → 本地 HTTP 服务”的原理、现有实例的连接方式，以及如何在同一台云服务器上为自己的服务建立独立入口。读者不需要了解现有网站的业务或代码。本文记录的新增配置是实施范例，不表示新服务已经部署；共享服务器的资源分配和变更由其管理员负责。
 
-**当前链路补充（2026-10-18）**：本网站已迁至新 Mac，正式链路为中继 `18101` → 新 Mac `8101`；旧 `18100` 保留回退。两端口均已占用，不供其他服务分配。当前连接和 LaunchAgent 以[部署访问入口](DEPLOYMENT_ACCESS.md)为准。第 2 节保留 9 月 26 日历史快照；第 3 节起新服务示例改用 `18102`，仍必须实际核实和分配。
+**当前链路（2026-10-24）**：本网站正式链路为中继 `18101` → Mac `8101`；原 `18100` → `8100` 回退链路已于 2026-10-24 退役。`18100`、`18101` 均不分配给新服务；第 3 节起的新服务示例使用 `18102`，仍须实际核实和分配。本网站自身的运维命令见[部署访问入口](DEPLOYMENT_ACCESS.md)。
 
-**历史现场核验**：2026-09-26，Asia/Shanghai。地址、端口和软件版本是当日读回值；实施前按本文命令重新核验。示例域名、用户名和端口均须替换为管理员实际分配的值。
+**现场核验**：中继端（Nginx、sshd、证书、软件版本、主机指纹）为 2026-09-26 读回值，其后仅 Nginx 上游于 2026-10-18 由 `18100` 改为 `18101`；Mac 端隧道参数为 2026-10-24 读回值。实施前按本文命令重新核验；示例域名、用户名和端口均须替换为管理员实际分配的值。
 
-**交接包内容**：本文与 `finlab-key.pem` 一同放在交接 ZIP 根目录。该私钥已获授权用于登录现有中继的 `root` 管理账号，ZIP 本身未加密；仅将整包交给获授权的同事，并通过受控渠道传递。解压后按第 2 节限制文件权限。它用于配置中继，不用于新服务的长期反向隧道；新隧道仍按第 4.3 节创建独立账号和密钥。私钥不放入 Git、公开下载地址、聊天正文或服务器上的交接文件。
+**交接包内容**：交接 ZIP（`public-domain-reverse-tunnel-handoff-20260926.zip`）根目录含本文与中继 `root` 管理私钥 `finlab-key.pem`。ZIP 本身未加密，只交给获授权的同事并经受控渠道传递，按含私钥的凭据包保管；停止授权时由中继管理员撤销对应公钥并按实际信任范围轮换。该私钥只用于配置中继，不用于新服务的长期反向隧道（新隧道按第 4.3 节创建独立账号和密钥），也不放入 Git、公开下载地址、聊天正文或服务器上的交接文件。
 
 **适用范围**：本地 HTTP 服务运行在 macOS 或 Linux，主机能主动通过 SSH 连接公网 Ubuntu 中继；公网以 HTTPS 提供访问。按文中可选配置支持 WebSocket。Windows 的服务管理命令，以及原始 TCP、UDP、gRPC 等非普通 HTTP 场景不在本文范围。任意应用的安装、业务鉴权和数据备份仍由该应用负责人完成；本文负责把已经可在本地访问的应用安全地转发到域名。
 
@@ -34,9 +34,9 @@
 
 这不是把云服务器变成应用宿主。中继端只负责 Nginx、sshd、证书与日志；应用仍由本地电脑负责。中继、隧道、本地应用任何一段不可用，公网访问都会受影响。TLS 在中继终止，所以**中继管理员和中继进程属于可接触明文 HTTP 的信任边界**；SSH 保护的是中继到本地电脑这一段。若应用要求连中继都无法接触明文，需要另行设计端到端加密，不应把本方案误认为端到端 TLS。
 
-## 2. 2026-09-26 历史实例：具体地址、文件和行为
+## 2. 现有实例：地址、文件和行为
 
-下表是 2026-09-26 在这台云服务器上的**网站历史快照**，供理解链路和排查时对照。新服务不能复用它的 SSH 密钥、`18100` 端口或 Nginx `server_name`。
+下表是本网站在这台中继上的现有配置，供理解链路和排查时对照。新服务不能复用它的 SSH 密钥、反向端口或 Nginx `server_name`。
 
 | 位置 | 现场值与作用 |
 | --- | --- |
@@ -44,31 +44,32 @@
 | DNS | `bond.finailab.cn` 的 A 记录指向 `101.132.143.185` |
 | 公网中继 ECS | `101.132.143.185`，Ubuntu 24.04；Nginx 监听 80/443 |
 | 中继 Nginx 站点 | `/etc/nginx/sites-enabled/bond-factor-lab` → `/etc/nginx/sites-available/bond-factor-lab` |
-| Nginx 上游 | `127.0.0.1:18100`；实际由中继 `sshd` 监听，只开放 loopback |
-| 本地电脑的反向隧道 | `ssh -N -T ... -R 127.0.0.1:18100:127.0.0.1:8100 root@101.132.143.185`；Mac LaunchAgent `com.bond-factor-lab.ssh-tunnel` 管理 |
-| 本地 HTTP 服务 | 当时生产 Mac 的 `127.0.0.1:8100`；由本地进程提供，不安装在中继 ECS |
+| Nginx 上游 | `127.0.0.1:18101`；由中继 `sshd` 监听，只开放 loopback |
+| 本地电脑的反向隧道 | `ssh -B en1 -N -T ... -R 127.0.0.1:18101:127.0.0.1:8101 root@101.132.143.185`；Mac LaunchAgent `com.bond-factor-lab.cutover-candidate.ssh-tunnel` 管理 |
+| 本地 HTTP 服务 | Mac 的 `127.0.0.1:8101`；由本地进程提供，不安装在中继 ECS |
 | TLS | Nginx 使用 `/etc/letsencrypt/live/bond.finailab.cn/{fullchain,privkey}.pem`；Certbot 续期任务由中继 `certbot.timer` 管理 |
 
-当时生产 Mac 发起的是 SSH **反向**转发：中继端 `18100` 映射到该 Mac 的 `8100`。中继 `GatewayPorts no`，且命令显式使用 `127.0.0.1:18100`；因此公网只能进入 Nginx 的 80/443，不能直接连 `18100`。中继当前 `sshd` 允许 TCP forwarding，使用公钥登录并关闭密码登录。现有连接以 `root` 运行是现场事实；交接包中的管理密钥可登录该账号，但新服务仍应由管理员分配独立 SSH 身份。
+Mac 发起的是 SSH **反向**转发：中继端 `18101` 映射到 Mac 的 `8101`。中继 `GatewayPorts no`，且命令显式使用 `127.0.0.1:18101`；因此公网只能进入 Nginx 的 80/443，不能直接连反向端口。中继 `sshd` 允许 TCP forwarding，使用公钥登录并关闭密码登录。现有连接以 `root` 运行是现场事实；新服务仍应由管理员分配独立 SSH 身份。
 
 Nginx 根据 HTTPS 请求的域名选中 `bond.finailab.cn` 的 `server` 后，只把精确列出的页面、静态资源和 API 交给上游；未知路径拒绝。转发前把 `/bond-factor-lab` 前缀去掉，例如公网 `/bond-factor-lab/api/health` 到本地服务时是 `/api/health`。`rewrite ... break` 在当前 location 内改写请求路径，随后 `proxy_pass` 把改写后的路径送往上游。80 端口将正常 HTTP 请求重定向到 HTTPS。
 
-现有路径转发的关键语义可压缩为以下片段；这里只展示请求路径转换，省略了站点的 TLS、请求头和其他路由：
+路径转发的关键语义可压缩为以下片段；这里只展示请求路径转换，省略了站点的 TLS、请求头和其他路由：
 
 ```nginx
-upstream local_service { server 127.0.0.1:18100; }
+upstream local_service { server 127.0.0.1:18101; }
 location = /bond-factor-lab/api/health {
     rewrite ^/bond-factor-lab(/.*)$ $1 break;
     proxy_pass http://local_service;
 }
 ```
 
-当时隧道还使用 `ExitOnForwardFailure=yes`、`StrictHostKeyChecking=yes`、`IdentitiesOnly=yes`、15 秒 SSH 存活探测、10 秒连接超时。LaunchAgent 用 `RunAtLoad`、`KeepAlive` 和 10 秒节流拉起断开的 SSH 进程。已安装 plist 位于 `/Users/macstudio0/Library/LaunchAgents/com.bond-factor-lab.ssh-tunnel.plist`；本文第 4.6 节有完整的新服务范例。LaunchAgent 属于登录用户的 GUI domain；电脑休眠、关机、用户会话消失时不能把 `KeepAlive` 理解为 24 小时可用保证。
+隧道使用 `ExitOnForwardFailure=yes`、`StrictHostKeyChecking=yes`、`IdentitiesOnly=yes`、15 秒 SSH 存活探测、10 秒连接超时；`-B en1` 让 SSH 绑定实际联网接口，避免经过本机 VPN/TUN。LaunchAgent 用 `RunAtLoad`、`KeepAlive` 和 10 秒节流拉起断开的 SSH 进程，plist 位于 `/Users/qiyo3/Library/LaunchAgents/com.bond-factor-lab.cutover-candidate.ssh-tunnel.plist`；第 4.6 节有完整的新服务范例。LaunchAgent 属于登录用户的 GUI domain；电脑休眠、关机、用户会话消失时不能把 `KeepAlive` 理解为 24 小时可用保证。
 
-从当时生产 Mac 运维账号连接中继时，实际入口如下：
+本网站的 Mac 连接中继时使用：
 
 ```bash
 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes \
+  -o UserKnownHostsFile=/Users/macstudio0/.ssh/known_hosts \
   -i /Users/macstudio0/.ssh/finlab-key.pem root@101.132.143.185
 ```
 
@@ -84,9 +85,7 @@ ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes \
   -i "$HOME/relay-handoff/finlab-key.pem" root@101.132.143.185
 ```
 
-如果同事已将 ZIP 解压到别处，`-i` 应指向其实际保存的 `finlab-key.pem`。这是服务器管理登录，具有高权限；不要把它放进新服务的 launchd/systemd 隧道任务。交接 ZIP 也应按包含私钥的凭据包保管，停止授权时由服务器管理员撤销对应公钥并按实际信任范围轮换。
-
-截至本次只读检查：DNS A 记录、中继 Nginx 配置、中继 `127.0.0.1:18100` listener、Mac 已加载隧道和本地服务均一致；公网首页和 `/bond-factor-lab/api/health` 返回 200；无前缀 `/api/health` 和未知 API 返回 403。此为单次健康检查，不代表长期可用率。
+如果同事已将 ZIP 解压到别处，`-i` 应指向其实际保存的 `finlab-key.pem`。这是服务器管理登录，具有高权限；不要把它放进新服务的 launchd/systemd 隧道任务。
 
 ## 3. 在同一中继上增加一个本地服务时先确定什么
 
@@ -151,7 +150,7 @@ sudo sh -c "nginx -T > /root/nginx-before-service-relay.$STAMP.txt 2>&1"
 
 记录该时间戳和新站点的文件名；`nginx -T` 保存的是当时实际包含的配置，不是新服务文件。它可能包含其他站点信息，应只供中继管理员保存，别放入发给同事的公开压缩包。
 
-`18102` 没有 listener 才能分配；`grep` 无输出也要检查端口登记，不能仅凭当下空闲抢占。中继云安全组和主机防火墙只需放行该站点所需的公网 80/443，以及受控 SSH 入口；**不要开放 `18102` 到公网**。DNS 和云安全组由控制台实际读回，本文不能代替控制台权限。交接包虽含管理私钥，仍仅限获授权的接收人执行服务器操作；其他同事由中继管理员代办。
+`18102` 没有 listener 才能分配；`grep` 无输出也要检查端口登记，不能仅凭当下空闲抢占。中继云安全组和主机防火墙只需放行该站点所需的公网 80/443，以及受控 SSH 入口；**不要开放 `18102` 到公网**。DNS 和云安全组由控制台实际读回，本文不能代替控制台权限；未获授权的同事由中继管理员代办服务器操作。
 
 ### 4.3 给隧道单独的账号与公钥
 
@@ -165,7 +164,7 @@ ssh-keygen -y -f "$HOME/.ssh/service_relay_ed25519"   # 只导出公钥
 
 此示例创建**独立、无口令的隧道专用密钥**，因为后续 `BatchMode=yes` 的 launchd/systemd 服务不能在无人值守时等待输入口令。其安全边界依赖本地私钥仅该用户可读、服务器账号/公钥只允许指定反向端口；这把密钥泄露时的权限限制在该服务。若团队要求带口令密钥，须先配置并验证该守护进程实际可访问的 SSH agent/密钥托管方式，再使用 `BatchMode=yes`；仅在终端里手动 `ssh-add` 成功，不证明 launchd/systemd 启动时能读取该 agent。
 
-新生成的隧道私钥只保留在同事电脑上；不要放在仓库、聊天或服务器上。首次连接前，从服务器管理员的可信渠道取得 SSH **主机公钥指纹**并核对 `known_hosts`；不要用 `StrictHostKeyChecking=no` 跳过。交接包中的 `finlab-key.pem` 仅用于中继管理，不提供给新服务隧道复用。
+新生成的隧道私钥只保留在同事电脑上；不要放在仓库、聊天或服务器上。首次连接前，从服务器管理员的可信渠道取得 SSH **主机公钥指纹**并核对 `known_hosts`；不要用 `StrictHostKeyChecking=no` 跳过。
 
 本手册编写时，通过已有可信 SSH 会话读取中继主机的 Ed25519 公钥指纹，并与现有运维机 `known_hosts` 逐项比对，二者一致：
 

@@ -73,9 +73,7 @@ __Host-bfl-session=<opaque-token>; Secure; HttpOnly; SameSite=Strict; Path=/
 
 状态变更仅接受 JSON POST，禁止 GET 写入。严格核验部署目标对应的可信 Origin 和 Sec-Fetch-Site，
 拒绝缺失或不匹配请求；SameSite=Strict 仅为纵深防御。固定 Origin 值只维护于访问入口，
-`BFL_AUTH_TRUSTED_ORIGIN` 的私有配置方式见部署手册。Mac 本地访问可显式选择访问入口文档中的
-localhost Origin；只接受 loopback 对端、HTTP 和精确的 Host/端口，并禁用代理头解释。未选择本地 Origin 时
-仍只接受原生产 Origin。localhost HTTP 下 Cookie 仍为 Secure，不开放其他本地地址、局域网入口或任意 Origin。
+`BFL_AUTH_TRUSTED_ORIGIN` 的私有配置方式见部署手册。ECS 的 localhost HTTP 例外不推广到其他入口，Cookie 仍为 Secure。
 认证与管理 POST 请求在 ASGI 输入边界有界预读：声明的 `Content-Length` 先验证，随后按 receive
 分块累计实际字节，有无 `Content-Length` 均不得超过 8192 字节。错误或重复长度、超限及客户端在
 body 完成前中断，必须在 JSON 解析和认证 Service 之前拒绝；完整且未超限的 body 向下游原样重放。

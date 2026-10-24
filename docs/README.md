@@ -15,12 +15,12 @@
 | 判断算法改动或迁移边界 | [源算法保真](architecture/SOURCE_ALGORITHM_FIDELITY.md) → 入库导航中的适用流程 |
 | 检查日期、历史缺口或指标 | [预测语义](architecture/PREDICTION_SEMANTICS.md) → [平台入库 SOP](sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)的补缺步骤 |
 | 发布、晋级或恢复 | [当前状态](CURRENT_STATUS.md) → [部署访问](operations/DEPLOYMENT_ACCESS.md) → [部署手册](../deploy/README.md) → [调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md) |
-| 核验自然运行或处理漏跑 | [待办](TODO.md) → [部署访问](operations/DEPLOYMENT_ACCESS.md) → [调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)；模拟、补缺与自然证据分别核验 |
+| 核验自然运行或处理漏跑 | [调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md) → [部署访问](operations/DEPLOYMENT_ACCESS.md)；模拟、补缺与自然证据分别核验 |
 | 排查 Dashboard | [Dashboard 合同与运行验收](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md) → 部署访问中的探针位置；指标疑问查预测语义 |
 | 在公网中继上转发另一台电脑的本地服务 | [公网域名反向隧道交接手册](operations/PUBLIC_DOMAIN_REVERSE_TUNNEL_HANDOFF.md) → [部署访问](operations/DEPLOYMENT_ACCESS.md)；先核对现有入口和共享资源 |
 | 账户初始化或恢复 | [认证合同](architecture/AUTHENTICATION_AND_ACCOUNT_MANAGEMENT.md) → 部署访问中的目标环境 → 合同链接的受控 CLI |
 | 使用页面或解释结果 | [产品手册](product/GRAY_LAB_USER_MANUAL.md) |
-| 验收特征基准日展示调整 | [需求与本地验收方案](product/FEATURE_DATE_DISPLAY_ACCEPTANCE.md)（已发布，含验收记录） |
+| 修改特征基准日展示后回归核对 | [需求与验收清单](product/FEATURE_DATE_DISPLAY_ACCEPTANCE.md)（2026-09-17 已发布） |
 
 ## 权威来源与职责
 

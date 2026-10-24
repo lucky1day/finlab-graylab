@@ -2,13 +2,15 @@
 
 **文档状态**：`CURRENT`
 
-> 公网链路更新（2026-10-18）：生产入口已切至当前 Mac（`QiyodeMac-Studio.local`，登录用户 `qiyo3`）的不可变 release Backend：本机 `127.0.0.1:8101` ← 中继 `127.0.0.1:18101` ← Nginx。新反向隧道以 `-B en1` 绑定实际联网接口，保持全局 VPN/路由不变。新服务由 `com.bond-factor-lab.cutover-candidate.backend` / `.ssh-tunnel` 两个 LaunchAgent 托管；label 保留候选验收时名称，现已承接公网。旧机的中继 `18100` 隧道仅保留作回退，未管理旧机。原七个 canonical label 仍停用，本机 `localhost:8100` 继续仅供本地验收。Backend 随进程使用 `caffeinate -i` 防止空闲休眠，并设置 `--timeout-keep-alive 75` 匹配中继的连接复用；GUI 会话注销或关机后的可用性仍须按实际宿主状态判断。
+**连接信息核验日期**：2026-10-24（Mac 生产链路与 LaunchAgent 现场读回；灰度 ECS 部分本轮未复核）
 
-
-> 本机目录整理历史记录（2026-10-16，公网停用结论已由上方 10 月 18 日记录更新）：开发目录保留 `/Users/macstudio0/bond-factor-lab`；部署目录为 `/Users/macstudio0/bond-factor-lab-production`，运行配置、日志、DataBridge 数据和模型状态统一置于其 `runtime/` 子目录。原顶层 runtime 目录已移入，current/previous 和业务数据未改变。当前 localhost 后端仍沿用原本地验收入口及开发源码，通过 `bond-factor-lab-production/runtime/bin/local_backend.py` 启动；本次仅调整运行数据位置，不切换业务代码。平台模型、缓存、DataBridge 及公网转发任务继续停用。本文其他旧机器连接资料不构成本机启用授权。
-
-
-**连接信息核验日期**：2026-10-18（本轮只更新 Mac 生产公网链路；灰度 ECS 另按其核验日期）
+当前只有两个访问入口：公网域名（访问 Mac3 生产）和灰度 ECS Dashboard（经临时 SSH 转发）。公网链路为
+Nginx → 中继 `127.0.0.1:18101` → 当前 Mac（`QiyodeMac-Studio.local`，登录用户 `qiyo3`）`127.0.0.1:8101` 上的不可变 release Backend，
+由 `com.bond-factor-lab.cutover-candidate.backend` / `.ssh-tunnel` 两个 LaunchAgent 托管（label 沿用候选验收时名称）。
+隧道以 `-B en1` 绑定实际联网接口，不改全局 VPN/路由；Backend 经 `caffeinate -i` 防空闲休眠，并以
+`--timeout-keep-alive 75` 匹配中继连接复用。GUI 会话注销或关机后的可用性须按实际宿主状态判断。
+原本机 `8100` Backend 与中继 `18100` 回退隧道已于 2026-10-24 退役，plist 备份于
+`/Users/macstudio0/.config/bond-factor-lab/launchagents-retired-20261024/`，不再作为访问或回退路径。
 
 本文是主机地址、连接方法与部署路径的唯一运维入口。执行 ECS/Mac3 操作前先读本文，
 再核对[当前状态](../CURRENT_STATUS.md)和现场 current、进程、控制面；无需从旧任务或历史发布记录重新查地址。
@@ -19,7 +21,7 @@
 | 角色 | 地址与用途 |
 |---|---|
 | ECS 独立灰度实验室 | `47.103.45.193`；运行独立 Backend、MySQL、DataBridge、systemd 调度。SSH：`root@47.103.45.193` |
-| Mac3 生产 | 当前 Mac 主机、用户 `qiyo3`；承载生产 Backend、MySQL、launchd，DataBridge/预测任务当前停用。公网入口：`https://bond.finailab.cn/bond-factor-lab/` |
+| Mac3 生产 | 当前 Mac 主机、用户 `qiyo3`；运行生产 Backend、MySQL，DataBridge、预测与 Actuals 由 launchd 定时运行。公网入口：`https://bond.finailab.cn/bond-factor-lab/` |
 | Mac3 公网中继 ECS | `101.132.143.185`；现有 Nginx/SSH 反向转发入口，**不是独立灰度实验室**。地址以 Mac3 installed tunnel plist 读回为准 |
 
 ```text
@@ -28,7 +30,7 @@
 
 生产访问：https://bond.finailab.cn/bond-factor-lab/
           → 公网中继 ECS Nginx → 中继 127.0.0.1:18101
-          → 当前 Mac 已安装的独立 ssh -R → 本机 127.0.0.1:8101 → 生产 MySQL
+          → 当前 Mac 已安装的 ssh -R → 本机 127.0.0.1:8101 → 生产 MySQL
 ```
 
 两端不共享数据库、输入或 DataBridge。公网域名访问到的是 Mac3；不能拿它验收灰度 ECS。
@@ -106,16 +108,6 @@ Mac3 则使用 **`https://bond.finailab.cn/bond-factor-lab/`**，其 trusted Ori
 普通浏览器可在 localhost 可信上下文使用 Secure 会话 cookie；命令行 HTTP 客户端行为可能不同。
 HTTP 401 先核对入口和会话，不修改认证配置，也不通过重置管理员排查网络。
 
-### Mac 本机迁移验收入口
-
-经明确授权的本地进程可在 `BFL_DEPLOYMENT_TARGET=mac3-production` 下显式设置
-`BFL_AUTH_TRUSTED_ORIGIN=http://localhost:8100`，浏览器使用 `http://localhost:8100/`。
-该进程只监听 `127.0.0.1:8100`，Uvicorn 使用 `--no-proxy-headers`；认证同时核验连接来自
-loopback、请求使用 HTTP、Host 为 `localhost:8100`，并保留 JSON、Origin、Sec-Fetch-Site 与
-Secure/HttpOnly/SameSite Cookie 检查。`127.0.0.1` URL、其他端口及局域网入口不属于此例外。
-本地配置只作用于手动启动的进程，不修改生产 service.env、current/previous 或启用 launchd。
-本地开发进程可使用开发工作区；不得将其作为生产 release 或定时任务入口。
-
 ## 每次操作前的只读读回
 
 在灰度 ECS 的 SSH 会话中执行：
@@ -148,18 +140,18 @@ launchctl print-disabled gui/501
 curl --fail --silent --show-error http://127.0.0.1:8101/api/health
 ```
 
-新两项 label 是独立安装的公网接管配置，原七项模板漂移审计仅用于原 canonical 配置，不可把其通过当作新两项已加载证明；新两项须比对本次审计保存的 plist 与 launchctl 读回。
-
 用读回的 Backend PID 执行 `lsof -a -p <PID> -d cwd -Fn` 核对实际 cwd。
-Mac3 label 为 `com.bond-factor-lab.backend`、`daily-predictions`、`weekly-predictions`、
-`monthly-predictions`、`data-bridge-refresh`、`actuals`、`ssh-tunnel`（后六项也带相同前缀）。
+Mac3 定时任务 label 为 `com.bond-factor-lab.daily-predictions`、`weekly-predictions`、`monthly-predictions`、
+`data-bridge-refresh`、`actuals`（后四项也带相同前缀）；公网链路为上述两项 `cutover-candidate` label。
+漂移审计只比对仓库 `deploy/launchd/` 模板：已退役的 `backend`、`ssh-tunnel` 两项会报 `installed_plist_missing`，属预期；
+两项 `cutover-candidate` 不在模板内，须以 installed plist 与 `launchctl print` 读回核对。
 正常日历、发布/回滚和权限边界见[部署运行手册](../../deploy/README.md)；实际在途 run、输入 ready、
 Registry/exact 与下一触发时间还须按[入库导航](../onboarding/README.md)及[调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)核对。
 
 ## 前端验收常见问题
 
 - `localhost:18110` 连接失败：先查本机转发，再查灰度 ECS 8100；不是 Mac3 公网入口故障。
-- Mac3 公网失败：按[三点链路探针](PUBLIC_FACTOR_LAB_PERFORMANCE.md#故障定位与恢复)核对当前 Mac 8101、中继 18101、公网；旧中继 18100 仅用于已保留的回退链路。
+- Mac3 公网失败：按[三点链路探针](PUBLIC_FACTOR_LAB_PERFORMANCE.md#故障定位与恢复)核对当前 Mac 8101、中继 18101、公网。
 - Dashboard 的认证响应、明细参数及验收限制见[Dashboard 合同](PUBLIC_FACTOR_LAB_PERFORMANCE.md#认证响应与合同验收)。
 
 以上连接说明不授予生产变更权限；操作边界见根规范与所选流程。
