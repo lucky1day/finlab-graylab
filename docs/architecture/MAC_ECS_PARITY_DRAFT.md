@@ -1,8 +1,8 @@
 # Mac → ECS 一致性迁移总纲
 
-> 状态：**BLOCKED_DRAFT**（对齐中；目标与判据已定，实测值待填）
-> 版本：v0.13
-> 更新日期：2026-10-21
+> 状态：**DRAFT**（Phase 1 21/21 完成；B 方案首日双端一致，2026-10-22 实测见 13.17；文档仍为未批准草案）
+> 版本：v0.14
+> 更新日期：2026-10-22
 > 维护方式：目标、判据、口径发生变化时，先改本文档，再动代码；每次修改记入文末变更记录。
 > 关联材料：`/Users/macstudio0/数据对比核查/归档-Phase1/21方案全历史调查-20261018-104709/`（调查报告；过程证据已于 2026-10-24 清理，清单见 `/Users/macstudio0/清理记录-20261024.json`）
 >
@@ -686,6 +686,70 @@ O022 已证明：历史投票差 1 票（10 → 11）越过严格 `>10`，最终
 
 **Phase 1 结果**：21/21 方案的 active exact 与 effective 状态双端完全一致；旧 `6b8d4047dc8a` 的 4 条“无法复现”记录仍属历史，不重跑；现行交付已验证。
 
+### 13.17 B 方案收尾：ECS 源表基线、定时入库与首日双端一致（2026-10-22）
+
+**目标**：把 Mac 生产库的 9 张 DataBridge 源表基线同步到 ECS，启用 ECS 新统一入库定时任务，验证同日 06:30 DataBridge 五文件逐字节一致、07:03 首日在线预测一致。历史预测只读、不回填、不改。
+
+#### 13.17.1 Mac 调度确认
+
+- `crontab -l` 无任何活动 BondPrediction 行（仅保留注释）；预测、入库均走 launchd。
+- 2026-10-22 当日：00:01 calendar exit 0；05:00 wind-daily-lastday exit 1（relay 部分失败，written 185 / held 125 / failed 0，历史保护 cutoff 2026-09-30）；05:15 derivatives exit 1（15 个衍生因子“没有有效的衍生因子记录可写入”）；05:30 能量金属 exit 0（多项实时指数源为 None）；06:00 eastmoney exit 0；07:10 wind-daily exit 0（written 5 / held 6 / failed 0）。
+- 上述 exit 1 属 Mac 生产既有状态，基线按库内实际内容同步，不作为两端不一致。
+
+#### 13.17.2 9 表基线覆盖
+
+| 项 | 结果 |
+|---|---|
+| schema | 9 表 `SHOW CREATE TABLE` 两端完全一致（忽略 AUTO_INCREMENT 值） |
+| Mac 导出 | `mysqldump --single-transaction --no-tablespaces --skip-triggers --no-create-info --complete-insert --skip-add-locks --skip-lock-tables` + gzip；9 个文件 SHA256 与行数登记在 `parity_transfer_20261021/baseline_20261022/dump/manifest.tsv` |
+| ECS 备份 | `/root/parity_20261022/ecs_9tables_backup_20261022.sql.gz`（43.96 MB，SHA256 `1ac184a5…`），改前 9 表行数在 `rows_before.tsv` |
+| 装载 | 建 `<table>__stg LIKE`，去 LOCK/UNLOCK，INSERT 定向到 `__stg`，会话 `sql_log_bin=0` 装载；9 表行数与 Mac 逐表相等（2301165 / 964925 / 137277 / 285366 / 17829 / 8488 / 1822 / 6157 / 6213） |
+| 规范化核对 | 按主键/`rdate` 排序全表文本 SHA256，装载后 9/9 与 Mac 相同 |
+| 切换 | 一条 `RENAME TABLE` 同时完成 9 组 `表→__pre_20261022`、`__stg→表`；切换后 live 表哈希 9/9 与 Mac 相同；随后 DROP `__pre` 表 |
+| 说明 | ECS MySQL 8.4 的 `CHECKSUM TABLE` 对 InnoDB 返回 NULL，不能作为核对手段；以排序全表 SHA256 为准 |
+
+未覆盖：`t_scheme_predictions`、`t_backtest_*`、`t_scheme_registry`、`t_scheme_versions`、`t_harness_*`、`t_scheme_runs` 等业务表（其中预测/registry 已在 00:30 存量对齐中处理）。
+
+#### 13.17.3 ECS 定时入库启用与两处阻断修复
+
+18 个 `bond-ingestion-*.timer` 已 `enable --now`，下一次触发 06:00 eastmoney。启用过程中发现并修复两处会破坏两端一致的现场问题：
+
+1. **运行时目录缺失**：`/opt/bond-prediction/locks`、`logs` 不存在，06:00 eastmoney 因 `FileNotFoundError` 在执行业务前失败。已建两目录（0700），手工补跑同一条 one-shot（`systemctl start bond-ingestion@eastmoney`）。
+2. **旧调度未退役**：ECS root crontab（2026-08-17 安装，指向旧路径 `/opt/bondprediction/current`）仍在活动，06:00/06:05/06:10 重复运行旧代码 eastmoney，并在 06:10:26 覆盖了 7 条 PC* 指标。已备份（`/root/parity_20261022/ecs_root_crontab_before_20261022.txt`）并将 28 条任务行全部注释（`..._after_20261022.txt`），活动任务行为 0；ECS 入库现在只由 18 个 systemd timer 驱动。
+
+**补跑产生的实时行情差异**：Mac 06:00:10 与 ECS 06:02:33 抓取的实时报价不同（美元指数、标普500、USDCNH、STOXX50、日/德 10Y；美国 10Y 在 Mac 侧为哨兵 0.00 被跳过、ECS 侧写入 5.12）。已将 ECS 该 7 条记录按 Mac 原值（含 id、create_time）回写，回写后 9 表哈希再次 9/9 相同。此差异归因于两次抓取时刻不同，不是代码差异。
+
+#### 13.17.4 06:30 DataBridge 双端核对（通过）
+
+| 文件 | SHA256（两端相同） | 字节 |
+|---|---|---:|
+| daily_output.csv | `e0ffc0f2644aa0a3c8275b063a13074b02814fc2da193f249d699bfe46d58fdf` | 21,972,212 |
+| weekly_output.csv | `94b8213e40481e3db3fe75828f95249faf5d80d9a47076cc016be9d86b2d8d61` | 3,097,429 |
+| monthly_output.csv | `bedfb01c1d81aef96f42478b5dfee9326f69ffd165d24131f5de2b674de2918e` | 211,909 |
+| api_wind_date.csv | `dfe8b27abfffb138f44878fb5b34ad38d9c2218a863b61f92d723fa51e41f81d` | 110,840 |
+| factor_catalog.csv | `bb5ee17f097369ed4498744b604d51597e4814c9e31887e90aad62c2b2bd8965` | 30,347 |
+
+Publication manifest 的 `business_digest` 两端同为 `63cf98f692f980f6244e9837bb16abd7d7f48563760bc76a416d7c3021a2ad01`，五个 `business_hash` 与行数逐项相同。Mac 06:30:18→06:31:13、ECS 06:30:23→06:33:41，均 `status=ok`，`source_rdate_cutoff=2026-10-21`。
+
+#### 13.17.5 07:03 首日在线预测核对（通过）
+
+- Mac launchd（07:03，weekday 1–5）与 ECS timer（07:03）同日执行；两端均 `outcome=partial`、`exit=1`，失败集合完全相同：7 个 liwei 方案 `execution_failed`（`liwei_0616_10y01_cons_say_k3_div_k10`、`10y01_full_oos`、`10y02_cons_say_k3_div_k5`、`5y01_full_oos`、`5y_auc_static_all`、`5y_auc_yearly_all`、`5y_ic_yearly_all`），均不在 21 方案范围。
+- Mac `discovered=49 / executed=42 / records=46`；ECS `discovered=46 / executed=39 / records=43`。差集恰为 3 个 Mac 专属历史日频方案（`daily_10y_lgbm_10y04_0629`、`daily_1y_xgb_1y13_0629`、`daily_5y_lgbm_5y10_0629`），属部署矩阵范围，不是回归。
+- `t_scheme_predictions` 中 `predict_date=2026-10-22` 的 43 个共有业务键（42 个方案、46 行中的 43 行）逐字段比较：`scheme_version`、`target_date`、`feature_date`、`predicted_direction`、`model_version`、`extra` **0 处不同**。
+- 21 个 Phase 1 active 方案：19 个当日有行且双端一致；2 个周频方案（`cgb_causal_wk_1y_v128`、`weekly_5y_curve_logit_v1`）非周四到期，双端同日均无新行，各自最新 `2026-10-17`。
+- 历史未改：`predict_date < 2026-10-22` 共 25,661 行，两端全字段 SHA256 同为 `aa26c8a0…`。
+
+#### 13.17.6 结论与残留风险
+
+**首日结论：06:30 五文件与 07:03 预测均双端一致，B 方案灰度首日通过；未触发 fail-closed。** 21 个 active exact 与 effective 状态保持一致（见 `phase1_summary_{mac,ecs}_20261022.txt`）。
+
+残留风险（需在后续运行观察）：
+
+1. **实时行情抓取时刻敏感**：eastmoney/能量金属在固定时刻抓实时值，两端秒级差异即可写入不同值（本次 06:00 vs 06:02 已实证）。今日已按 Mac 回写并人工对齐；若某日两端抓取值不同，次日 06:30 DataBridge 将出现差异并触发 fail-closed。是否接受该口径、或改为 ECS 从 Mac 已发布 vintage 取数，属业务选择，未在本次擅自变更。
+2. ECS 旧 crontab 已全部注释但未删除，恢复方法与备份同在 `/root/parity_20261022/`。
+3. ECS `/opt/bond-prediction` 的 git HEAD（`077d14ca`）与 Mac（`69547b53`）不同，且工作区 dirty=True；但 77 个 `.py` 文件逐文件 SHA256 完全一致，`config/jobs.json` 与 release `f485e3b0` 相同。运行日志中的 commit 元数据因此不同，不影响数据与算法。
+4. Mac 侧 7 个 liwei 方案当日 `execution_failed`，两端表现一致但均为失败；不属本次迁移范围，另行排查。
+
 ---
 
 ## 14. 变更记录
@@ -705,3 +769,4 @@ O022 已证明：历史投票差 1 票（10 → 11）越过严格 `>10`，最终
 | v0.11 | 2026-10-21 | 周频 `cgb_causal_wk_1y_v128` / `weekly_5y_curve_logit_v1` 当前 exact 双端 92/92 验证（无代码变更）；记录两个方案缺 `description` 的 G1 元数据修复（commit `2b59209a`，待下一 release 验证激活） |
 | v0.12 | 2026-10-21 | 日频剩余 5 个方案当前 exact 双端验证（liwei 90/90；current55 001/002、adyn lb1/lb2 各 94/94）；两个元数据缺失方案补 `description` 后 release `2b59209a` 切 current，revision 激活 `4d0d1f0d6a71` / `0b96997c496a`，预测 433/431 未变；Phase 1 达 20/21，唯一阻断为缺交付版本的 liwei 7y03 |
 | v0.13 | 2026-10-21 | `liwei_0616_7y03` 闭环：6 处 argsort 稳定排序；全量 90/90 双端一致；release `f485e3b0` 切 current；处理 paused legacy native 版本后 revision 激活 `97ed67c0fc12`，预测 433/431 未变；**Phase 1 21/21 完成** |
+| v0.14 | 2026-10-22 | B 方案收尾：Mac 9 表基线导出/ECS 备份/`__stg` 装载/单语句 RENAME 切换，9/9 表全表哈希一致；18 个 ECS timer 启用；修复 ECS 缺 `locks`/`logs` 目录与旧 root crontab 重复运行两处阻断；06:30 DataBridge 五文件 SHA256 与 business digest 双端一致；07:03 首日预测 43 个共有业务键 0 差异、历史 25,661 行未变；记录实时行情抓取时刻敏感的残留风险 |

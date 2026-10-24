@@ -17,6 +17,7 @@
 | 发布、晋级或恢复 | [当前状态](CURRENT_STATUS.md) → [部署访问](operations/DEPLOYMENT_ACCESS.md) → [部署手册](../deploy/README.md) → [调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md) |
 | 核验自然运行或处理漏跑 | [待办](TODO.md) → [部署访问](operations/DEPLOYMENT_ACCESS.md) → [调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)；模拟、补缺与自然证据分别核验 |
 | 排查 Dashboard | [Dashboard 合同与运行验收](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md) → 部署访问中的探针位置；指标疑问查预测语义 |
+| 在公网中继上转发另一台电脑的本地服务 | [公网域名反向隧道交接手册](operations/PUBLIC_DOMAIN_REVERSE_TUNNEL_HANDOFF.md) → [部署访问](operations/DEPLOYMENT_ACCESS.md)；先核对现有入口和共享资源 |
 | 账户初始化或恢复 | [认证合同](architecture/AUTHENTICATION_AND_ACCOUNT_MANAGEMENT.md) → 部署访问中的目标环境 → 合同链接的受控 CLI |
 | 使用页面或解释结果 | [产品手册](product/GRAY_LAB_USER_MANUAL.md) |
 | 验收特征基准日展示调整 | [需求与本地验收方案](product/FEATURE_DATE_DISPLAY_ACCEPTANCE.md)（已发布，含验收记录） |
@@ -42,6 +43,7 @@
 | [W4 运行维护 SOP](sop/NATIVE_V1_MAINTENANCE_SOP.md) | 固定版本运行检查、故障定位、调度恢复与依赖保护 |
 | [Blackbox 生产准备](blackbox_v2/PRODUCTION_READINESS.md) | 生产接管前的证据清单，不代替操作步骤 |
 | [部署访问](operations/DEPLOYMENT_ACCESS.md) | 主机角色、固定地址/Origin、SSH/转发、生产路径及只读连接方法 |
+| [公网域名反向隧道交接](operations/PUBLIC_DOMAIN_REVERSE_TUNNEL_HANDOFF.md) | 现有中继链路的现场快照，以及给独立本地服务配置域名、SSH 反向隧道、Nginx、TLS 的可复用步骤和验收 |
 | [部署手册](../deploy/README.md) | 环境、release 工具、安装/晋级/恢复、迁移操作及期望时钟与模板映射 |
 | [调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md) | 唯一 Writer、installed/loaded 证明、自然运行证据与手工恢复边界 |
 | [Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md) | HTTP 表示、刷新行为、性能和故障定位/验收 |

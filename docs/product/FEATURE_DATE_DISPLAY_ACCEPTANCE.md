@@ -145,7 +145,7 @@
 - 首轮公网验收发现两个静态资源版本 token 未更新，最终 release 已修正并通过内容摘要校验。
 
 具体提交、发布包摘要、现场验证与恢复边界见[当前状态](../CURRENT_STATUS.md#运行与部署)；
-原始检查结果保存于[本机发布回执](/Users/macstudio0/bond-factor-lab-runtime/releases/feature-date-display-20260917/delivery-report.json)。
+原始检查结果保存于[本机发布回执](/Users/macstudio0/bond-factor-lab-production/runtime/releases/feature-date-display-20260917/delivery-report.json)。
 
 ## 11. 区间应用与日历修订闭环
 
@@ -154,4 +154,4 @@
 正式浏览器已验证新日历选日及连续点击应用，日期不回退；原统计口径保持。
 十张业务表发布前后内容及 schema 一致。发布版本、恢复边界和验证证据统一见
 [当前状态](../CURRENT_STATUS.md#运行与部署)及
-[本次发布回执](/Users/macstudio0/bond-factor-lab-runtime/releases/range-calendar-ui-20260917/delivery-report.json)。
+[本次发布回执](/Users/macstudio0/bond-factor-lab-production/runtime/releases/range-calendar-ui-20260917/delivery-report.json)。
