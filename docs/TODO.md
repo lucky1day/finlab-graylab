@@ -12,8 +12,7 @@
 2. **观察通过后的清理**（已授权）：ECS `__pre_20261023085211` 表、`parity_scratch` 库与过期备份；看板 Backend 重启到 current release（两端进程当前均为 `1073d68a`，与现行代码在 backend/frontend 及依赖上无差异，重启仅为一致）；Mac 清理 `parity_transfer_20261021/` 与周一观察脚本，重启后可删 release `1073d68a`。
 3. **逐方案容差 τ**：每个共有方案确定自己的概率容差，用于保证后续预测方向持续一致；架构差异须有证据并更新[汇报](/Users/macstudio0/数据对比核查/Mac-ECS一致性攻坚-20261021/html/汇报-一致性攻坚.html)，原因不明的继续排查，不以“架构差异”名义上线。
 
-4. **lw 5 套 T+5 新方案**（2026-10-24 入库）：候选 release `11aaf21a` 两端已预安装，完整回测两端 1,665 行逐行一致；周一观察通过后两端切换 current（`--expected-current 4d362931…`）、`harness activate`、`signal-gap-fill` 补齐 `[2026-06-01, 当日)`，逐行比对两端补齐结果。
-5. **评估关闭 FMA 重编译 Mac pandas**：见[一致性总纲](architecture/MAC_ECS_PARITY_DRAFT.md) O8；全局环境改动，阶段 D 观察通过后单独验证。
+4. **评估关闭 FMA 重编译 Mac pandas**：见[一致性总纲](architecture/MAC_ECS_PARITY_DRAFT.md) O8；全局环境改动，阶段 D 观察通过后单独验证。
 
 ## ECS 算力卡点与新验证流程
 
