@@ -1823,6 +1823,9 @@ MODEL2_PARAMS: dict[str, Any] = {
     "min_child_samples": 61,
     "random_state": 42,
     "verbose": -1,
+    "n_jobs": 1,
+    "deterministic": True,
+    "force_col_wise": True,
 }
 
 # Fixed D-overlay parameters.
@@ -1955,7 +1958,7 @@ def build_model2_segment(
         raise RuntimeError(f"No features left after linear filter for {segment_name}")
 
     mi = mutual_info_classif(x_train_scaled, y_train, random_state=42)
-    selected_idx = np.argsort(mi)[::-1][: min(MODEL2_N_TOP_FEATURES, len(mi))].tolist()
+    selected_idx = np.argsort(mi, kind="stable")[::-1][: min(MODEL2_N_TOP_FEATURES, len(mi))].tolist()
     x_train_sel = x_train_scaled[:, selected_idx]
     x_test_sel = x_test_scaled[:, selected_idx]
     selected_features = filtered_features[selected_idx]

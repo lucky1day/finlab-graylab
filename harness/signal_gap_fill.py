@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import threading
 import time
@@ -105,6 +106,7 @@ def run_signal_gap_fill(
     databridge_config: DataBridgeRefreshConfig,
     algo_env: str = "forecast_env",
     timeout_sec: int = 600,
+    lock_scope: str | None = None,
 ) -> dict[str, Any]:
     """按一次内存单日计划协调缺口计算、原子提交与最终权威读回。"""
     try:
@@ -142,7 +144,7 @@ def run_signal_gap_fill(
         )
 
     try:
-        singleton_lock = _signal_gap_fill_singleton_lock()
+        singleton_lock = _signal_gap_fill_singleton_lock(lock_scope)
         singleton_lock.acquire()
     except ExclusiveFileLockUnavailable:
         return _report(
@@ -1363,10 +1365,17 @@ def _canonical_json(value: Any) -> str:
     )
 
 
-def _signal_gap_fill_singleton_lock() -> ExclusiveFileLock:
+def _signal_gap_fill_singleton_lock(scope: str | None = None) -> ExclusiveFileLock:
     lock_root = resolve_runtime_artifact_root() / "signal-gap-fill-locks"
     ensure_private_directory(lock_root, label="signal-gap-fill lock root")
-    return ExclusiveFileLock(lock_root / "signal-gap-fill.lock")
+    if scope is None:
+        filename = "signal-gap-fill.lock"
+    else:
+        normalized = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(scope)).strip("._")
+        if not normalized:
+            raise ValueError("signal gap fill lock scope is invalid")
+        filename = f"signal-gap-fill-{normalized}.lock"
+    return ExclusiveFileLock(lock_root / filename)
 
 
 def _repository_module() -> Any:

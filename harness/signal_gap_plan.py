@@ -33,7 +33,11 @@ from shared.prediction_context import (
     build_weekly_live_context,
     is_weekly_signal_date,
 )
-from shared.scheme_config_schema import ALLOWED_RUNTIME_TYPES, SCHEME_ID_PATTERN
+from shared.scheme_config_schema import (
+    ALLOWED_RUNTIME_TYPES,
+    PRESERVED_FACT_HORIZONS,
+    SCHEME_ID_PATTERN,
+)
 from shared.period_average_buckets import period_anchor_dates
 from shared.task_specs import (
     ALLOWED_FREQUENCIES,
@@ -137,6 +141,8 @@ class ObservedSignal:
     scheme_version: str
     run_status: str
     contract_error: str | None = None
+    legacy_native: bool = False
+    backtest_baseline: bool = False
 
     @property
     def business_key(self) -> tuple[str, str, int, str]:
@@ -524,7 +530,11 @@ def verify_signal_gap_fill_readback(
         elif len(rows) == 1:
             reason = _observation_contract_error(item, target, rows[0])
             action = "SKIP_PRESENT" if reason is None else "BLOCKED_DATA_CONTRACT"
-            reason = reason or "VALID_LIVE_RESULT_PRESENT"
+            reason = reason or (
+                "VALID_BACKTEST_BASELINE_PRESENT"
+                if rows[0].backtest_baseline
+                else "VALID_LIVE_RESULT_PRESENT"
+            )
         else:
             action = "GRAY_LIVE_GAP"
             reason = "LIVE_BUSINESS_KEY_MISSING"
@@ -683,7 +693,11 @@ def _build_signal_gap_plan(
             error = _observation_contract_error(item, target, rows[0])
             if error is None:
                 action = "SKIP_PRESENT"
-                reason = "VALID_LIVE_RESULT_PRESENT"
+                reason = (
+                    "VALID_BACKTEST_BASELINE_PRESENT"
+                    if rows[0].backtest_baseline
+                    else "VALID_LIVE_RESULT_PRESENT"
+                )
             else:
                 action = "BLOCKED_DATA_CONTRACT"
                 reason = error
@@ -1453,9 +1467,14 @@ def _read_live_signals_for_scope(
                r.scheme_version AS run_scheme_version,
                r.runtime_type AS run_runtime_type,
                r.prediction_phase AS run_prediction_phase,
-               r.predict_date AS run_predict_date
+               r.predict_date AS run_predict_date,
+               p.backtest_run_id,
+               br.status AS backtest_status,
+               br.run_mode AS backtest_run_mode,
+               br.scheme_id AS backtest_scheme_id
         FROM t_scheme_predictions p
         LEFT JOIN t_scheme_runs r ON r.run_id = p.run_id
+        LEFT JOIN t_backtest_runs br ON br.id = p.backtest_run_id
         WHERE p.scheme_id IN :base_scheme_ids
           AND (
               p.predict_date IN :predict_dates
@@ -1504,6 +1523,30 @@ def _read_live_signals_for_scope(
         ):
             continue
         target = target_by_identity.get(business_key[:3])
+        # 迁移前由 native_adapter 写入的存量方案 live 行仍是历史事实，
+        # 仅在 run 身份与预测行完全一致且成功时跳过版本/运行时漂移。
+        legacy_native = (
+            str(row.get("run_runtime_type") or "") == "native_adapter"
+            and business_key[0] in PRESERVED_FACT_HORIZONS
+            and row.get("run_id") is not None
+            and str(row.get("run_scheme_id") or "")
+            == str(row.get("scheme_id") or "")
+            and str(row.get("run_scheme_version") or "")
+            == str(row.get("scheme_version") or "")
+            and str(row.get("run_prediction_phase") or "")
+            == str(row.get("prediction_phase") or "")
+            and str(row.get("run_status") or "") == "success"
+        )
+        backtest_baseline = (
+            row.get("run_id") is None
+            and row.get("backtest_run_id") is not None
+            and str(row.get("backtest_status") or "") == "success"
+            and str(row.get("backtest_run_mode") or "") == "persist"
+            and str(row.get("backtest_scheme_id") or "")
+            == business_key[0]
+            and target is not None
+            and str(row.get("scheme_version") or "") == target.scheme_version
+        )
         selected.append(
             ObservedSignal(
                 base_scheme_id=business_key[0],
@@ -1515,7 +1558,11 @@ def _read_live_signals_for_scope(
                 phase=str(row["prediction_phase"] or ""),
                 scheme_version=str(row["scheme_version"] or ""),
                 run_status=str(row["run_status"] or ""),
-                contract_error=_live_row_contract_error(row, target),
+                contract_error=_live_row_contract_error(
+                    row, target, legacy_native, backtest_baseline
+                ),
+                legacy_native=legacy_native,
+                backtest_baseline=backtest_baseline,
             )
         )
     return tuple(sorted(selected, key=_observed_sort_key))
@@ -1790,10 +1837,20 @@ def _validate_registry_target(target: RegistryTarget) -> None:
         )
     except (OSError, ValueError):
         contract = None
-    if contract is None or (
-        contract.horizon,
-        contract.frequency,
-    ) != (target.horizon, target.frequency):
+    if contract is None:
+        raise SignalGapPlanError(
+            "INVALID_REGISTRY_TARGET",
+            target.registry_scheme_id,
+        )
+    expected_horizons = {contract.horizon}
+    preserved = PRESERVED_FACT_HORIZONS.get(target.base_scheme_id)
+    if preserved is not None and preserved[0] == target.task_type:
+        # 已批准存量方案允许 Registry 保留原事实步长（如 6 天/30 天）。
+        expected_horizons.add(preserved[1])
+    if (
+        target.horizon not in expected_horizons
+        or target.frequency != contract.frequency
+    ):
         raise SignalGapPlanError(
             "INVALID_REGISTRY_TARGET",
             target.registry_scheme_id,
@@ -1815,12 +1872,14 @@ def _observation_contract_error(
 ) -> str | None:
     if row.contract_error:
         return f"OBSERVED_SIGNAL_CONTRACT_DRIFT:{row.contract_error}"
+    if row.backtest_baseline:
+        return None
     if (
         row.predict_date != item.predict_date
         or row.feature_date != item.feature_date
         or row.phase not in LIVE_PREDICTION_PHASES
         or row.run_status != "success"
-        or row.scheme_version != target.scheme_version
+        or (row.scheme_version != target.scheme_version and not row.legacy_native)
     ):
         return "OBSERVED_SIGNAL_CONTRACT_DRIFT"
     return None
@@ -1829,14 +1888,19 @@ def _observation_contract_error(
 def _live_row_contract_error(
     row: Mapping[str, Any],
     target: RegistryTarget | None,
+    legacy_native: bool = False,
+    backtest_baseline: bool = False,
 ) -> str | None:
+    if backtest_baseline:
+        # 持久化回测事实没有 live run 链；其身份已在读取时校验。
+        return None
     errors: list[str] = []
     phase = str(row.get("prediction_phase") or "")
     if phase not in LIVE_PREDICTION_PHASES:
         errors.append("LIVE_PHASE_INVALID")
     if target is None:
         errors.append("LIVE_TARGET_NOT_ACTIVE")
-    else:
+    elif not legacy_native:
         if str(row.get("scheme_version") or "") != target.scheme_version:
             errors.append("LIVE_SCHEME_VERSION_DRIFT")
         if str(row.get("run_runtime_type") or "") != target.runtime_type:

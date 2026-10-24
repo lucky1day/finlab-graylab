@@ -2,6 +2,7 @@
   "schema_version": "1.0",
   "scheme_id": "one_y_t5_liq_excess_b_w252_l7_v1",
   "name": "1年期国债收益率T+5日方向预测（LIQ_EXCESS_B_W252_L7）",
+  "description": "1年期国债收益率T+5日方向预测（LIQ_EXCESS_B_W252_L7）",
   "algorithm_version": "1.0.0",
   "target_tenor": "1Y",
   "task_type": "T+5",

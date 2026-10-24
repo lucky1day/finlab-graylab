@@ -181,3 +181,26 @@ class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
                 or key in {"MYSQL_PWD", "DATABASE_URL"}
             ):
                 self.assertNotIn(key, child)
+
+
+def test_prepare_private_source_runtime_tree_adds_owner_write(
+    tmp_path: Path,
+) -> None:
+    """私有 source 副本保留原只读内容，但允许源算法覆写默认参数。"""
+    from shared.source_runtime_database import (
+        prepare_private_source_runtime_tree,
+    )
+
+    params_dir = (
+        tmp_path / "monthly_project" / "hyper_params" / "2026-06-19"
+    )
+    params_dir.mkdir(parents=True)
+    params = params_dir / "params.json"
+    params.write_text("{}")
+    params_dir.chmod(0o500)
+    params.chmod(0o400)
+
+    prepare_private_source_runtime_tree(tmp_path)
+
+    assert params.stat().st_mode & stat.S_IWUSR
+    params.write_text('{"ok": true}')

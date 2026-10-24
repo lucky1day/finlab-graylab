@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Mapping
 from zoneinfo import ZoneInfo
 
@@ -86,7 +88,10 @@ class MySqlDataBridgeRoundBuilder:
                         ZoneInfo("Asia/Shanghai")
                     )
                     _assert_required_source_tables(connection)
-                    metadata = read_factor_metadata_from_db(connection)
+                    metadata = _order_metadata_by_schema(
+                        read_factor_metadata_from_db(connection),
+                        self.config.schema_path,
+                    )
                     frames = {
                         "daily_output.csv": build_daily_output_from_db(
                             start_date=self.config.daily_start_date,
@@ -169,6 +174,42 @@ class MySqlDataBridgeRoundBuilder:
                 evidence=evidence,
             ),
         )
+
+
+def _order_metadata_by_schema(
+    metadata: pd.DataFrame,
+    schema_path: str | Path,
+) -> pd.DataFrame:
+    """按冻结 schema 列序稳定排列因子，新因子追加在已知因子之后。"""
+    raw = json.loads(Path(schema_path).read_text(encoding="utf-8"))
+    files = raw.get("files") if isinstance(raw, Mapping) else None
+    if not isinstance(files, Mapping):
+        raise DataBridgeRefreshError("DataBridge schema files are invalid")
+    ranks: dict[str, int] = {}
+    for filename in (
+        "daily_output.csv",
+        "weekly_output.csv",
+        "monthly_output.csv",
+    ):
+        entry = files.get(filename)
+        columns = entry.get("columns") if isinstance(entry, Mapping) else None
+        if not isinstance(columns, list) or not columns:
+            raise DataBridgeRefreshError(
+                f"DataBridge schema columns are missing: {filename}"
+            )
+        for code in columns[1:]:
+            ranks.setdefault(str(code).strip(), len(ranks))
+    if "indicators_code" not in metadata.columns:
+        raise DataBridgeRefreshError(
+            "factor metadata is missing indicators_code"
+        )
+    codes = metadata["indicators_code"].astype(str).str.strip()
+    fallback = len(ranks)
+    order = sorted(
+        range(len(metadata)),
+        key=lambda index: (ranks.get(codes.iloc[index], fallback), index),
+    )
+    return metadata.iloc[order].reset_index(drop=True)
 
 
 def _build_factor_catalog(

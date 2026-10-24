@@ -33,6 +33,9 @@ class StateBinding:
     code_hash: str | None = None
     manifest_hash: str | None = None
     config_path: Path | None = None
+    seed_state: Path | None = None
+    allow_backtest_publish: bool = False
+    backfill: bool = False
 
     def __post_init__(self) -> None:
         for label, value in (("scheme_id", self.scheme_id),
@@ -45,6 +48,15 @@ class StateBinding:
         for value in (self.code_hash, self.manifest_hash):
             if value is not None and not re.fullmatch(r"[0-9a-f]{64}", value):
                 raise ValueError("invalid Blackbox state code/manifest hash")
+        if self.seed_state is not None:
+            if self.root is not None:
+                raise ValueError("state seed is only valid for private state")
+            if not isinstance(self.seed_state, Path) or not self.seed_state.is_absolute():
+                raise ValueError("state seed must be an absolute Path")
+        if self.allow_backtest_publish and self.root is None:
+            raise ValueError("backtest publish requires an explicit state root")
+        if self.backfill and self.root is None:
+            raise ValueError("backfill state requires an explicit state root")
 
 
 def read_regular_bytes(path: Path, limit: int) -> bytes:
@@ -101,6 +113,22 @@ def _decode(content: bytes) -> tuple[dict[str, Any], bytes]:
     return header, payload
 
 
+def read_state_cutoff(path: str | Path) -> str:
+    """读取平台 state 信封内层 delivery 的 cutoff，用于只读 seed vintage 判断。"""
+    import io
+
+    import numpy as np
+
+    content = read_regular_bytes(Path(path), _MAX_ENVELOPE_BYTES)
+    _, payload = _decode(content)
+    with np.load(io.BytesIO(payload), allow_pickle=False) as archive:
+        header = json.loads(str(archive["header"].item()))
+    cutoff = str(header.get("cutoff") or "")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", cutoff):
+        raise ValueError("Blackbox state cutoff is invalid")
+    return cutoff
+
+
 def _private_directory(path: Path) -> tuple[int, int]:
     if not path.is_absolute() or path != path.resolve(strict=False):
         raise ValueError("Blackbox state directory must be absolute and symlink-free")
@@ -154,6 +182,26 @@ class StateSession:
                     with self.input_path.open("xb") as target:
                         target.write(self._input)
                     self.input_path.chmod(0o400)
+            elif self.binding.seed_state is not None:
+                self._old = read_regular_bytes(
+                    self.binding.seed_state,
+                    _MAX_ENVELOPE_BYTES,
+                )
+                header, self._input = _decode(self._old)
+                if header["identity"] != self.identity:
+                    raise ValueError(
+                        "Blackbox seed state exact identity mismatch"
+                    )
+                if (
+                    not isinstance(header["input"], dict)
+                    or header["input"].get("schema")
+                    != self.input_identity.get("schema")
+                ):
+                    raise ValueError("Blackbox seed state input schema mismatch")
+                self.input_path = self._work_dir / "state-input.bin"
+                with self.input_path.open("xb") as target:
+                    target.write(self._input)
+                self.input_path.chmod(0o400)
             return self
         except BaseException:
             self.__exit__(None, None, None)
@@ -171,13 +219,19 @@ class StateSession:
         _decode(content)
         if self._destination is not None:
             self._publish_file(content)
+        if self.binding.backfill:
+            state_scope = "backfill"
+        elif self._destination is not None:
+            state_scope = "persistent"
+        else:
+            state_scope = "private"
         self.audit = {
             "state_schema": "blackbox-state-1",
             "state_input_sha256": hashlib.sha256(self._input).hexdigest() if self._input is not None else None,
             "state_output_sha256": header["payload_sha256"],
             "state_envelope_sha256": hashlib.sha256(content).hexdigest(),
             "state_bytes": len(payload),
-            "state_scope": "persistent" if self._destination is not None else "private",
+            "state_scope": state_scope,
         }
         return dict(self.audit)
 

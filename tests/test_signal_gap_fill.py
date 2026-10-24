@@ -245,7 +245,7 @@ def _install(
     monkeypatch.setattr(
         signal_gap_fill,
         "_signal_gap_fill_singleton_lock",
-        lambda: lock or _lock(),
+        lambda scope=None: lock or _lock(),
     )
     monkeypatch.setattr(signal_gap_fill, "plan_signal_gaps", readback_mock)
     monkeypatch.setattr(
@@ -728,3 +728,44 @@ def test_single_date_readback_remains_fail_closed_on_blocked_plan() -> None:
         blocked_readback,
         allow_blocked_actions=True,
     ) == []
+
+
+def test_signal_gap_fill_lock_scope_separates_dates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """不同 predict_date 使用不同锁文件；同一日期仍共享同一把锁。"""
+    from harness import signal_gap_fill
+
+    seen: list[Path] = []
+
+    class _FakeLock:
+        def __init__(self, path: Path) -> None:
+            seen.append(path)
+
+    monkeypatch.setattr(
+        signal_gap_fill,
+        "resolve_runtime_artifact_root",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        signal_gap_fill,
+        "ensure_private_directory",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(signal_gap_fill, "ExclusiveFileLock", _FakeLock)
+
+    signal_gap_fill._signal_gap_fill_singleton_lock("2026-10-15")
+    signal_gap_fill._signal_gap_fill_singleton_lock("2026-10-16")
+    signal_gap_fill._signal_gap_fill_singleton_lock("2026-10-15")
+
+    assert seen[0].name == "signal-gap-fill-2026-10-15.lock"
+    assert seen[1].name == "signal-gap-fill-2026-10-16.lock"
+    assert seen[2] == seen[0]
+    assert seen[0] != seen[1]
+
+    signal_gap_fill._signal_gap_fill_singleton_lock()
+    assert seen[-1].name == "signal-gap-fill.lock"
+
+    with pytest.raises(ValueError, match="scope is invalid"):
+        signal_gap_fill._signal_gap_fill_singleton_lock("///")

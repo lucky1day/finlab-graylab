@@ -61,6 +61,9 @@ DATA_BRIDGE_TRANSITION_CODES = frozenset(
 )
 RUNNER_LOCK_TIMEOUT_SEC = 60.0
 RUNNER_LOCK_POLL_INTERVAL_SEC = 0.05
+# 失败方案的自动重试：批次结束后只重跑失败的方案，间隔 10 分钟，最多 2 次。
+PREDICTION_RETRY_ATTEMPTS = 2
+PREDICTION_RETRY_DELAY_SEC = 10 * 60
 
 
 class OneShotPredictionRunError(RuntimeError):
@@ -132,9 +135,16 @@ class OneShotPredictionSummary:
     blocked: list[dict[str, object]] = field(default_factory=list)
     skipped: list[dict[str, object]] = field(default_factory=list)
     failed: list[dict[str, object]] = field(default_factory=list)
+    retries: list[dict[str, object]] = field(default_factory=list)
 
     def to_payload(self) -> dict[str, object]:
-        """返回字段与顺序稳定、可写入 launchd 日志的 JSON 对象。"""
+        """返回字段与顺序稳定、可写入 launchd 日志的 JSON 对象；发生过重试时追加 retries。"""
+        payload = self._base_payload()
+        if self.retries:
+            payload["retries"] = list(self.retries)
+        return payload
+
+    def _base_payload(self) -> dict[str, object]:
         return {
             "event": self.event,
             "cadence": self.cadence,
@@ -1064,6 +1074,47 @@ def run_one_shot(
                         code="dependency_unavailable",
                         stage="engine_dispose",
                     ) from exc
+
+
+def run_one_shot_with_retries(
+    cadence: str,
+    *,
+    retry_attempts: int = PREDICTION_RETRY_ATTEMPTS,
+    retry_delay_sec: float = PREDICTION_RETRY_DELAY_SEC,
+    sleep: Callable[[float], None] = time.sleep,
+    run: Callable[..., OneShotPredictionSummary] | None = None,
+    **kwargs: object,
+) -> OneShotPredictionSummary:
+    """执行一次批次；方案级失败在间隔后只重跑失败方案，最多 retry_attempts 次。
+
+    已写入的业务键在重跑时按 PREDICTION_KEYS_ALREADY_EXIST 良性跳过，不会重复写入；
+    无 scheme_id 的批次级失败（配置、锁、依赖）不重试，按原语义抛出。
+    """
+    run = run or run_one_shot
+    summary = run(cadence, **kwargs)
+    for attempt in range(1, retry_attempts + 1):
+        failed_ids = sorted({str(item["scheme_id"]) for item in summary.failed if item.get("scheme_id")})
+        if not failed_ids:
+            break
+        sleep(retry_delay_sec)
+        try:
+            retry = run(cadence, **{**kwargs, "scheme_ids": failed_ids})
+        except OneShotPredictionRunError as exc:
+            if exc.summary is None:
+                summary.retries.append({"attempt": attempt, "scheme_ids": failed_ids, "error": exc.code})
+                break
+            retry = exc.summary
+        summary.failed = [item for item in summary.failed if str(item.get("scheme_id")) not in failed_ids]
+        for name in ("executed", "excluded", "denied", "blocked", "skipped", "failed"):
+            getattr(summary, name).extend(getattr(retry, name))
+        summary.retries.append({
+            "attempt": attempt,
+            "scheme_ids": failed_ids,
+            "recovered": sorted(str(item.get("scheme_id")) for item in retry.executed),
+            "still_failed": sorted({str(item.get("scheme_id")) for item in retry.failed}),
+        })
+        _finalize(summary)
+    return summary
 
 
 def configuration_summary(

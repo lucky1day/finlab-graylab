@@ -898,3 +898,57 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 )
 
         create_engine.assert_not_called()
+
+
+class PredictionRetryTests(unittest.TestCase):
+    """方案级失败只重跑失败方案，间隔重试，最多两次；批次级失败不重试。"""
+
+    @staticmethod
+    def _summary(executed=(), failed=(), batch_failure=False):
+        from scheduler import one_shot_prediction_runner as runner
+
+        summary = runner.OneShotPredictionSummary(cadence="daily", predict_date="2026-10-26")
+        summary.executed = [{"scheme_id": sid, "status": "success"} for sid in executed]
+        summary.failed = [{"scheme_id": sid, "code": "execution_failed"} for sid in failed]
+        if batch_failure:
+            summary.failed.append({"scheme_id": None, "code": "dependency_unavailable"})
+        runner._finalize(summary)
+        return summary
+
+    def test_retries_only_failed_schemes_until_recovered_or_exhausted(self) -> None:
+        from scheduler import one_shot_prediction_runner as runner
+
+        results = iter([
+            self._summary(executed=["c"], failed=["a", "b"]),
+            self._summary(executed=["a"], failed=["b"]),
+            self._summary(failed=["b"]),
+        ])
+        calls, sleeps = [], []
+
+        def fake_run(cadence, **kwargs):
+            calls.append(kwargs.get("scheme_ids"))
+            return next(results)
+
+        summary = runner.run_one_shot_with_retries(
+            "daily", predict_date="2026-10-26", run=fake_run, sleep=sleeps.append)
+
+        self.assertEqual(calls, [None, ["a", "b"], ["b"]])
+        self.assertEqual(sleeps, [runner.PREDICTION_RETRY_DELAY_SEC] * 2)
+        self.assertEqual(sorted(item["scheme_id"] for item in summary.executed), ["a", "c"])
+        self.assertEqual([item["scheme_id"] for item in summary.failed], ["b"])
+        self.assertEqual(summary.outcome, "partial")
+        self.assertEqual([r["still_failed"] for r in summary.to_payload()["retries"]], [["b"], ["b"]])
+
+    def test_clean_batch_and_batch_level_failure_are_not_retried(self) -> None:
+        from scheduler import one_shot_prediction_runner as runner
+
+        for first in (self._summary(executed=["a"]), self._summary(executed=["a"], batch_failure=True)):
+            calls, sleeps = [], []
+
+            def fake_run(cadence, **kwargs):
+                calls.append(kwargs.get("scheme_ids"))
+                return first
+
+            summary = runner.run_one_shot_with_retries("daily", run=fake_run, sleep=sleeps.append)
+            self.assertEqual((calls, sleeps), ([None], []))
+            self.assertNotIn("retries", summary.to_payload())

@@ -540,7 +540,7 @@ def _interpreter_extension_suffixes(
 
 
 def prepare_private_source_runtime_tree(path: Path) -> None:
-    """规范私有副本目录权限并移除所有未冻结 Python 字节码。"""
+    """规范私有副本目录与文件权限，并移除未冻结 Python 字节码。"""
     assert_source_package_tree_safe(path)
     directories = [
         path,
@@ -552,6 +552,9 @@ def prepare_private_source_runtime_tree(path: Path) -> None:
         reverse=True,
     ):
         directory.chmod(0o700)
+    for child in path.rglob("*"):
+        if child.is_file():
+            child.chmod(child.stat().st_mode | stat.S_IWUSR)
     for child in sorted(
         path.rglob("*.pyc"),
         key=lambda item: len(item.parts),

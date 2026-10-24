@@ -563,3 +563,29 @@ class DataBridgeCurrentTests(unittest.TestCase):
             ],
             [True, False],
         )
+
+
+class OrderMetadataBySchemaTest(unittest.TestCase):
+    def test_schema_order_wins_and_new_codes_append(self) -> None:
+        from shared.data_bridge import mysql_exporter
+
+        schema = {
+            "files": {
+                "daily_output.csv": {"columns": ["date", "A", "B", "C"]},
+                "weekly_output.csv": {"columns": ["week_id", "W1"]},
+                "monthly_output.csv": {"columns": ["month_id", "M1"]},
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "schema.json"
+            path.write_text(json.dumps(schema), encoding="utf-8")
+            metadata = pd.DataFrame(
+                {"indicators_code": ["C", "NEW", "A", "W1", "B", "M1"]}
+            )
+
+            ordered = mysql_exporter._order_metadata_by_schema(metadata, path)
+
+        self.assertEqual(
+            ordered["indicators_code"].tolist(),
+            ["A", "B", "C", "W1", "M1", "NEW"],
+        )

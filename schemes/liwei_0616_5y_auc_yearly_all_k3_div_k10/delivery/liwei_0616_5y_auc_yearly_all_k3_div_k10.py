@@ -632,11 +632,11 @@ def feat_screen(feat_vals, labels, n_self, mf_feat_cat, mf_col_names,
     scores = _auc_scores(fv, ll_bin, n_feat)
 
     # --- selection logic (identical to original ic_screen) ---
-    self_order = np.argsort(-scores[:n_self])
+    self_order = np.argsort(-scores[:n_self], kind="stable")
     sel_self = self_order[:min(top_self, len(self_order))]
 
     mf_scores = scores[n_self:]
-    mf_order = np.argsort(-mf_scores)
+    mf_order = np.argsort(-mf_scores, kind="stable")
     sel_mf: list = []
     cat_count: dict = {}
     for idx in mf_order:
@@ -986,7 +986,7 @@ def select_combo_signals(sig_accs: np.ndarray, cat_indices: dict,
             elig = ci[ca >= min_acc]
             if len(elig) > 0:
                 selected.extend(
-                    elig[np.argsort(-sig_accs[elig])[:count]].tolist())
+                    elig[np.argsort(-sig_accs[elig], kind="stable")[:count]].tolist())
     return (np.unique(np.array(selected, dtype=int))
             if selected else np.array([], dtype=int))
 
@@ -1021,7 +1021,7 @@ def _diverse_topk(scores, config_windows, K):
     # Then: fill remaining slots with best overall
     remaining = K - len(selected)
     if remaining > 0:
-        all_sorted = np.argsort(-scores)
+        all_sorted = np.argsort(-scores, kind="stable")
         for idx in all_sorted:
             if idx not in selected:
                 selected.append(idx)
@@ -1773,7 +1773,7 @@ def run_prediction(cfg: dict) -> dict[str, Any]:
             if ens_mode == "diverse":
                 top_k = _diverse_topk(scores, config_windows, K)
             else:
-                top_k = np.argsort(-scores)[:K]
+                top_k = np.argsort(-scores, kind="stable")[:K]
 
             if ens_mode == "accwt":
                 # Accuracy-weighted probability averaging
@@ -2221,20 +2221,44 @@ def _train_phase_a(
     return dict(result)
 
 
-def _digest_frame(frame: pd.DataFrame) -> str:
-    """试点按固定列序验证已见源前缀，不保存源数据副本。"""
-    digest = hashlib.sha256(json.dumps(list(frame.columns), ensure_ascii=True).encode())
-    for column in frame:
-        series = frame[column]
-        if pd.api.types.is_numeric_dtype(series.dtype):
-            values = np.array(series, dtype="<f8", copy=True)
-            values[np.isnan(values)] = np.nan
-            payload = values.tobytes()
-        else:
-            payload = json.dumps(series.astype(str).tolist(), ensure_ascii=True).encode()
-        digest.update(len(payload).to_bytes(8, "little"))
-        digest.update(payload)
-    return digest.hexdigest()
+# 带状态日更允许因历史修订而重算的已缓存OOS交易日上限。Mac实测每个OOS交易日的
+# 全grid Phase A约1.2-1.7秒/族（双族约3秒），日更总预算min(predict_timeout,120)秒，
+# 这里只用约一半预算给修订重算；超出时显式失败，由离线 rebuild-blackbox-state 承担。
+MAX_REVISED_OOS_ROWS = 15
+
+
+def _row_identities(prepared: Mapping[str, Any]) -> np.ndarray:
+    """逐输入行绑定已缓存Phase A的全部依赖：日期、收盘与完整特征行。
+
+    OOS第r行的Phase A只读取第r行及更早行：训练/校准窗与有效性、标签（j+horizon<r，
+    由收盘决定）、fallback（收盘）以及静态/年度筛选窗都如此，因此前缀身份不变即可复用；
+    周/月对齐与日历只经特征行进入Phase A。特征列结构作为每行公共前缀，变化时全部失效。
+    """
+    matrix = np.array(prepared["feat_all"], dtype="<f8", copy=True)
+    matrix[np.isnan(matrix)] = np.nan
+    close = np.array(prepared["close"], dtype="<f8", copy=True)
+    close[np.isnan(close)] = np.nan
+    columns = hashlib.sha256(json.dumps(
+        [prepared["n_self"], list(prepared["mf_cols"]),
+         sorted(prepared["mf_feat_cat"].items()), matrix.shape[1]],
+        ensure_ascii=True).encode()).digest()
+    days = prepared["df"]["date"].dt.strftime("%Y-%m-%d").tolist()
+    return np.array([
+        hashlib.sha256(columns + day.encode() + close[row].tobytes() + matrix[row].tobytes()).hexdigest()
+        for row, day in enumerate(days)
+    ], dtype="U64")
+
+
+def _reusable_rows(cached_rows: np.ndarray, new_rows: np.ndarray, oos_positions: np.ndarray,
+                   cached_dates: np.ndarray, new_dates: np.ndarray) -> int:
+    """返回首个行身份差异之前的OOS行数；修订、插入或删除日期都从首差异行起重算。"""
+    common = min(len(cached_rows), len(new_rows))
+    changed = np.flatnonzero(cached_rows[:common] != new_rows[:common])
+    first = int(changed[0]) if len(changed) else common
+    keep = int(np.searchsorted(oos_positions, first))
+    if keep > len(cached_dates) or not np.array_equal(new_dates[:keep], cached_dates[:keep]):
+        raise ContractError("private state rows are inconsistent with cached OOS dates")
+    return keep
 
 def _trial_identity() -> dict[str, Any]:
     """绑定本草稿精确字节与数值环境，状态不跨方案复用。"""
@@ -2243,7 +2267,7 @@ def _trial_identity() -> dict[str, Any]:
     if _HAS_NUMBA:
         import numba
         numba_version = numba.__version__
-    return {"schema": "5y-auc-yearly-all-k10-private-1", "code": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    return {"schema": "5y-auc-yearly-all-k10-private-2", "code": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "metadata": hashlib.sha256(Path(__file__).with_suffix('.json').read_bytes()).hexdigest(),
             "machine": platform.machine(), "numba": numba_version,
             "bottleneck": bn.__version__ if _HAS_BN else None,
@@ -2404,18 +2428,11 @@ def generate_with_private_state(
                     family: {field: loaded[f"{family}_{field}"].copy() for field in STATE_ARRAY_FIELDS}
                     for family in PHASE_FAMILIES
                 }
-        if set(header) != {"identity", "authority", "cutoff", "input_prefixes", "payload_sha256"}:
+        if set(header) != {"identity", "authority", "cutoff", "payload_sha256"}:
             raise ContractError("invalid private state header")
         if header["identity"] != identity or header["authority"] != authority:
             raise ContractError("private state identity mismatch")
         _date(header["cutoff"], "state cutoff")
-        if set(header["input_prefixes"]) != {"daily_df", "weekly_df", "monthly_df", "calendar_df"}:
-            raise ContractError("missing input prefix proof")
-        for name, proof in header["input_prefixes"].items():
-            if (set(proof) != {"rows", "sha256"} or type(proof["rows"]) is not int
-                    or proof["rows"] < 0 or (name != "monthly_df" and proof["rows"] == 0)
-                    or not re.fullmatch(r"[0-9a-f]{64}", proof["sha256"])):
-                raise ContractError("invalid input prefix proof")
         arrays = [states[family][field] for family in PHASE_FAMILIES for field in STATE_ARRAY_FIELDS]
         if header["payload_sha256"] != _payload_digest(*arrays):
             raise ContractError("private state payload mismatch")
@@ -2425,7 +2442,7 @@ def generate_with_private_state(
                     or not np.all(dates[1:] > dates[:-1]) or dates[-1] > header["cutoff"]
                     or (family == "five_y" and dates[-1] != header["cutoff"])
                     or features.ndim != 1 or features.dtype != np.dtype("U64")
-                    or len(features) != header["input_prefixes"]["daily_df"]["rows"]
+                    or len(features) < len(dates)
                     or any(not re.fullmatch(r"[0-9a-f]{64}", str(value)) for value in features)
                     or preds.dtype != np.dtype("int8") or probs.dtype != np.dtype("float64")
                     or preds.shape != (len(grids[family]), len(dates)) or probs.shape != preds.shape
@@ -2445,55 +2462,37 @@ def generate_with_private_state(
                "weekly_df": weekly.loc[weekly.week_id.astype(str) <= week].reset_index(drop=True),
                "monthly_df": monthly.loc[monthly.month_id.astype(str) <= month].reset_index(drop=True),
                "date_to_week": date_to_week}
-        consumed_month = (pd.Timestamp(day).to_period("M") - 1).strftime("%Y%m")
-        proof_frames = {
-            "daily_df": raw["daily_df"].loc[:, ["date", *sorted(REQUIRED_DAILY)]],
-            "weekly_df": raw["weekly_df"].loc[:, ["week_id", *sorted(REQUIRED_WEEKLY)]],
-            "monthly_df": raw["monthly_df"].loc[
-                raw["monthly_df"].month_id <= consumed_month,
-                ["month_id", *sorted(REQUIRED_MONTHLY)]].reset_index(drop=True),
-            "calendar_df": calendar.loc[calendar.rdate <= pd.Timestamp(day)].reset_index(drop=True),
-        }
-        if header is not None:
-            for name, proof in header["input_prefixes"].items():
-                previous_frame = proof_frames[name]
-                if name == "monthly_df":
-                    previous_month = (pd.Timestamp(header["cutoff"]).to_period("M") - 1).strftime("%Y%m")
-                    previous_frame = previous_frame.loc[previous_frame.month_id <= previous_month]
-                    if len(previous_frame) != proof["rows"]:
-                        raise ContractError("consumed monthly domain changed; explicit rebuild required")
-                if len(previous_frame) < proof["rows"] or _digest_frame(previous_frame.iloc[:proof["rows"]]) != proof["sha256"]:
-                    raise ContractError("source prefix changed; explicit rebuild required")
+        # 历史修订不再整体拒绝：逐行身份定位首个差异，只重算其后的OOS行；超出日更预算显式失败。
         phase_by_baseline = {}
         prepared_by_baseline = {}
         family_progress = {}
+        plans = {}
         for family, baselines in PHASE_FAMILIES.items():
-            grid = grids[family]
             state = states[family]
-            dates, features, preds, probs = (state[field] for field in STATE_ARRAY_FIELDS)
             prepared = prepare_prediction_inputs(model_config(baselines[0], **raw))
             df = prepared["df"]
-            matrix = np.array(prepared["feat_all"], dtype="<f8", copy=True)
-            matrix[np.isnan(matrix)] = np.nan
-            new_features = np.array([hashlib.sha256(row.tobytes()).hexdigest() for row in matrix], dtype="U64")
+            new_features = _row_identities(prepared)
             idx = np.flatnonzero((df.date >= pd.Timestamp("2024-01-01")) & ~np.isnan(prepared["close"]))
             new_dates = df.date.iloc[idx].dt.strftime("%Y-%m-%d").to_numpy(dtype="U10")
             # 7Y可缺当前行，沿用原跨期限日期对齐；但整个基线无历史时原算法仍失败。
             if not len(new_dates) or (family == "five_y" and new_dates[-1] != day):
                 raise ContractError("no valid full-OOS baseline context")
-            keep = len(dates)
-            if keep and (len(new_dates) < keep or not np.array_equal(new_dates[:keep], dates)):
-                raise ContractError("OOS date prefix changed")
-            if len(features):
-                if len(new_features) < len(features):
-                    raise ContractError("feature prefix shortened")
-                changed = np.flatnonzero(features != new_features[:len(features)])
-                if len(changed):
-                    first_changed = df.date.iloc[int(changed[0])].strftime("%Y-%m-%d")
-                    keep = min(keep, int(np.searchsorted(dates, first_changed)))
+            keep = _reusable_rows(state["features"], new_features, idx, state["dates"], new_dates)
+            plans[family] = (prepared, new_features, new_dates, keep)
+        revised = {family: len(states[family]["dates"]) - plan[3] for family, plan in plans.items()}
+        if args.state_input is not None and max(revised.values()) > MAX_REVISED_OOS_ROWS:
+            first_changed = min(str(states[family]["dates"][plans[family][3]])
+                                for family in plans if revised[family])
+            raise ContractError(
+                f"source prefix changed; explicit rebuild required: first changed OOS date {first_changed}, "
+                f"{max(revised.values())} cached rows exceed daily recompute budget {MAX_REVISED_OOS_ROWS}")
+        for family, baselines in PHASE_FAMILIES.items():
+            grid = grids[family]
+            preds, probs = states[family]["preds"], states[family]["probs"]
+            prepared, new_features, new_dates, keep = plans[family]
             pieces_preds, pieces_probs = [preds[:, :keep]], [probs[:, :keep]]
             # 已缓存日期必须是当前完整OOS前缀；新年新日期没有旧数组可复用。
-            # 旧年selector依赖严格早于年首，源前缀和全特征摘要检查已覆盖该历史域。
+            # 旧年selector依赖严格早于年首，逐行身份前缀已覆盖该历史域。
             remaining = new_dates[keep:]
             # 控制Dataset临时内存；保留每个历史OOS点全部265配置，不能用两月PIT并集。
             for month_key in sorted({value[:7] for value in remaining}):
@@ -2528,9 +2527,7 @@ def generate_with_private_state(
             raise ContractError("invalid direction")
         for request in batch:
             answers[request["request_id"]] = {key: request[key] for key in RESULT_FIELDS[:-1]} | {"predicted_direction": direction}
-        header = {"identity": identity, "authority": authority, "cutoff": day,
-                  "input_prefixes": {name: {"rows": len(proof_frames[name]), "sha256": _digest_frame(proof_frames[name])}
-                                     for name in ("daily_df", "weekly_df", "monthly_df", "calendar_df")}}
+        header = {"identity": identity, "authority": authority, "cutoff": day}
         print(json.dumps({"trial_cutoff": day, "families": family_progress,
                           "seconds": time.perf_counter() - started}), file=sys.stderr, flush=True)
     if args.state_output is not None:

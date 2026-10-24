@@ -15,7 +15,7 @@ from scheduler.one_shot_prediction_runner import (
     OneShotPredictionRunError,
     OneShotPredictionSummary,
     configuration_summary,
-    run_one_shot,
+    run_one_shot_with_retries,
     today,
 )
 from shared.one_shot_control_plane import SYSTEMD_ONE_SHOT_CONTROL_PLANE
@@ -34,7 +34,7 @@ def run(
     lock_timeout_sec: float = RUNNER_LOCK_TIMEOUT_SEC,
 ) -> OneShotPredictionSummary:
     """执行一次由 systemd capability 约束的 scheduled_live 批次。"""
-    return run_one_shot(
+    return run_one_shot_with_retries(
         cadence,
         predict_date=predict_date,
         algo_env=algo_env,

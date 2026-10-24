@@ -234,6 +234,48 @@ def _validate_runtime_profile(profile: RuntimeProfile, *, source: str) -> None:
 
 DEFAULT_RUNTIME_PROFILE = _load_runtime_profile(_RUNTIME_PROFILE_PATH)
 
+STATEFUL_MEMORY_LIMIT_ENV = "BFL_BLACKBOX_STATEFUL_MEMORY_LIMIT_BYTES"
+_STATEFUL_MEMORY_LIMIT_DEFAULT_BYTES = 4 * 1024**3
+_STATEFUL_MEMORY_LIMIT_MAX_BYTES = 16 * 1024**3
+
+
+def _stateful_memory_limit_bytes(profile: RuntimeProfile) -> int:
+    """解析 stateful Blackbox 的显式内存上限；默认 4 GiB，最大 16 GiB。"""
+    raw = os.environ.get(STATEFUL_MEMORY_LIMIT_ENV, "").strip()
+    limit = _STATEFUL_MEMORY_LIMIT_DEFAULT_BYTES
+    if raw:
+        if not re.fullmatch(r"[0-9]+", raw):
+            raise ValueError(
+                f"{STATEFUL_MEMORY_LIMIT_ENV} must be an integer byte count"
+            )
+        limit = int(raw)
+        if limit <= 0 or limit > _STATEFUL_MEMORY_LIMIT_MAX_BYTES:
+            raise ValueError(
+                f"{STATEFUL_MEMORY_LIMIT_ENV} must be between 1 and "
+                f"{_STATEFUL_MEMORY_LIMIT_MAX_BYTES} bytes"
+            )
+    return min(profile.memory_limit_bytes, limit)
+
+
+STATEFUL_TIMEOUT_ENV = "BFL_BLACKBOX_STATEFUL_TIMEOUT_SEC"
+_STATEFUL_TIMEOUT_DEFAULT_SEC = 7200
+
+
+def _stateful_timeout_sec(profile: RuntimeProfile) -> int:
+    """解析 stateful 回测/冷重建的显式时限；默认 7200 秒，最大为 profile 的回测时限。"""
+    raw = os.environ.get(STATEFUL_TIMEOUT_ENV, "").strip()
+    limit = _STATEFUL_TIMEOUT_DEFAULT_SEC
+    if raw:
+        if not re.fullmatch(r"[0-9]+", raw):
+            raise ValueError(f"{STATEFUL_TIMEOUT_ENV} must be an integer second count")
+        limit = int(raw)
+        if limit <= 0 or limit > profile.backtest_timeout_sec:
+            raise ValueError(
+                f"{STATEFUL_TIMEOUT_ENV} must be between 1 and "
+                f"{profile.backtest_timeout_sec} seconds"
+            )
+    return min(profile.backtest_timeout_sec, limit)
+
 
 class BlackboxExecutionError(RuntimeError):
     pass
@@ -426,10 +468,10 @@ def run_blackbox_predict(
     )
     if state is not None:
         # 显式冷重建属于离线维护；日常 predict 不借用离线预算。
-        state_timeout = (min(profile.backtest_timeout_sec, 7200) if state.rebuild
+        state_timeout = (_stateful_timeout_sec(profile) if state.rebuild
                          else min(profile.predict_timeout_sec, 120))
         profile = replace(profile, cpu_threads=min(profile.cpu_threads, 8),
-                          memory_limit_bytes=min(profile.memory_limit_bytes, 4 * 1024**3),
+                          memory_limit_bytes=_stateful_memory_limit_bytes(profile),
                           predict_timeout_sec=state_timeout)
     with tempfile.TemporaryDirectory(prefix="blackbox-v2-predict-") as tmpdir:
         root = Path(tmpdir)
@@ -487,14 +529,19 @@ def run_blackbox_backtest(
     batch = list(requests)
     if state is not None:
         profile = replace(profile, cpu_threads=min(profile.cpu_threads, 8),
-                          memory_limit_bytes=min(profile.memory_limit_bytes, 4 * 1024**3),
-                          backtest_timeout_sec=min(profile.backtest_timeout_sec, 7200))
+                          memory_limit_bytes=_stateful_memory_limit_bytes(profile),
+                          backtest_timeout_sec=_stateful_timeout_sec(profile))
     with tempfile.TemporaryDirectory(prefix="blackbox-v2-backtest-") as tmpdir:
         root = Path(tmpdir)
         requests_path = write_requests(batch, root / "requests.csv")
         output_path = root / "output" / "backtest.csv"
         # 回测只能使用私有状态；显式 rebuild 是无预测写库的受控维护调用。
-        if state is not None and state.root is not None and not state.rebuild:
+        if (
+            state is not None
+            and state.root is not None
+            and not state.rebuild
+            and not state.allow_backtest_publish
+        ):
             raise ValueError("backtest cannot advance persistent Blackbox state")
         with _state_session(state, root, metadata, script_path, data_dir,
                             data_snapshot_id, profile) as session:
@@ -644,6 +691,7 @@ def _to_prediction_record(
         "target_rule": metadata.target_rule,
         "contract_version": metadata.schema_version,
         "runtime_profile": profile.name,
+        "memory_limit_bytes": profile.memory_limit_bytes,
         "data_snapshot_id": data_snapshot_id,
     }
     return PredictionRecord(

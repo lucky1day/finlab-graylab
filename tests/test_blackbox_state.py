@@ -268,6 +268,117 @@ def test_stateful_execution_budgets(
     assert observed == [expected]
 
 
+def test_stateful_memory_limit_env_override(
+    delivery: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stateful Blackbox 内存上限可显式提高，但受 16 GiB 硬上限约束。"""
+    from scheduler import blackbox_v2_runner as runner
+
+    profile = replace(delivery["profile"], memory_limit_bytes=32 * 1024**3)
+    monkeypatch.setenv(runner.STATEFUL_MEMORY_LIMIT_ENV, str(6 * 1024**3))
+    assert runner._stateful_memory_limit_bytes(profile) == 6 * 1024**3
+
+    monkeypatch.setenv(runner.STATEFUL_MEMORY_LIMIT_ENV, str(16 * 1024**3))
+    assert runner._stateful_memory_limit_bytes(profile) == 16 * 1024**3
+
+    monkeypatch.setenv(runner.STATEFUL_MEMORY_LIMIT_ENV, str(32 * 1024**3))
+    with pytest.raises(ValueError, match="between 1 and"):
+        runner._stateful_memory_limit_bytes(profile)
+
+    monkeypatch.setenv(runner.STATEFUL_MEMORY_LIMIT_ENV, "not-a-number")
+    with pytest.raises(ValueError, match="integer byte count"):
+        runner._stateful_memory_limit_bytes(profile)
+
+    monkeypatch.delenv(runner.STATEFUL_MEMORY_LIMIT_ENV)
+    assert runner._stateful_memory_limit_bytes(profile) == 4 * 1024**3
+
+
+def test_stateful_timeout_env_override(
+    delivery: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stateful 回测/冷重建时限可显式提高，但不超过 profile 的回测时限。"""
+    from scheduler import blackbox_v2_runner as runner
+
+    profile = replace(delivery["profile"], backtest_timeout_sec=14400)
+    monkeypatch.delenv(runner.STATEFUL_TIMEOUT_ENV, raising=False)
+    assert runner._stateful_timeout_sec(profile) == 7200
+
+    monkeypatch.setenv(runner.STATEFUL_TIMEOUT_ENV, "14400")
+    assert runner._stateful_timeout_sec(profile) == 14400
+
+    monkeypatch.setenv(runner.STATEFUL_TIMEOUT_ENV, "14401")
+    with pytest.raises(ValueError, match="between 1 and"):
+        runner._stateful_timeout_sec(profile)
+
+    monkeypatch.setenv(runner.STATEFUL_TIMEOUT_ENV, "2h")
+    with pytest.raises(ValueError, match="integer second count"):
+        runner._stateful_timeout_sec(profile)
+
+
+def test_private_state_seed_reads_without_advancing(
+    delivery: dict,
+    tmp_path: Path,
+) -> None:
+    """只读 seed 只提供 state-input，不写回生产 state。"""
+    binding = _initialize(delivery, tmp_path)
+    canonical = _canonical(binding)
+    seed = tmp_path / "seed.state"
+    seed.write_bytes(canonical.read_bytes())
+    before = seed.read_bytes()
+
+    seeded = replace(binding, root=None, seed_state=seed)
+    records = run_blackbox_backtest(
+        **delivery,
+        requests=[_request("seeded")],
+        state=seeded,
+    )
+
+    assert records[0].extra["state_scope"] == "private"
+    assert records[0].extra["state_input_sha256"] is not None
+    assert seed.read_bytes() == before
+    assert canonical.read_bytes() == before
+
+
+def test_backfill_state_publishes_to_separate_root(
+    delivery: dict,
+    tmp_path: Path,
+) -> None:
+    """backfill state 链使用独立根，首次重建、后续只算增量。"""
+    binding = _initialize(delivery, tmp_path)
+    backfill_root = tmp_path / "backfill-state"
+    backfill_root.mkdir(mode=0o700)
+    first = replace(
+        binding,
+        root=backfill_root,
+        rebuild=True,
+        allow_backtest_publish=True,
+        backfill=True,
+    )
+    records = run_blackbox_backtest(
+        **delivery,
+        requests=[_request("bf-first")],
+        state=first,
+    )
+    assert records[0].extra["state_scope"] == "backfill"
+    destination = (
+        backfill_root
+        / binding.scheme_id
+        / f"{binding.scheme_version}.state"
+    )
+    assert destination.is_file()
+
+    second = replace(first, rebuild=False)
+    records = run_blackbox_backtest(
+        **delivery,
+        requests=[_request("bf-second")],
+        state=second,
+    )
+    assert records[0].extra["state_scope"] == "backfill"
+    assert records[0].extra["state_input_sha256"] is not None
+
+
 @pytest.mark.parametrize("request_id", ["bad-result", "nonzero", "state-missing", "change-request-input"])
 def test_failed_initial_rebuild_does_not_create_canonical_state(
     delivery: dict, tmp_path: Path, request_id: str,
