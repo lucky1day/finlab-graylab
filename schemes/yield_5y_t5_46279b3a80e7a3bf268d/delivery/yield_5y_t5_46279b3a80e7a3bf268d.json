@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "yield_5y_t5_46279b3a80e7a3bf268d",
+  "name": "商品变化反向",
+  "owner": "国债收益率预测项目",
+  "description": "使用冻结日频因子、窗口和成熟标签规则，按原信号预测涨跌；0表示平/不出手，保留既有中性门槛及早期一月执行边界；无效输入报错退出。",
+  "algorithm_version": "20261024.sopv3.1",
+  "target_tenor": "5Y",
+  "task_type": "T+5",
+  "horizon": 5,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}

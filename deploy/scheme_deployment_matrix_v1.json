@@ -7,6 +7,7 @@
   "schemes": {
     "daily_t5_10y_balanced_vote_143b_v3": ["mac3-production", "aliyun-gray"],
     "daily_t5_3y_balanced_vote_cbe3_v3": ["mac3-production", "aliyun-gray"],
+    "daily_t5_3y_position_unwind_lag1_v3": ["mac3-production", "aliyun-gray"],
     "weekly_10y_full_action_vote_873e_v3": ["mac3-production", "aliyun-gray"],
     "weekly_3y_full_action_vote_a7b5_v3": ["mac3-production", "aliyun-gray"],
     "weekly_5y_full_action_lowcorr01_v3": ["mac3-production", "aliyun-gray"],
@@ -110,6 +111,10 @@
     "weekly_7y_cross_d_overlay_0529": ["mac3-production", "aliyun-gray"],
     "weekly_avg_10y_lgbm_0529": ["mac3-production"],
     "weekly_avg_1y_lgbm_0529": ["mac3-production"],
-    "weekly_avg_5y_lgbm_0529": ["mac3-production"]
+    "weekly_avg_5y_lgbm_0529": ["mac3-production"],
+    "yield_10y_t5_014b402ba7cc7c9935d2": ["mac3-production", "aliyun-gray"],
+    "yield_10y_t5_0fc0f097ef78ce45e69f": ["mac3-production", "aliyun-gray"],
+    "yield_5y_t5_46279b3a80e7a3bf268d": ["mac3-production", "aliyun-gray"],
+    "yield_5y_t5_8658bc6095914d48d2eb": ["mac3-production", "aliyun-gray"]
   }
 }
