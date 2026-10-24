@@ -170,6 +170,7 @@
 | `weekly_5y_full_action_lowcorr01_v3` | 1.4e-16 | 1e-15 | 末位差 |
 | `weekly_5y_full_action_lowcorr02_v3` | 6.9e-17 | 7e-16 | 末位差 |
 | `weekly_5y_full_action_lowcorr03_v3` | 6.9e-17 | 7e-16 | 末位差 |
+| `daily_t5_3y_position_unwind_lag1_v3` | 1.7e-14 | 1.7e-13 | pandas 滚动标准差 FMA（2026-10-24 入库，用户确认；436 日方向一致，离阈值最近 2.0e-3） |
 
 根因：Mac arm64 与 ECS x86_64 的数学库浮点累加顺序不同，只能靠加 epsilon 消除，按规则不做。
 
@@ -210,7 +211,7 @@ O022 已证明：历史投票差 1 票（10 → 11）越过严格 `>10`，最终
 | B5 | 严格阈值判定 | — | τ 小于边界距离 |
 | B6 | 暖启动/缺失值/日历/标签 | — | — |
 | C1 | 增量缓存身份 | 7 个 liwei 增量方案：历史数据修订使缓存整体失效（`source prefix changed`），10-22 起两端停跑 | 逐行身份 + 尾部自愈（`deb7d4f5`）；下一步改为只追加（全局目标文档决策 7、D.3） |
-| R | CPU 架构数值库 | Mac arm64 vs ECS x86_64 浮点累加顺序 | 不可消除；按 6.3 登记 |
+| R | CPU 架构数值库 | Mac arm64 vs ECS x86_64 浮点累加顺序；2026-10-24 定位一例：Mac 的 pandas 滚动聚合模块编译时启用 FMA（40 条指令，ECS 0 条），`rolling().std()` 输入相同、输出末位不同，纯 Python 复现 FMA/两次舍入分别逐位等于 Mac/ECS | 按 6.3 登记；pandas 这一类可像 bottleneck 一样关闭 FMA 重编译消除（O8） |
 
 > 重建 bottleneck 是 Mac 环境改动：环境重装后须同样重建。做法（2026-10-21/22，环境 `forecast_env_blackbox_v1`）：取 PyPI `bottleneck-1.4.2` 源码，`CFLAGS="-ffp-contract=off" python setup.py build_ext --inplace --force` 重编译，替换 `site-packages/bottleneck/` 下的 `move.*.so`；验收：同一 3,895 行 float64 输入的 `bn.move_std(arr, window=2, min_count=2, ddof=1)` 输出与 ECS 逐位一致（输出 SHA256 前缀 `8402a6f2`；FMA 版为 `d51e74d1`）。
 
@@ -251,6 +252,8 @@ O022 已证明：历史投票差 1 票（10 → 11）越过严格 `>10`，最终
 | O4 | 概率/最终判定标量是否进入生产交付契约 | 待决策 |
 | O5 | ECS 算力卡点：Mac 全量回测 + 带审计导入 + ECS 抽查；增量缓存只追加；状态行身份去架构绑定；探针模式 | 见全局目标文档 D.3 |
 | O6 | 迁移是角色变更与全栈迁移（AGENTS.md、部署矩阵、调度、DB、Actuals、Dashboard、认证、单一 Writer、回滚演练） | 阶段 E，暂缓 |
+| O8 | 评估 Mac `forecast_env_blackbox_v1` 关闭 FMA 重编译 pandas 滚动聚合模块：可消除 `rolling().std/var` 类末位差，可能同时覆盖 6.3 其余登记；全局环境改动，须先评估受影响方案与 liwei 增量缓存，单独验证后执行 | 待评估 |
+| O9 | lw 5 套 T+5 新方案：候选 release `11aaf21a` 两端已预安装、完整回测两端逐行一致；周一观察通过后切换 current、两端激活、补齐 2026-06-01 起灰度预测并逐行比对 | 待执行 |
 | O7 | 严格回测单次请求上限 100 行（交付脚本 `read_requests` 契约），平台 `run_blackbox_backtest` 不分片；门禁回测窗口须 ≤100 个候选日，或先给平台回测器加分片（平台代码变更，需单独发布） | 已知约束 |
 
 ---
