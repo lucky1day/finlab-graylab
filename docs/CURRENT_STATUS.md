@@ -24,7 +24,7 @@
 | 调度控制面 | 5 个 systemd timer（DataBridge、日/周/月预测、Actuals） | launchd：同样 5 项 + 公网 Backend 与反向隧道 |
 | 部署方案数（按期限计） | 106（两端共有） | 115（106 + 9 个 W4 原生方案，只在 Mac 运行） |
 
-- `11aaf21a`：新增 lw 5 套日频 T+5 方案（2026-10-24 两端激活并补齐 2026-06-01 起预测，两端逐行一致；三年期方案为已确认的 pandas FMA 末位差，见[一致性总纲](architecture/MAC_ECS_PARITY_DRAFT.md) 6.3）。
+- `11aaf21a`：新增 lw 5 套日频 T+5 方案（2026-10-24 两端激活并补齐 2026-06-01 起预测，两端逐行一致；三年期方案为已确认的 pandas FMA 末位差，见[一致性总纲](architecture/MAC_ECS_PARITY_DRAFT.md) 6.3）。交付 Metadata 的 owner 为“国债收益率预测项目”/“guozhai”，经用户确认于 2026-10-25 在两端 Registry 更正为 `lw`（业务展示更正，交付两文件与 exact 不变）。
 - `4d362931`：预测失败自动重试（日/周/月预测，最多 2 次、间隔 10 分钟、只重跑失败方案；已写入的业务键跳过，批次级失败不重试；2 次后仍失败只写日志、不通知）。`3f77bc2b`：14 个方案交付的确定性修复。
 - Dashboard Backend 仍运行 `1073d68a`，与现行代码在 backend/frontend 及其依赖上无差异；按已授权计划，周一观察通过后重启到 current release。
 - 产品接口为 `factor-lab-dashboard-v7`（见 [Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)）；输入为五文件 DataBridge，存量 `factor_version` 为 `V1.0`（见 [DataBridge](blackbox_v2/data_bridge_v1/README.md)）。两端各标记 9 个生产方案 target（外置 `production_schemes.json`，规则见 [Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#生产方案标记)）。
