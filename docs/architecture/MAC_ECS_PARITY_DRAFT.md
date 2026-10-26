@@ -322,10 +322,10 @@ O022 已证明：历史投票差 1 票（10 → 11）越过严格 `>10`，最终
 |---|---|---|---|---|---|
 | `five_y_factor_rule_online_v1` | 7 不同 | 闭环 | A2 | `55f0e753b18e` → `bc0ef4e31a64` | 外部全量 307/307（max Δ 1.42e-14）+ 严格回测 94/94 |
 | `ten_y_factor_level_ensemble_v1` | 16 不同 | 闭环 | A2 | `997af2e57ad9` → `46710a4c3e66` | 五个窗口 311/311，覆盖全部 16 个旧差异日 |
-| `five_y_t5_lgbm_3y_anti_lag252_b8_v1` | 8 不同 | 闭环 | A1 | `5cbbf665e081` → `82bc53e04bcc` | 90/90 |
+| `five_y_t5_lgbm_3y_anti_lag252_b8_v1` | 8 不同 | 闭环 | A1 + A2 | `5cbbf665e081` → `82bc53e04bcc` | 90/90 |
 | `three_y_t5_xgb_tp_5y1y_b12_v2` | 6 不同 | 闭环 | A1 + A2 | `4ea0782cc210` → `2b1281d75fdf` | 90/90 |
 | `five_y_t5_xgb_spr_3y1y_b8_v1` | 5 不同 | 闭环 | A1 + A2 | `c7b5b0cc0fa0` → `8623acf8e21b` | 90/90，概率逐位一致 |
-| `seven_y_t5_lgbm_bf_z_anti40_b8_v1` | 5 不同 | 闭环 | A1 | `4f182bf23dfc` → `7517e184861a` | 90/90 |
+| `seven_y_t5_lgbm_bf_z_anti40_b8_v1` | 5 不同 | 闭环 | A1 + A2 | `4f182bf23dfc` → `7517e184861a` | 90/90 |
 | `liwei_0616_7y03_cons_all_k3_div_k8` | 4 无法复现 | 闭环 | A1（6 处 argsort） | `109e657e9a70` → `97ed67c0fc12` | 90/90 |
 | `one_y_t5_xgb_10y_streak_anti7_b8_v1` | 3 不同 | 闭环 | A1 + A2 | `9ceb12fdbd55` → `19026a39e0c7` | 90/90 |
 | `three_y_t5_xgb_fxlead_b8_v2` | 3 不同 | 闭环 | A1 + A2 | `dc4e944f5aec` → `a4be221cba00` | 90/90 |
@@ -339,10 +339,10 @@ O022 已证明：历史投票差 1 票（10 → 11）越过严格 `>10`，最终
 | `ten_y_t5_maj4_k3_ic_static_v1` | 1 相同 | 闭环 | 元数据（补 `description`） | `6bdabf86b4a6` → `0b96997c496a` | 90/90 |
 | `three_y_adyn_lb1_k3_v1` | 2 相同 | 验证 | 无代码变更 | `98233f0cb9ef` | 94/94 |
 | `three_y_adyn_lb2_k1_v1` | 2 相同 | 验证 | 无代码变更 | `47c7c1776db0` | 94/94 |
-| `three_y_t5_lgbm_7yanti_b12_v2` | 2 相同 | 闭环 | A1 | `99523554aa06` → `bb4354f94c1f` | 90/90 |
+| `three_y_t5_lgbm_7yanti_b12_v2` | 2 相同 | 闭环 | A1 + A2 | `99523554aa06` → `bb4354f94c1f` | 90/90 |
 | `weekly_5y_curve_logit_v1` | 1 相同 | 验证 | 无代码变更 | `a10fef7a332a` | 92/92 |
 
-注：exact 为 2026-10-21 激活时的值。`liwei_0616_7y03` 更旧的 `6b8d4047dc8a` 缺可信运行版本，其 4 条“无法复现”记录属历史，不重跑。`five_y_t5_lgbm_3y_anti_lag252_b8_v1` 曾试以重建 bottleneck（B2）对齐，`move_std` 逐位一致后 8 天方向仍不变，最终由稳定排序（A1）闭环——说明 1 ULP 滚动差异不是方向主因。
+注：exact 为 2026-10-21 激活时的值。“控制”列按各修复提交的实际代码差异核对（2026-10-26）：T5 模板方案均同时加了稳定排序与 XGB `feature_weights`。`liwei_0616_7y03` 更旧的 `6b8d4047dc8a` 缺可信运行版本，其 4 条“无法复现”记录属历史，不重跑。`five_y_t5_lgbm_3y_anti_lag252_b8_v1` 曾试以重建 bottleneck（B2）对齐，`move_std` 逐位一致后 8 天方向仍不变，最终由稳定排序（A1）闭环——说明 1 ULP 滚动差异不是方向主因。
 
 **B 方案收尾（2026-10-22）**：9 张源表基线 Mac → ECS 覆盖（方法见 11.1），9/9 全表哈希一致；ECS 18 个 `bond-ingestion-*.timer` 启用，ECS 入库只由 systemd timer 驱动（旧 root crontab 28 行已注释，备份在 ECS `/root/parity_20261022/`）。当日 06:30 DataBridge 五文件与 `business_digest` 两端相同，07:03 预测 43 个共有业务键逐字段 0 差异，`predict_date < 2026-10-22` 的 25,661 行两端一致。当时记录的“实时行情抓取时刻敏感”风险已于 10-23 核实不进 DataBridge、不影响预测（全局目标文档决策 6）。
 
