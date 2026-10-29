@@ -108,7 +108,10 @@ class LaunchdRunnerCoverageTests(unittest.TestCase):
                 return_value=(config,),
             ),
             patch.object(runner, "get_calendar", return_value=calendar),
-            patch.object(runner, "execute_scheme") as execute_one,
+            patch.object(runner, "execute_scheme", side_effect=lambda cfg, *args, **kw: SimpleNamespace(
+                scheme_id=cfg.scheme_id, status="failed" if kw.get("scheduled_preflight_failure") else "success",
+                records_written=0, error_msg=kw.get("scheduled_preflight_failure"), run_id=101,
+            )) as execute_one,
         ):
             return (
                 launchd_runner.run(cadence, predict_date=predict_date),

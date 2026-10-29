@@ -88,13 +88,28 @@ W4 固定版本的运行检查与故障恢复见[W4 运行手册](../sop/NATIVE_
 
 恢复源码、schema 和外置状态前执行[部署恢复](../../deploy/README.md#回滚与认证部署)的兼容性与备份检查。
 
-## 方案输入质量门
+## 方案输入质量审计与每日结果
 
-平台在executor已取得可信runtime view与精确Request后、任何算法或增量状态启动前，执行`deploy/prediction_input_quality_v1.json`声明的质量策略。策略绑定base、exact和交付脚本SHA；不修改交付两文件或exact计算，也不查询当前DB替代封存输入。所有目标先验收，再启动第一个子进程。缺必需列、日期、窗口或有效差分不足返回`INPUT_INCOMPLETE`；身份变化返回`INPUT_QUALITY_POLICY_MISMATCH`，既有run失败记录保留原因、预测零写入。
+数据质量检查采用**只记录、继续计算**。输入存在缺值、错期、窗口不足或审计声明未核验时，平台记录详细问题后执行原模型，不在平台填0、沿用旧方向或替换输入。模型能计算时正常发布其原始方向；模型自身无法计算时，保留当日failed run及运行日志，并记录`prediction_result.outcome=not_computable`、`predicted_direction=null`。不向预测事实表插入虚构的0或旧预测。真实休市/非到期任务仍按原日历no-op；不能确定日历或无法取得可信输入时，按已知active候选逐模型记录无法计算，不能假装成功或猜测业务日期。
 
-首批三个单因子收益率规则及持仓卸载规则采用block；包含本次商品变化反向S5470409。窗口覆盖实际信号锚点、60期差分的最少40个有效差分，以及持仓规则的126期成交量最少60个有效值。合法0和非必需列的空值不会误阻。已有多因子模型按既有缺值处理合同采用audit；未声明依赖的方案明确返回not_declared，不能宣称已验证所有模型依赖。扩展策略应依据经核验的因子与窗口合同，不自动猜测交付内部变量。
+`deploy/prediction_input_quality_v1.json`是静态审计目录，覆盖部署矩阵中的全部执行文件，绑定base、exact和脚本SHA；profiles维护检查窗口与输入角色，运行方式统一为audit。绑定漂移明确记`policy_mismatch`，未声明记`not_declared`，检查器异常记`check_error`，均不能声称输入完整。它不取代原有执行身份、Registry、ready快照或生命周期校验，也不成为第二份启用名单。
 
-策略仅为输入质量要求，不是第二份启用或部署权限名单。cadence、Writer、active/exact与日历准入仍由原有唯一控制面决定。
+Blackbox在已取得可信runtime view和Request后审计封存文件，再启动原交付。日、周、月使用各自的精确cutoff；只在cutoff及以前统计窗口，未来行不能补足历史。所需列、窗口、缺失日期、有效值/有效差分数量及最近可用观测逐项留证，合法0不会被当成空值。多目标按执行文件分别记录；原算法和exact不变。
+
+Mac3 W4九套固定版本通过独立审计子进程从原legacy DB经`shared.input_artifacts`导出核查，不改接DataBridge、不改adapter/core或源包。审计最多30秒，之后原模型拥有原有完整计算预算；审计失败或超时只记录，不吞取消/进程组清理异常。Native源包未完整公开逐因子依赖时，审计明确标为“导出输入集上界”，不能把所有导出列说成模型必需因子。审计期间源水位变化单列；水位不是全值digest，也不证明二进制算法最终使用的每个值。
+
+### 日志与结果关联
+
+完整结构化日志追加到`BFL_RUNTIME_ROOT/logs/prediction-input-quality/YYYY-MM-DD.jsonl`（Asia/Shanghai记录日），以run_id、audit_id、scheme、执行文件、预测日和snapshot关联。文件追加使用线程锁和flock并fsync；不可写时转存完整stderr，Native父进程仅转发本审计协议行，不转发未识别的算法stderr或连接信息。日志sink异常不把预测成功反转为失败。
+
+- `prediction_input_quality`：状态、输入覆盖范围、规则/版本身份、各窗口边界、缺列/缺值日期及最近可用值；明确平台未填数。
+- `prediction_result`：发布状态、原始模型方向和审计引用；无法计算时方向null及失败原因，同时保留既有run/run_log。
+- `prediction_input_unavailable`：原ready gate错误分类；无法取得可信快照时不制造方向，逐模型留下当日无法计算记录。
+- `native_input_audit_source_observation`：审计期间的源水位观察，不能标成算法消费的精确快照。
+
+`last_available_observation`只表示窗口之前最近可用观测，**不能写成模型实际使用值**。交付未暴露内部填补行为时，记录`actual_value_treatment=not_exposed_by_delivery`及“原模型原生处理”，不猜测它填了0、使用旧值或跳过因子。未来如需精确到内部选值，应由交付提供可核验的审计接口；平台不篡改冻结算法追踪结果。
+
+所有人工核查保留其人工来源，不冒称自然运行。已发布事实仍遵守insert-only；新增日志不会触发旧预测重算。
 
 ## 明确授权的当日预测重算
 
