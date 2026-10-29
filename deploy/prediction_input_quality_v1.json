@@ -1,0 +1,403 @@
+{
+  "schema_version": "prediction-input-quality-v1",
+  "schemes": {
+    "yield_5y_t5_46279b3a80e7a3bf268d": {
+      "scheme_version": "70eaa4708d59",
+      "script_sha256": "1882861026d8895af1b17baa0a583b858bb305dae55697b6c5226134bf446010",
+      "requirements": [
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "S5470409"
+          ],
+          "offset": 1,
+          "rows": 11,
+          "min_valid": 11,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "S5470409"
+          ],
+          "offset": 1,
+          "rows": 61,
+          "min_valid": 41,
+          "min_valid_differences": 40,
+          "mode": "block"
+        }
+      ]
+    },
+    "yield_5y_t5_8658bc6095914d48d2eb": {
+      "scheme_version": "32ad50b3c7ab",
+      "script_sha256": "fc422fc92aab3019986a852a90675d2904973601489e907c756779617e604694",
+      "requirements": [
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "RSI71Y0D"
+          ],
+          "offset": 1,
+          "rows": 21,
+          "min_valid": 21,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "RSI71Y0D"
+          ],
+          "offset": 1,
+          "rows": 61,
+          "min_valid": 41,
+          "min_valid_differences": 40,
+          "mode": "block"
+        }
+      ]
+    },
+    "yield_10y_t5_0fc0f097ef78ce45e69f": {
+      "scheme_version": "e36b7f0838bc",
+      "script_sha256": "aceb900cdb3cc035bff20ed4a3fe95463bb189aeceb32872c13f87504e7f00a1",
+      "requirements": [
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "JE1Y000D"
+          ],
+          "offset": 1,
+          "rows": 21,
+          "min_valid": 21,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "JE1Y000D"
+          ],
+          "offset": 1,
+          "rows": 61,
+          "min_valid": 41,
+          "min_valid_differences": 40,
+          "mode": "block"
+        }
+      ]
+    },
+    "daily_t5_3y_position_unwind_lag1_v3": {
+      "scheme_version": "7e7cb0637f5b",
+      "script_sha256": "b5a205420cfbaa81e650607c64c24eb5669f3866209738616e4e590c0852d399",
+      "requirements": [
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TB5YWI00",
+            "TB5YWI0H",
+            "TB5YWI0L",
+            "TB5YWI0C",
+            "TB5YWI0V",
+            "TCFE000K",
+            "TCFE000H",
+            "TCFE000L",
+            "TCFE000C",
+            "TCFE000V",
+            "TCFE000I"
+          ],
+          "offset": 1,
+          "rows": 11,
+          "min_valid": 11,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TB5YWI0C",
+            "TCFE000C"
+          ],
+          "offset": 2,
+          "rows": 61,
+          "min_valid": 41,
+          "min_valid_differences": 40,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TCFE000V"
+          ],
+          "offset": 2,
+          "rows": 126,
+          "min_valid": 60,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TB5YWI0C",
+            "TCFE000C"
+          ],
+          "offset": 3,
+          "rows": 61,
+          "min_valid": 41,
+          "min_valid_differences": 40,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TCFE000V"
+          ],
+          "offset": 3,
+          "rows": 126,
+          "min_valid": 60,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TB5YWI0C",
+            "TCFE000C"
+          ],
+          "offset": 4,
+          "rows": 61,
+          "min_valid": 41,
+          "min_valid_differences": 40,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TCFE000V"
+          ],
+          "offset": 4,
+          "rows": 126,
+          "min_valid": 60,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TB5YWI0C",
+            "TCFE000C"
+          ],
+          "offset": 5,
+          "rows": 61,
+          "min_valid": 41,
+          "min_valid_differences": 40,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TCFE000V"
+          ],
+          "offset": 5,
+          "rows": 126,
+          "min_valid": 60,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TB5YWI0C",
+            "TCFE000C"
+          ],
+          "offset": 6,
+          "rows": 61,
+          "min_valid": 41,
+          "min_valid_differences": 40,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TCFE000V"
+          ],
+          "offset": 6,
+          "rows": 126,
+          "min_valid": 60,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TB5YWI0C",
+            "TCFE000C"
+          ],
+          "offset": 7,
+          "rows": 61,
+          "min_valid": 41,
+          "min_valid_differences": 40,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TCFE000V"
+          ],
+          "offset": 7,
+          "rows": 126,
+          "min_valid": 60,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TB5YWI0C",
+            "TCFE000C"
+          ],
+          "offset": 8,
+          "rows": 61,
+          "min_valid": 41,
+          "min_valid_differences": 40,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TCFE000V"
+          ],
+          "offset": 8,
+          "rows": 126,
+          "min_valid": 60,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TB5YWI0C",
+            "TCFE000C"
+          ],
+          "offset": 9,
+          "rows": 61,
+          "min_valid": 41,
+          "min_valid_differences": 40,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TCFE000V"
+          ],
+          "offset": 9,
+          "rows": 126,
+          "min_valid": 60,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TB5YWI0C",
+            "TCFE000C"
+          ],
+          "offset": 10,
+          "rows": 61,
+          "min_valid": 41,
+          "min_valid_differences": 40,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TCFE000V"
+          ],
+          "offset": 10,
+          "rows": 126,
+          "min_valid": 60,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TB5YWI0C",
+            "TCFE000C"
+          ],
+          "offset": 11,
+          "rows": 61,
+          "min_valid": 41,
+          "min_valid_differences": 40,
+          "mode": "block"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TCFE000V"
+          ],
+          "offset": 11,
+          "rows": 126,
+          "min_valid": 60,
+          "mode": "block"
+        }
+      ]
+    },
+    "yield_10y_t5_014b402ba7cc7c9935d2": {
+      "scheme_version": "c1c5161eea66",
+      "script_sha256": "24971198e756dd63d4817a32d81a5e44c056740402121095a976b6db767c9391",
+      "requirements": [
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "90000020",
+            "B2559386",
+            "DR007IB0",
+            "F3117461",
+            "G0003956",
+            "G0006352",
+            "G0006353",
+            "G0006954",
+            "G1235664",
+            "H8357500",
+            "J1547601",
+            "J9760873",
+            "K7780920",
+            "KDJ010YD",
+            "L2573422",
+            "M0143821",
+            "M0161518",
+            "M1329545",
+            "NISHF01C",
+            "P2562056",
+            "S0029752",
+            "S0029756",
+            "S0031550",
+            "S0031553",
+            "S0031645",
+            "S0048261",
+            "S0142909",
+            "S0203230",
+            "S5005830",
+            "S5006004",
+            "S5111905",
+            "S5439944",
+            "S5470300",
+            "S5470311",
+            "S5470325",
+            "S5470332",
+            "S5470333",
+            "S5470342",
+            "S5470395",
+            "S5470405",
+            "S5470409",
+            "S5470411",
+            "S5474437",
+            "S5474439",
+            "S5474440",
+            "S5814929",
+            "S5814964",
+            "S6404620",
+            "SBW21001",
+            "SFCZC01C",
+            "SMACDS01",
+            "SMACDS05",
+            "SMACDS06",
+            "SSSHF00C",
+            "SWR00006",
+            "SWR00007"
+          ],
+          "offset": 0,
+          "rows": 1,
+          "min_valid": 1,
+          "mode": "audit"
+        }
+      ]
+    }
+  }
+}

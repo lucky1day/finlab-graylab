@@ -499,6 +499,17 @@ def run_blackbox_scheme_subprocess(
     deadline = time.monotonic() + (timeout_sec or profile.predict_timeout_sec)
     with open_blackbox_runtime_view(input_bundle) as runtime_view:
         trusted_bundle = runtime_view.bundle
+        from shared.prediction_input_quality import check_prediction_input_quality
+
+        # 所有目标先验收，再启动第一个子进程，避免多目标批次部分执行。
+        for delivery in deliveries:
+            quality_request = request if len(deliveries) == 1 else build_live_request(
+                delivery.metadata, predict_date=predict_date, calendar=calendar, cutoffs=cutoffs,
+            )
+            quality = check_prediction_input_quality(
+                cfg, delivery.script_path, runtime_view.data_dir, quality_request,
+            )
+            logger.info("prediction_input_quality %s", json.dumps(quality, ensure_ascii=True))
         predict_kwargs = {
             "metadata": metadata,
             "script_path": deliveries[0].script_path,
@@ -694,6 +705,13 @@ def run_blackbox_gray_replay_batch(
             "data_snapshot_id": trusted_bundle.combined_snapshot_id,
             "profile": effective_profile,
         }
+        from shared.prediction_input_quality import check_prediction_input_quality
+
+        for target_request in batch_requests:
+            quality = check_prediction_input_quality(
+                cfg, cfg.delivery_script, runtime_view.data_dir, target_request,
+            )
+            logger.info("prediction_input_quality %s", json.dumps(quality, ensure_ascii=True))
         from scheduler.blackbox_v2_runner import state_binding_for_scheme
         seed_state = None
         state = state_binding_for_scheme(cfg, generation_id=snapshot.generation_id)

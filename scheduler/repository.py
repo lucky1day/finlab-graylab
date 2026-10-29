@@ -3547,3 +3547,99 @@ def _write_run_log_conn(
             "error_msg": error_msg,
         },
     )
+
+
+def prediction_day_backup_digest(rows: Sequence[Mapping[str, object]]) -> str:
+    """计算原记录备份摘要，供明确授权的当日重算操作进行并发围栏。"""
+    ordered = sorted((dict(row) for row in rows), key=lambda row: int(row['id']))
+    return hashlib.sha256(json.dumps(
+        ordered, sort_keys=True, ensure_ascii=False, default=str, separators=(',', ':'),
+    ).encode('utf-8')).hexdigest()
+
+
+def replace_authorized_prediction_day(
+    engine: Engine, *, predict_date: str,
+    expected_backup_digest: str, expected_count: int,
+    authorization: str, items: Sequence[Mapping[str, object]],
+) -> dict[str, int]:
+    """将已暂存并核验的当日预测整批替换；事实和新run在同一事务提交。"""
+    from zoneinfo import ZoneInfo
+
+    if (authorization != 'replace-todays-published-predictions'
+            or predict_date != datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
+            or type(expected_count) is not int or expected_count <= 0
+            or len(expected_backup_digest) != 64 or not items):
+        raise ValueError('explicit today-only prediction replacement authorization required')
+    prepared = []
+    for item in items:
+        cfg = cast(SchemeConfig, item['cfg'])
+        current = load_scheme_config(cfg.path / 'config.yaml')
+        if current.scheme_version != cfg.scheme_version:
+            raise RuntimeError('canonical exact changed before replacement')
+        records = list(cast(Iterable[PredictionRecord], item['records']))
+        if any(type(r.predicted_direction) is not int or r.predicted_direction not in {-1, 0, 1}
+               or r.run_id is not None for r in records):
+            raise ValueError('replacement requires valid directions and fresh run identity')
+        tenors, _ = _expected_registry_identity(cfg)
+        _validate_completion_records(
+            records, records_returned=len(records),
+            expected_targets={(tenor, int(cfg.horizon)) for tenor in tenors},
+            scheme_id=cfg.scheme_id, scheme_version=cfg.scheme_version,
+            predict_date=predict_date, prediction_phase='gray_live',
+            runtime_label='authorized replacement',
+        )
+        prepared.append((cfg, records, float(item['duration_sec'])))
+    def key(row):
+        return tuple(str(row[name]) for name in (
+            'scheme_id', 'scheme_version', 'target_tenor', 'horizon',
+            'predict_date', 'feature_date', 'target_date',
+        ))
+    new_keys = [key(asdict(record)) for _, records, _ in prepared for record in records]
+    if len(new_keys) != expected_count or len(set(new_keys)) != expected_count:
+        raise ValueError('replacement must contain the complete unique backed-up scope')
+    run_ids = {}
+    with engine.begin() as conn:
+        old_rows = [dict(row) for row in conn.execute(text(
+            'SELECT * FROM t_scheme_predictions WHERE predict_date=:day ORDER BY id FOR UPDATE'
+        ), {'day': predict_date}).mappings()]
+        if (len(old_rows) != expected_count
+                or any(row.get('backtest_run_id') is not None for row in old_rows)
+                or prediction_day_backup_digest(old_rows) != expected_backup_digest
+                or {key(row) for row in old_rows} != set(new_keys)):
+            raise RuntimeError('prediction scope changed since backup; zero facts replaced')
+        for cfg, records, duration in prepared:
+            _validate_gray_gap_active_version(conn, cfg)
+            _validate_gray_gap_active_registry(conn, cfg)
+            if cfg.runtime_type == 'blackbox_v2':
+                approval = _read_blackbox_execution_approval_conn(conn, cfg, for_update=True)
+                if not approval.executable:
+                    raise RuntimeError('Blackbox replacement not production-approved')
+            if not math.isfinite(duration) or duration < 0:
+                raise ValueError('invalid replacement duration')
+        deleted = conn.execute(text(
+            'DELETE FROM t_scheme_predictions WHERE predict_date=:day'
+        ), {'day': predict_date})
+        if deleted.rowcount != expected_count:
+            raise RuntimeError('replacement delete count mismatch')
+        for cfg, records, duration in prepared:
+            run_id = _create_scheme_run_conn(
+                conn, scheme_id=cfg.scheme_id, scheme_version=cfg.scheme_version,
+                runtime_type=cfg.runtime_type, prediction_phase='gray_live',
+                predict_date=predict_date, records_expected=len(records),
+            )
+            snapshot_ids = {str((r.extra or {}).get('data_snapshot_id') or '') for r in records}
+            if cfg.runtime_type == 'blackbox_v2':
+                if len(snapshot_ids) != 1 or not next(iter(snapshot_ids)):
+                    raise RuntimeError('replacement snapshot identity required')
+                conn.execute(text('UPDATE t_scheme_runs SET data_snapshot_id=:snapshot WHERE run_id=:run_id'),
+                             {'snapshot': next(iter(snapshot_ids)), 'run_id': run_id})
+            rows = _prepare_run_prediction_rows(run_id, records, scheme_version=cfg.scheme_version)
+            count = _insert_run_predictions_conn(conn, rows)
+            if count != len(records):
+                raise RuntimeError('replacement insert count mismatch')
+            _finish_scheme_run_conn(conn, run_id=run_id, status='success',
+                                    records_returned=count, records_written=count)
+            _write_run_log_conn(conn, cfg.scheme_id, predict_date, 'success', duration,
+                                'user-authorized same-day recompute after source recovery', run_id)
+            run_ids[cfg.scheme_id] = run_id
+    return run_ids

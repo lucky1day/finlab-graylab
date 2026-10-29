@@ -228,3 +228,27 @@ def test_backtest_validates_all_targets_before_one_atomic_persist(tmp_path, fail
         assert output.summary["request_count"] == output.summary["row_count"] == 2
         assert len(output.monthly_metrics) == 2
         assert {row["extra"]["scheme_version"] for row in output.rows} == {cfg.scheme_version}
+
+
+def test_input_quality_blocks_all_targets_before_first_algorithm(tmp_path):
+    """后一目标缺输入时，前一目标也不能先执行或推进状态。"""
+    from scheduler.executor import run_blackbox_scheme_subprocess
+    from shared.calendar_service import CalendarService
+    from shared.prediction_input_quality import InputDataIncomplete
+
+    cfg=load_scheme_config(_scheme(tmp_path)[0])
+    calendar=CalendarService(None)
+    calendar.__dict__['_trading_days']=['2026-09-10','2026-09-11']
+    with (
+        patch('scheduler.executor.get_ready_blackbox_snapshot',return_value=_snapshot()),
+        patch('scheduler.executor.get_calendar',return_value=calendar),
+        patch('scheduler.executor.resolve_blackbox_input_cutoffs',return_value=CutoffKeys('2026-09-10','202636','202608')),
+        patch('scheduler.executor.open_blackbox_runtime_view',side_effect=_runtime_view),
+        patch('shared.prediction_input_quality.check_prediction_input_quality',side_effect=[{'status':'complete'},InputDataIncomplete('INPUT_INCOMPLETE: second target')]),
+        patch('scheduler.blackbox_v2_runner.run_blackbox_predict') as predict,
+        patch('scheduler.blackbox_v2_runner.state_binding_for_scheme') as state,
+    ):
+        with pytest.raises(InputDataIncomplete,match='second target'):
+            run_blackbox_scheme_subprocess(cfg,'2026-09-11',engine=object(),algo_env='forecast_env',timeout_sec=120)
+    predict.assert_not_called()
+    state.assert_not_called()
