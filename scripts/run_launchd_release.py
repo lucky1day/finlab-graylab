@@ -297,7 +297,7 @@ def _read_service_environment_lines(config: Path) -> list[str]:
         try:
             file_fd = os.open(
                 "service.env",
-                os.O_RDONLY | os.O_NOFOLLOW,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                 dir_fd=directory_fd,
             )
         except OSError as exc:

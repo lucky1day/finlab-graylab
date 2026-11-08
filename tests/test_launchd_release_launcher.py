@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
@@ -133,6 +135,37 @@ def test_service_environment_rejects_insecure_or_linked_config(
     service_environment.symlink_to(outside)
     with pytest.raises(LaunchdReleaseError, match="private regular file"):
         load_service_environment(runtime)
+
+
+def test_service_environment_rejects_fifo_without_waiting_for_writer(
+    tmp_path: Path,
+) -> None:
+    """公开配置入口在非法管道节点上及时拒绝，不能阻塞宿主任务。"""
+    release = _release(tmp_path)
+    runtime = Path(load_release_environment(release)["BFL_RUNTIME_ROOT"])
+    path = runtime / "config" / "service.env"
+    path.unlink()
+    os.mkfifo(path, mode=0o600)
+    probe = """
+import sys
+from scripts.run_launchd_release import LaunchdReleaseError, load_service_environment
+try:
+    load_service_environment(sys.argv[1])
+except LaunchdReleaseError as error:
+    assert 'private regular file' in str(error)
+    print('rejected')
+else:
+    raise AssertionError('non-regular configuration was accepted')
+"""
+    completed = subprocess.run(
+        [sys.executable, "-B", "-c", probe, str(runtime)],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=2,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "rejected"
 
 
 @pytest.mark.parametrize(

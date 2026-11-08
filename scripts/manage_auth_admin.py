@@ -75,7 +75,11 @@ def _read_secret(path: Path) -> str:
         raise RuntimeError("auth password secret owner mismatch")
     if stat.S_IMODE(before.st_mode) not in {0o400, 0o600}:
         raise RuntimeError("auth password secret mode must be 0400 or 0600")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     nofollow = getattr(os, "O_NOFOLLOW", None)
     if nofollow is None:
         raise RuntimeError("O_NOFOLLOW is required for auth secret reads")
