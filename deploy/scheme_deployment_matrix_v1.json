@@ -5,6 +5,7 @@
     "aliyun-gray"
   ],
   "schemes": {
+    "seven_y_t5_macro_logit_b213_v1": ["mac3-production", "aliyun-gray"],
     "v8_daily_10y_t5": ["mac3-production", "aliyun-gray"],
     "v8_daily_3y_t5": ["mac3-production", "aliyun-gray"],
     "v8_daily_5y_t5": ["mac3-production", "aliyun-gray"],

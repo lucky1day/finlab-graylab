@@ -34,6 +34,9 @@ FROZEN_CONFIG = {'family': 'fixed', 'delay': 2, 'threshold': 0.5, 'orientation':
 
 FROZEN_FEATURES = ['D:S5470409|ema20']
 
+# 用户授权：仅对指定原始因子，在截止前的有序输入上前向填充。
+FORWARD_FILL_FACTORS = ('S5470409',)
+
 EMBEDDED_DICTIONARY = [{'indicators_code': 'TB5YWI0C', 'frequency': 'daily', 'source_frequency': '日', 'lag_length': 0}, {'indicators_code': 'S5470409', 'frequency': 'daily', 'source_frequency': '日', 'lag_length': 0}]
 
 FACTOR_VERSIONS = {'TB5YWI0C': 'V1.0', 'S5470409': 'V1.0'}
@@ -94,7 +97,13 @@ def features(raw: pd.DataFrame, data_dir: Path) -> pd.DataFrame:
             weight = (mid-lo)/(hi-lo)
             value = raw[TENOR_CODES[mid]] - ((1-weight)*raw[TENOR_CODES[lo]] + weight*raw[TENOR_CODES[hi]])
         else:
-            value = raw[source] if source.startswith('TB') or RAW_LAGS[source] >= 1 else raw[source].shift(1)
+            signal = raw[source]
+            if source in FORWARD_FILL_FACTORS:
+                filled = signal.ffill()
+                LOG.info('input_forward_fill factor=%s frequency=daily filled=%d leading_unfilled=%d',
+                         source, int((signal.isna() & filled.notna()).sum()), int(filled.isna().sum()))
+                signal = filled
+            value = signal if source.startswith('TB') or RAW_LAGS[source] >= 1 else signal.shift(1)
         native = pd.DataFrame({source: value}, index=raw.index)
         result = transform(native, [recipe])[recipe].to_numpy(np.float32)
     elif kind == 'W':

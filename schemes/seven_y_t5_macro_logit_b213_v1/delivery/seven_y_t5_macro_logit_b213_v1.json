@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "seven_y_t5_macro_logit_b213_v1",
+  "name": "MACRO_LOGIT_B213",
+  "owner": "lc",
+  "description": "仅输入daily_output.csv中213个已准入宏观与市场指标的当日值：中位数补齐、按训练期标准化后作逻辑回归三分类，比较P(涨)与P(跌)输出上行或下行，二分类不出0；全部历史≤截日的已成熟T+5标签用于训练，模型随每个请求日期滚动重估，历史不足500条已成熟标签时fail-closed。",
+  "algorithm_version": "1.0.1",
+  "target_tenor": "7Y",
+  "task_type": "T+5",
+  "horizon": 5,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}

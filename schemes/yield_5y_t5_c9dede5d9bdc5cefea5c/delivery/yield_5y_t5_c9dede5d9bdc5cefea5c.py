@@ -34,6 +34,9 @@ FROZEN_CONFIG = {'family': 'ridge', 'window': 126, 'minimum': 48, 'threshold': 0
 
 FROZEN_FEATURES = ['W:ZO000016|ema13']
 
+# 用户授权：仅对指定原始因子，在截止前的有序输入上前向填充。
+FORWARD_FILL_FACTORS = ('ZO000016',)
+
 EMBEDDED_DICTIONARY = [{'indicators_code': 'TB5YWI0C', 'frequency': 'daily', 'source_frequency': '日', 'lag_length': 0}, {'indicators_code': 'ZO000016', 'frequency': 'weekly', 'source_frequency': '周', 'lag_length': 0}]
 
 FACTOR_VERSIONS = {'TB5YWI0C': 'V1.0', 'ZO000016': 'V1.0'}
@@ -64,8 +67,8 @@ def transform(frame: pd.DataFrame, recipes: list[str], native: bool=False) -> di
 
 
 def periodic_release(native: np.ndarray,release: np.ndarray,n: int) -> np.ndarray:
-    # Hold a completed period's value until the next release, including its NaN.
-    # Column ffill would silently bridge an invalid period and is forbidden.
+    # Hold the completed period's normalized input until the next release.
+    # Authorized forward-fill is applied on the cutoff-limited native period axis.
     lookup=np.searchsorted(release,np.arange(n),side="right")-1
     out=np.full((n,native.shape[1]),np.nan,dtype=np.float32)
     valid=lookup>=0;out[valid]=native[lookup[valid]]
@@ -138,6 +141,11 @@ def features(raw: pd.DataFrame, data_dir: Path) -> pd.DataFrame:
                     raise ValueError('Infinite weekly input')
                 values[key] = value
         native = pd.DataFrame({source: [values.get(key, np.nan) for key in completed]}, index=completed)
+        if source in FORWARD_FILL_FACTORS:
+            original = native[source]
+            native[source] = original.ffill()
+            LOG.info('input_forward_fill factor=%s frequency=weekly filled=%d leading_unfilled=%d',
+                     source, int((original.isna() & native[source].notna()).sum()), int(native[source].isna().sum()))
         transformed = transform(native, [recipe], native=True)[recipe].to_numpy(np.float32)
         result = periodic_release(transformed, release, len(raw))
     else:

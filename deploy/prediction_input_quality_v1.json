@@ -14933,6 +14933,234 @@
           "mode": "audit"
         }
       ]
+    },
+    "input-cda6343cfec696cf": {
+      "requirements": [
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "90000001",
+            "90000007",
+            "90000008",
+            "90000009",
+            "90000010",
+            "90000011",
+            "90000013",
+            "90000016",
+            "90000017",
+            "90000019",
+            "A4087688",
+            "AUSHF00O",
+            "BIASB5YD",
+            "CCIT10YD",
+            "CCIT1Y0D",
+            "CCIT5Y0D",
+            "CM210001",
+            "CP126003",
+            "CV630002",
+            "CV630004",
+            "CZ630001",
+            "DEA10Y0D",
+            "DIF10Y0D",
+            "DRS00002",
+            "IFCFE00C",
+            "IFCFE00O",
+            "M0000185",
+            "M0000199",
+            "M0000271",
+            "M0017152",
+            "M0020188",
+            "M0020195",
+            "M0020202",
+            "M0020216",
+            "M0020223",
+            "M0041653",
+            "M0041739",
+            "M0062541",
+            "M0067855",
+            "M0075990",
+            "M0100612",
+            "M0101227",
+            "M0101385",
+            "M0109973",
+            "M0117126",
+            "M0143821",
+            "M0161518",
+            "M0331251",
+            "M0342074",
+            "M1001654",
+            "M1001794",
+            "M1001816",
+            "M5216731",
+            "N0105001",
+            "N0107001",
+            "N0108001",
+            "N0109001",
+            "N0110001",
+            "N0111001",
+            "N0112001",
+            "N0113001",
+            "N0205001",
+            "N0207001",
+            "N0208001",
+            "N0209001",
+            "N0210001",
+            "N0211001",
+            "N0212001",
+            "N0213001",
+            "N0605001",
+            "N0607001",
+            "N0608001",
+            "N0609001",
+            "N0610001",
+            "N0705001",
+            "N0707001",
+            "N0708001",
+            "N0709001",
+            "N0805001",
+            "N0807001",
+            "N0808001",
+            "N0809001",
+            "N0810001",
+            "N0811001",
+            "N0812001",
+            "N0813001",
+            "N1105001",
+            "N1108001",
+            "N1110001",
+            "N1205001",
+            "N1208001",
+            "N1210001",
+            "N1305001",
+            "N1307001",
+            "N1308001",
+            "N1309001",
+            "N1310001",
+            "N1405001",
+            "N1407001",
+            "N1408001",
+            "N1409001",
+            "N1505001",
+            "N1508001",
+            "N1510001",
+            "N2691645",
+            "S0031525",
+            "S0105896",
+            "S0105897",
+            "S0106912",
+            "S0142908",
+            "S0142909",
+            "S1179664",
+            "S1180497",
+            "S2707331",
+            "S2707332",
+            "S2707333",
+            "S2707334",
+            "S2707337",
+            "S2707338",
+            "S2707339",
+            "S2707340",
+            "S2707341",
+            "S2707342",
+            "S2707379",
+            "S2707380",
+            "S2707381",
+            "S2707382",
+            "S2707383",
+            "S2707384",
+            "S2707385",
+            "S2707386",
+            "S5005793",
+            "S5005830",
+            "S5005835",
+            "S5005865",
+            "S5005883",
+            "S5005958",
+            "S5005984",
+            "S5006004",
+            "S5006011",
+            "S5470298",
+            "S5470300",
+            "S5470301",
+            "S5470302",
+            "S5470303",
+            "S5470304",
+            "S5470305",
+            "S5470306",
+            "S5470308",
+            "S5470311",
+            "S5470312",
+            "S5470313",
+            "S5470314",
+            "S5470318",
+            "S5470319",
+            "S5470325",
+            "S5470326",
+            "S5470327",
+            "S5470329",
+            "S5470330",
+            "S5470331",
+            "S5470332",
+            "S5470333",
+            "S5470335",
+            "S5470336",
+            "S5470337",
+            "S5470339",
+            "S5470342",
+            "S5470347",
+            "S5470349",
+            "S5470354",
+            "S5470358",
+            "S5470364",
+            "S5470395",
+            "S5470397",
+            "S5470402",
+            "S5470405",
+            "S5470409",
+            "S5470411",
+            "S5470414",
+            "S5470420",
+            "S5470426",
+            "S5470428",
+            "S5470432",
+            "S5470433",
+            "S5470435",
+            "S5470444",
+            "S5470446",
+            "S5470451",
+            "S5470454",
+            "S5470455",
+            "S5470457",
+            "S5707798",
+            "S5714972",
+            "SEMAC003",
+            "SEMAC004",
+            "SH000300",
+            "SMACD001",
+            "SMACD004",
+            "SMACDS04",
+            "SMACDS07",
+            "SRSI1401",
+            "SWD00001",
+            "SWD00004",
+            "SWD00005",
+            "SWD00010",
+            "SWR00004",
+            "TB0YWI0C",
+            "TB0YWIPC",
+            "TB7YWI0C",
+            "TCFE00BV",
+            "TMAR2101",
+            "TP630001",
+            "X2879873"
+          ],
+          "offset": 0,
+          "rows": 1,
+          "min_valid": 1,
+          "role": "referenced_or_candidate",
+          "mode": "audit"
+        }
+      ]
     }
   },
   "schemes": {
@@ -16547,12 +16775,12 @@
       }
     },
     "yield_5y_t5_2877a9b9c2e514b3572d": {
-      "scheme_version": "e53ec8b107df",
+      "scheme_version": "2fcf86ac0359",
       "runtime_type": "blackbox_v2",
       "coverage": "declared_frozen_raw_columns_point_only_not_model_readiness",
       "scripts": {
         "yield_5y_t5_2877a9b9c2e514b3572d.py": {
-          "sha256": "97b6fea6cde00fc6f5e84a5dec39db041ada613dd390c376498f9521aff95ce0",
+          "sha256": "41bb3065de4be88126808e3ea8fd517434664f2b68b4e4defb677543e87a3d5d",
           "profiles": [
             "input-82fe81e422f6fec3"
           ]
@@ -16586,12 +16814,12 @@
       }
     },
     "yield_5y_t5_321b2d18e83b6e7b6e1e": {
-      "scheme_version": "4ed60d81e137",
+      "scheme_version": "84acf8308271",
       "runtime_type": "blackbox_v2",
       "coverage": "declared_frozen_raw_columns_point_only_not_model_readiness",
       "scripts": {
         "yield_5y_t5_321b2d18e83b6e7b6e1e.py": {
-          "sha256": "18231e7f8cef45ded2c0b1a660808c8ab38c62e8969c86df5c9511acc07fab03",
+          "sha256": "83cc08cbc7e1ecc4d590afd73b6a04459d575d8ed2783a2cae03e163c9e5e0e0",
           "profiles": [
             "input-82fe81e422f6fec3"
           ]
@@ -16612,12 +16840,12 @@
       }
     },
     "yield_5y_t5_4f1eedfce9bedbd5c5bf": {
-      "scheme_version": "d6c9b1ad3d92",
+      "scheme_version": "f605236fa5b6",
       "runtime_type": "blackbox_v2",
       "coverage": "declared_frozen_raw_columns_point_only_not_model_readiness",
       "scripts": {
         "yield_5y_t5_4f1eedfce9bedbd5c5bf.py": {
-          "sha256": "aca4da18d179cab7ccfbca99c4037820d2e8d9100f6d2f58fef85670b410c5cd",
+          "sha256": "6bca343757cf3479953dbd3409b1aad2795708f2c98218552a1149361e74bb58",
           "profiles": [
             "input-82fe81e422f6fec3"
           ]
@@ -16625,12 +16853,12 @@
       }
     },
     "yield_5y_t5_64e2ecc00fbab0d7473d": {
-      "scheme_version": "f8051cb95798",
+      "scheme_version": "24ab6db3c79e",
       "runtime_type": "blackbox_v2",
       "coverage": "declared_frozen_raw_columns_point_only_not_model_readiness",
       "scripts": {
         "yield_5y_t5_64e2ecc00fbab0d7473d.py": {
-          "sha256": "517c6c6ae3a1d2615454ae24572ae6d496a3d3141b071d249cd9a620b671dc84",
+          "sha256": "fd231f44af02b6b4105d6fef111979aa1f0720a713db531c8a53d1de3fa49d48",
           "profiles": [
             "input-82fe81e422f6fec3"
           ]
@@ -16703,12 +16931,12 @@
       }
     },
     "yield_5y_t5_a53ad98e467b2871544d": {
-      "scheme_version": "15e45d126a2b",
+      "scheme_version": "1e01344a0cd7",
       "runtime_type": "blackbox_v2",
       "coverage": "declared_frozen_raw_columns_point_only_not_model_readiness",
       "scripts": {
         "yield_5y_t5_a53ad98e467b2871544d.py": {
-          "sha256": "b4f030450eff14a5ad019f39ee64a76a8b0ffed3e30bf803095a9dc2d2a9db77",
+          "sha256": "cafc92e7abc0f5c8d40948b0fbd28116f20ef7b7736964ce541e1e425fffaa70",
           "profiles": [
             "input-6c94bffe1e4198be"
           ]
@@ -16755,12 +16983,12 @@
       }
     },
     "yield_5y_t5_c9dede5d9bdc5cefea5c": {
-      "scheme_version": "7b1bf9742989",
+      "scheme_version": "14abc5ee9856",
       "runtime_type": "blackbox_v2",
       "coverage": "declared_frozen_raw_columns_point_only_not_model_readiness",
       "scripts": {
         "yield_5y_t5_c9dede5d9bdc5cefea5c.py": {
-          "sha256": "2cfeca9808e78c44c008c7a115254be3e2e06c3cbc5d9ef5264c8bf3f7ce1507",
+          "sha256": "c0d287986c00af8449b44efccc0c42055d231e23aa53177d653ad118c31eb8f2",
           "profiles": [
             "input-71bf90635914f284"
           ]
@@ -16781,12 +17009,12 @@
       }
     },
     "yield_5y_t5_d83000f644bacc78ded4": {
-      "scheme_version": "af8fcfe4218a",
+      "scheme_version": "245ecfbd5f7a",
       "runtime_type": "blackbox_v2",
       "coverage": "declared_frozen_raw_columns_point_only_not_model_readiness",
       "scripts": {
         "yield_5y_t5_d83000f644bacc78ded4.py": {
-          "sha256": "b0000d91b0a12d90a401bf1ebe7d993a07d37ad80098f1e22508d283f354cf55",
+          "sha256": "8052eb6f355b79b994a2bf649657038b7d483d038c57d33176ae42b95b3e16b5",
           "profiles": [
             "input-82fe81e422f6fec3"
           ]
@@ -16807,12 +17035,12 @@
       }
     },
     "yield_5y_t5_e13badc740d5622741ad": {
-      "scheme_version": "f68c24dc1313",
+      "scheme_version": "1ce3adacc682",
       "runtime_type": "blackbox_v2",
       "coverage": "declared_frozen_raw_columns_point_only_not_model_readiness",
       "scripts": {
         "yield_5y_t5_e13badc740d5622741ad.py": {
-          "sha256": "f83388e0d568ab163ccebf93e35ff201340484556816986718b08413b49cd759",
+          "sha256": "00243b402277fb9e322f3f1b8d2c64002389a08c9a5045e30abd2a5cb8da293f",
           "profiles": [
             "input-82fe81e422f6fec3"
           ]
@@ -16833,12 +17061,12 @@
       }
     },
     "yield_5y_t5_f977ab2a92ce072366c8": {
-      "scheme_version": "9fad97c21a64",
+      "scheme_version": "ce7a37d34c25",
       "runtime_type": "blackbox_v2",
       "coverage": "declared_frozen_raw_columns_point_only_not_model_readiness",
       "scripts": {
         "yield_5y_t5_f977ab2a92ce072366c8.py": {
-          "sha256": "468bd5de17da14af1becd914ba3805496b3c410e3d4ccf2ade581b40fcad368e",
+          "sha256": "617e5d4b982090a8ddf2a7a8016895f4c7094803aeb5a3461148645b81e86a88",
           "profiles": [
             "input-82fe81e422f6fec3"
           ]
@@ -16919,6 +17147,19 @@
           "sha256": "ff9b1f23bfae0bc6aa17fb2af29f569fd5148666eaa0cf4738084815b7a23475",
           "profiles": [
             "input-a6c9fdf03f89cc66"
+          ]
+        }
+      }
+    },
+    "seven_y_t5_macro_logit_b213_v1": {
+      "scheme_version": "9854cfd0a93b",
+      "runtime_type": "blackbox_v2",
+      "coverage": "declared_frozen_raw_columns_point_only_not_model_readiness",
+      "scripts": {
+        "seven_y_t5_macro_logit_b213_v1.py": {
+          "sha256": "1761580552a45f76f2a322227c5bff93eef7eb7834ef52d0c235c0902c1e8ac3",
+          "profiles": [
+            "input-cda6343cfec696cf"
           ]
         }
       }
