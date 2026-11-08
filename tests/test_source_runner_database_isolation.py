@@ -3,10 +3,15 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import tempfile
 import unittest
+from importlib import import_module
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 
 SOURCE_DATABASE_CONFIG = {
@@ -72,81 +77,6 @@ class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
         ):
             load_source_runtime_database_config()
 
-    def test_daily_runtime_validates_original_then_rewrites_only_private_copy(
-        self,
-    ) -> None:
-        from shared.daily_0629_source_evidence import (
-            source_package_tree_sha256,
-        )
-        from shared.daily_0629_source_runner import _source_runtime
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            source_root = Path(tmpdir) / "source"
-            source_root.mkdir()
-            original_config = source_root / "db_config.py"
-            _write_packaged_config(original_config)
-            (source_root / "runner.bin").write_bytes(b"frozen-source")
-            pycache = source_root / "__pycache__"
-            pycache.mkdir()
-            (pycache / "db_config.cpython-312.pyc").write_bytes(
-                b"unchecked-stale-bytecode"
-            )
-            binding_path = Path(tmpdir) / "source-db.json"
-            _write_private_binding(binding_path)
-            original_bytes = original_config.read_bytes()
-            original_hash = source_package_tree_sha256(source_root)
-
-            with (
-                patch.dict(
-                    os.environ,
-                    {
-                        "BFL_SOURCE_DB_CONFIG_ROOT":
-                            str(binding_path.parent.resolve()),
-                        "BFL_SOURCE_DB_CONFIG_PATH":
-                            str(binding_path.resolve()),
-                    },
-                    clear=True,
-                ),
-                _source_runtime(source_root, original_hash) as runtime_root,
-            ):
-                runtime_config = runtime_root / "db_config.py"
-                namespace: dict[str, object] = {}
-                exec(
-                    runtime_config.read_text(encoding="utf-8"),
-                    namespace,
-                )
-                injected = namespace["DB_CONFIG"]
-                self.assertIsInstance(injected, dict)
-                self.assertEqual(
-                    injected["password"],
-                    SOURCE_DATABASE_CONFIG["password"],
-                )
-                self.assertEqual(
-                    stat.S_IMODE(runtime_config.stat().st_mode),
-                    0o600,
-                )
-                self.assertNotIn(
-                    "packaged-password-must-not-run",
-                    runtime_config.read_text(encoding="utf-8"),
-                )
-                self.assertEqual(
-                    list(runtime_root.rglob("*.pyc")),
-                    [],
-                )
-                self.assertFalse(
-                    any(
-                        child.name == "__pycache__"
-                        for child in runtime_root.rglob("*")
-                    )
-                )
-
-            self.assertEqual(original_config.read_bytes(), original_bytes)
-            self.assertEqual(
-                source_package_tree_sha256(source_root),
-                original_hash,
-            )
-
-
     def test_source_subprocess_environment_drops_all_database_credentials(
         self,
     ) -> None:
@@ -204,3 +134,180 @@ def test_prepare_private_source_runtime_tree_adds_owner_write(
 
     assert params.stat().st_mode & stat.S_IWUSR
     params.write_text('{"ok": true}')
+
+
+_SOURCE_FAMILIES = {
+    "daily": ("daily_0629", "bfl_daily0629_source_", "daily 0629", "DAILY_0629_SOURCE_PYTHON", "D1Y"),
+    "monthly": ("monthly", "bfl_monthly_source_", "monthly", "MONTHLY_SOURCE_PYTHON", "M1Y"),
+    "weekly": ("weekly_average_lgbm", "bfl_weekly_avg_source_", "weekly average", "WEEKLY_AVERAGE_SOURCE_PYTHON", "W1Y"),
+}
+
+
+@pytest.fixture(params=tuple(_SOURCE_FAMILIES))
+def source_runner(request, tmp_path, monkeypatch):
+    """由真实三类运行入口验证冻结包与私有副本，只替换算法进程和系统 quarantine。"""
+    from shared import source_runtime_database
+
+    kind = request.param
+    module_name, prefix, label, interpreter_env, frequency = _SOURCE_FAMILIES[kind]
+    runner = import_module(f"shared.{module_name}_source_runner")
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    original_config = source_root / "db_config.py"
+    _write_packaged_config(original_config)
+    original_config.chmod(0o400)
+    original_bytes = original_config.read_bytes()
+    (source_root / "runner.bin").write_bytes(b"frozen-source")
+    pycache = source_root / "__pycache__"
+    pycache.mkdir()
+    (pycache / "db_config.cpython-312.pyc").write_bytes(b"unchecked-bytecode")
+    for directory in ("daily_project/src", "monthly_project/src", "weekly_project/src"):
+        (source_root / directory).mkdir(parents=True)
+    binding = tmp_path / "source-db.json"
+    _write_private_binding(binding)
+    monkeypatch.setenv("BFL_SOURCE_DB_CONFIG_ROOT", str(tmp_path))
+    monkeypatch.setenv("BFL_SOURCE_DB_CONFIG_PATH", str(binding))
+    monkeypatch.setenv("DAILY_0629_SOURCE_CACHE_DISABLE", "1")
+    monkeypatch.setenv("MONTHLY_SOURCE_CACHE_DISABLE", "1")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    original_hash = runner.source_package_tree_sha256(source_root)
+    evidence = SimpleNamespace(
+        source_package_path=source_root, source_package_hash=original_hash,
+        runner_module="src.pipeline", live_runner_module="src.live",
+    )
+    roots = []
+    commands = []
+
+    def quarantine(root):
+        roots.append(root)
+        # 在系统 quarantine 操作边界上，副本已隔离且可写，尚未注入私有配置。
+        assert root != source_root
+        assert root.parent.name.startswith(prefix)
+        assert stat.S_IMODE(root.stat().st_mode) == 0o700
+        assert (root / "db_config.py").read_bytes() == original_bytes
+        assert (root / "db_config.py").stat().st_mode & stat.S_IWUSR
+        assert not list(root.rglob("*.pyc"))
+        assert not list(root.rglob("__pycache__"))
+
+    def algorithm(command, *, cwd, env, timeout):
+        root = Path(cwd) if kind == "daily" else Path(cwd).parent
+        namespace = {}
+        runtime_config = root / "db_config.py"
+        exec(runtime_config.read_text(encoding="utf-8"), namespace)
+        assert namespace["DB_CONFIG"] == {
+            key: value for key, value in SOURCE_DATABASE_CONFIG.items() if key != "version"
+        }
+        assert stat.S_IMODE(runtime_config.stat().st_mode) == 0o600
+        assert original_config.read_bytes() == original_bytes
+        commands.append((list(command), dict(env)))
+        filename = {
+            "daily": "daily_selected_prediction_rows.csv",
+            "monthly": "monthly_selected_predictions.csv",
+            "weekly": "weekly_prediction_detail.csv",
+        }[kind]
+        output = root / f"{kind}_project/output/2026-11-08/prediction" / filename
+        output.parent.mkdir(parents=True)
+        output.write_text(f"frequency,pred_label\n{frequency},1\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(source_runtime_database, "clear_macos_quarantine", quarantine)
+    monkeypatch.setattr(runner, "run_source_subprocess", algorithm)
+    run = getattr(runner, f"run_source_{kind}_live")
+    return SimpleNamespace(
+        kind=kind, runner=runner, source_root=source_root, original_config=original_config,
+        original_bytes=original_bytes, original_hash=original_hash, scratch=scratch,
+        prefix=prefix, label=label, interpreter_env=interpreter_env, frequency=frequency,
+        evidence=evidence, roots=roots, commands=commands,
+        quarantine=quarantine,
+        run=lambda: run(evidence, predict_date="2026-11-08"),
+    )
+
+
+def _assert_private_runtime_removed(source):
+    assert list(source.scratch.iterdir()) == []
+    assert all(not root.exists() for root in source.roots)
+
+
+def test_source_runner_preserves_original_and_injects_only_private_copy(source_runner):
+    rows = source_runner.run()
+    assert rows[0]["frequency"] == source_runner.frequency
+    assert source_runner.original_config.read_bytes() == source_runner.original_bytes
+    assert stat.S_IMODE(source_runner.original_config.stat().st_mode) == 0o400
+    assert source_runner.runner.source_package_tree_sha256(source_runner.source_root) == source_runner.original_hash
+    _assert_private_runtime_removed(source_runner)
+
+
+@pytest.mark.parametrize("phase", ["setup", "execution"])
+def test_source_runner_cleans_private_copy_on_base_exception(source_runner, monkeypatch, phase):
+    from shared import source_runtime_database
+
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt("interrupted")
+
+    if phase == "setup":
+        monkeypatch.setattr(source_runtime_database, "clear_macos_quarantine", interrupt)
+    else:
+        monkeypatch.setattr(source_runner.runner, "run_source_subprocess", interrupt)
+    with pytest.raises(KeyboardInterrupt, match="interrupted"):
+        source_runner.run()
+    assert source_runner.original_config.read_bytes() == source_runner.original_bytes
+    _assert_private_runtime_removed(source_runner)
+
+
+def test_source_runner_refuses_changed_private_copy_before_injection(source_runner, monkeypatch):
+    from shared import source_runtime_database
+
+    def mutate_copy(root):
+        source_runner.quarantine(root)
+        (root / "runner.bin").write_bytes(b"corrupted-copy")
+
+    monkeypatch.setattr(source_runtime_database, "clear_macos_quarantine", mutate_copy)
+    with pytest.raises(RuntimeError) as error:
+        source_runner.run()
+    assert str(error.value) == (
+        f"{source_runner.label} copied source package hash differs from frozen source identity"
+    )
+    assert source_runner.original_config.read_bytes() == source_runner.original_bytes
+    _assert_private_runtime_removed(source_runner)
+
+
+def test_source_runner_cleans_copy_when_private_database_seam_is_missing(source_runner, monkeypatch):
+    from shared import source_runtime_database
+
+    source_runner.original_config.unlink()
+    source_runner.evidence.source_package_hash = source_runner.runner.source_package_tree_sha256(source_runner.source_root)
+    monkeypatch.setattr(source_runtime_database, "clear_macos_quarantine", lambda root: None)
+    with pytest.raises(RuntimeError, match="source package has no runtime db_config.py seam"):
+        source_runner.run()
+    _assert_private_runtime_removed(source_runner)
+
+
+@pytest.mark.parametrize("selection", ["explicit", "local", "conda"])
+def test_source_runner_preserves_interpreter_selection(source_runner, monkeypatch, tmp_path, selection):
+    home = tmp_path / "service-home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    for _, _, _, environment_name, _ in _SOURCE_FAMILIES.values():
+        monkeypatch.delenv(environment_name, raising=False)
+    if selection == "explicit":
+        for _, _, _, environment_name, _ in _SOURCE_FAMILIES.values():
+            monkeypatch.setenv(environment_name, "/other-family/python")
+        monkeypatch.setenv(source_runner.interpreter_env, "/selected/python")
+        expected = ["/selected/python"]
+    elif selection == "local":
+        local = home / "miniconda3/envs/forecast_env/bin/python"
+        local.parent.mkdir(parents=True)
+        local.touch()
+        expected = [str(local)]
+    else:
+        expected = ["conda", "run", "--no-capture-output", "-n", "forecast_env", "python"]
+    source_runner.run()
+    command, environment = source_runner.commands[0]
+    if source_runner.kind == "daily":
+        assert command == ["bash", "daily_project/src/run_daily.sh", "run", "2026-11-08"]
+        assert environment["PYTHON_BIN"] == expected[0]
+    else:
+        assert command[:len(expected)] == expected
+        assert command[len(expected)] == ("-c" if source_runner.kind == "monthly" else "-m")
+    _assert_private_runtime_removed(source_runner)
