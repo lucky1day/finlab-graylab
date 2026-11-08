@@ -29,6 +29,7 @@ BLACKBOX_REGISTRY_STATUSES = {"active", "paused", "archived"}
 
 _BLACKBOX_LIFECYCLE_LOCK_TIMEOUT_SEC = 5.0
 
+
 class BlackboxActivationLockTimeout(RuntimeError):
     """Blackbox 激活未能取得方案级互斥锁。"""
 
