@@ -69,6 +69,15 @@ DataBridge 的 producer 标记及其权限边界见[调度治理](../docs/archit
    返回后以 current 读回判定切换结果。需要服务刷新时单独执行已授权动作，核对进程实际 cwd、
    release 身份和健康，再完成数据、Dashboard/页面及调度验收；不能只看链接或刷新成功。
 
+完整 pytest 应在隔离工作树或单独解包的测试副本中运行，测试依赖也独立放置；不得把可能生成
+`outputs/` 的完整测试直接放在现用或待晋级的 immutable release 中。即使使用 `-B`，也只禁止
+Python 字节码，并不禁止测试写入其他文件。被测试输出污染的未激活目录须整体隔离，再从原已核准
+archive 重新预安装，不通过删除额外文件或补写安装记录放行。
+
+Backend 交接时，短暂 HTTP 200 可能仍来自旧进程；先有界等待监听 PID 的实际 cwd 指向目标精确
+release，再结合健康与资源读回判定。切换瞬间暂时没有 listener 应在此等待内处理，不以单次 PID
+读取失败代替整个新进程的就绪结果。
+
 候选提交须先通过仓库四个独立必选任务：排除 MySQL marker 的 Python 公共合同、直接 Node 状态机、
 MySQL 8.4 disposable 集成合同，以及 release 内容/clean commit 确定性构建。任务缺依赖、被 skip 或没有
 实际执行均不构成绿色候选。公网正向验收使用 [`check_public_access.sh`](../scripts/check_public_access.sh)，

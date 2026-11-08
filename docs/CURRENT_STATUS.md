@@ -18,15 +18,15 @@
 | 项目 | ECS 灰度 | Mac |
 |---|---|---|
 | `BFL_DEPLOYMENT_TARGET` | `aliyun-gray` | `mac3-production` |
-| current / previous release（2026-11-08只读） | `2af297e9` / `e93c7c73` | 同左 |
-| Dashboard Backend 进程 cwd（2026-11-08只读） | `2af297e9` | 同左 |
+| current / previous release（2026-11-08发布后） | `47f77be0` / `2af297e9` | 同左 |
+| Dashboard Backend 进程 cwd（2026-11-08发布后） | `47f77be0` | 同左 |
 | schema | 025 | 025 |
 | 调度控制面 | 5 个 systemd timer（DataBridge、日/周/月预测、Actuals） | launchd：同样 5 项 + 公网 Backend 与反向隧道 |
 | 部署方案数（按期限计） | 106（两端共有） | 115（106 + 9 个 W4 原生方案，只在 Mac 运行） |
 
 - `11aaf21a`：新增 lw 5 套日频 T+5 方案（2026-10-24 两端激活并补齐 2026-06-01 起预测，两端逐行一致；三年期方案为已确认的 pandas FMA 末位差，见[一致性总纲](architecture/MAC_ECS_PARITY_DRAFT.md) 6.3）。交付 Metadata 的 owner 为“国债收益率预测项目”/“guozhai”，经用户确认于 2026-10-25 在两端 Registry 更正为 `lw`（业务展示更正，交付两文件与 exact 不变）。
 - `4d362931`：预测失败自动重试（日/周/月预测，最多 2 次、间隔 10 分钟、只重跑失败方案；已写入的业务键跳过，批次级失败不重试；2 次后仍失败只写日志、不通知）。`3f77bc2b`：14 个方案交付的确定性修复。
-- 两端 Dashboard Backend 于 2026-10-26 07:27 重启到 current `11aaf21a`（健康检查与公网均 200）。
+- 2026-11-08框架清理已按ECS先验证、Mac同包晋级：两端源码archive SHA256一致，修复输出校验、身份请求隔离、审计锁、执行预算、资源释放、表单和时区，并收敛内部职责；方案exact、算法原件及migration SQL保持。两端各984项公共测试、Mac 45项Node及24项MySQL8.4隔离集成测试通过。发布后ECS 31表151,368行、Mac 57表1,569,085行全字段多重集及声明保护文件不变，输入/ready、Dashboard读模型和Mac七项漂移审计通过。代码与控制面验收不替代未来自然运行样本。
 - 产品接口为 `factor-lab-dashboard-v7`（见 [Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)）；输入为五文件 DataBridge，存量 `factor_version` 为 `V1.0`（见 [DataBridge](blackbox_v2/data_bridge_v1/README.md)）。两端各标记 9 个生产方案 target（外置 `production_schemes.json`，规则见 [Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#生产方案标记)）。
 - **访问入口**：只用公网域名（中继 Nginx → `18101` 反向隧道 → Mac Backend `8101`，自 2026-10-18 起）或 ECS Dashboard。Mac 本地 `8100` Backend 与 `18100` 回退隧道已于 2026-10-24 退役，原 LaunchAgent 备份在 `~/.config/bond-factor-lab/launchagents-retired-20261024`。切换回执见[公网切换](/Users/macstudio0/bond-factor-lab-production/runtime/releases/public-cutover-20261018-1631/README.md)。
 - **数据入库**在独立仓库 `bond-prediction`（两端 `a07dfc4`；DR007 分时与中债曲线只在中国工作日运行，非工作日记为 `not_workday`）：统一入口 `bin/run_job.py`，Mac crontab 由 `config/jobs.toml` 渲染，ECS 由 22 个 systemd timer 驱动。数据问题在入库层修复，不在模型或缓存侧补偿。
