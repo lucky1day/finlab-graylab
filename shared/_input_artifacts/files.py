@@ -200,7 +200,7 @@ def _read_stable_regular_file(
     path: Path,
     label: str,
 ) -> tuple[_StableSnapshotFile, bytes]:
-    flags = os.O_RDONLY
+    flags = os.O_RDONLY | os.O_NONBLOCK
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:

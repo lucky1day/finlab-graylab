@@ -1535,7 +1535,7 @@ def _read_publication_manifest(
     try:
         descriptor = os.open(
             marker_path,
-            os.O_RDONLY | os.O_NOFOLLOW,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
         )
     except OSError as exc:
         raise DataBridgeRefreshError(
@@ -2141,7 +2141,7 @@ def _fsync_directory(directory: Path) -> None:
 def _fsync_regular_file(path: Path) -> None:
     descriptor = os.open(
         path,
-        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
     )
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
@@ -2186,6 +2186,7 @@ def _open_strict_read_lock(path: Path):
         descriptor = os.open(
             path,
             os.O_RDONLY
+            | os.O_NONBLOCK
             | getattr(os, "O_NOFOLLOW", 0)
             | getattr(os, "O_CLOEXEC", 0),
         )
@@ -2219,6 +2220,7 @@ def _read_strict_current_state(path: Path) -> dict[str, object]:
         descriptor = os.open(
             path,
             os.O_RDONLY
+            | os.O_NONBLOCK
             | getattr(os, "O_NOFOLLOW", 0)
             | getattr(os, "O_CLOEXEC", 0),
         )
@@ -2310,7 +2312,7 @@ def _copy_regular_file_no_follow(
         )
     source_descriptor = os.open(
         source_path,
-        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
     )
     try:
         opened = os.fstat(source_descriptor)

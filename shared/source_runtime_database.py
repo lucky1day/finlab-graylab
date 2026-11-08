@@ -284,7 +284,7 @@ def load_source_runtime_database_config(
             "source runner database config must use owner-only mode 0600"
         )
 
-    flags = os.O_RDONLY
+    flags = os.O_RDONLY | os.O_NONBLOCK
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:

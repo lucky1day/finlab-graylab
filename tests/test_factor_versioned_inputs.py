@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -382,3 +386,50 @@ def test_native_frozen_weekly_input_preserves_metadata_lag() -> None:
     pd.testing.assert_frame_equal(frozen, original)
     assert pd.isna(frozen.loc[0, "W1"])
     assert frozen.loc[1, "W1"] == 1.0
+
+
+def _fifo_snapshot_read(root: str, location: str) -> None:
+    """隔离进程中的真实管道；只调用公开输入接口。"""
+    from shared.input_artifacts import (
+        compose_blackbox_input_bundle, get_ready_blackbox_snapshot,
+        open_blackbox_runtime_view, prepare_blackbox_generation_snapshot,
+    )
+
+    cache = Path(root) / 'cache'
+    dataset, state = _dataset_and_state(_frames(include_v2=True))
+    prepare_blackbox_generation_snapshot(state=state, dataset=dataset, cache_root=cache)
+    snapshot = get_ready_blackbox_snapshot(snapshot_date='2026-08-28', cache_root=cache, factor_input_mode='algorithm_managed')
+    target = {
+        'ready': cache/'ready-generation.json',
+        'receipt': next((cache/'receipts').glob('*.json')),
+        'manifest': snapshot.manifest_path,
+        'runtime-copy': snapshot.data_dir/'daily_output.csv',
+        'lock': cache/'generation-cache.lock',
+    }[location]
+    target.parent.chmod(0o700)
+    target.unlink()
+    os.mkfifo(target, 0o600)
+    inode = target.lstat().st_ino
+    open_descriptors = len(list(Path('/dev/fd').iterdir()))
+    try:
+        if location == 'runtime-copy':
+            with open_blackbox_runtime_view(compose_blackbox_input_bundle(snapshot, factor_input_mode='algorithm_managed'), runtime_root=Path(root)/'views'):
+                raise AssertionError('FIFO input must not reach the algorithm')
+        else:
+            get_ready_blackbox_snapshot(snapshot_date='2026-08-28', cache_root=cache, factor_input_mode='algorithm_managed')
+    except ValueError as error:
+        if location == 'lock':
+            assert str(error) == 'Blackbox generation snapshot lock must be a private regular file'
+        assert stat.S_ISFIFO(target.lstat().st_mode) and target.lstat().st_ino == inode
+        assert len(list(Path('/dev/fd').iterdir())) == open_descriptors
+    else:
+        raise AssertionError('FIFO must be rejected')
+
+
+@pytest.mark.parametrize('location', ['ready', 'receipt', 'manifest', 'runtime-copy', 'lock'])
+def test_snapshot_read_rejects_fifo_without_waiting_or_removing_it(tmp_path, location):
+    command = "import runpy,sys; runpy.run_path(sys.argv[1])['_fifo_snapshot_read'](sys.argv[2],sys.argv[3])"
+    subprocess.run(
+        [sys.executable, '-B', '-c', command, __file__, str(tmp_path), location],
+        check=True, capture_output=True, text=True, timeout=5,
+    )

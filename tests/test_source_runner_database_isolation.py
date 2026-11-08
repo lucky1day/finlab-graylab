@@ -4,6 +4,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from importlib import import_module
@@ -51,6 +52,35 @@ def _write_private_binding(path: Path) -> None:
         encoding="utf-8",
     )
     path.chmod(0o600)
+
+
+def test_source_binding_rejects_fifo_replacement_before_open(tmp_path):
+    private = tmp_path.resolve() / 'private'
+    private.mkdir(mode=0o700)
+    path = private / 'source.json'
+    _write_private_binding(path)
+    command = '''
+import os,stat,sys
+from pathlib import Path
+from shared.source_runtime_database import load_source_runtime_database_config
+path = Path(sys.argv[1])
+original_open = os.open
+def replace_before_open(candidate, flags, *args, **kwargs):
+    if Path(candidate) == path:
+        path.unlink()
+        os.mkfifo(path, 0o600)
+    return original_open(candidate, flags, *args, **kwargs)
+os.open = replace_before_open
+try:
+    load_source_runtime_database_config({'BFL_SOURCE_DB_CONFIG_PATH': str(path), 'BFL_SOURCE_DB_CONFIG_ROOT': str(path.parent)})
+except RuntimeError as error:
+    assert str(error) == 'source runner database config changed while opening'
+    assert stat.S_ISFIFO(path.lstat().st_mode)
+else:
+    raise AssertionError('replaced FIFO must be rejected')
+'''
+    subprocess.run([sys.executable, '-B', '-c', command, str(path)], check=True, capture_output=True, text=True, timeout=3)
+    assert stat.S_ISFIFO(path.lstat().st_mode)
 
 
 class SourceRunnerDatabaseIsolationTests(unittest.TestCase):

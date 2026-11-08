@@ -3,7 +3,9 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import re
+import stat
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -471,18 +473,28 @@ def _read_dataset_directory(
     for filename in filenames:
         path = root / filename
         try:
-            with path.open("r", encoding="utf-8-sig", newline="") as handle:
-                header = next(csv.reader(handle))
-        except StopIteration as exc:
-            raise DataBridgeValidationError(f"{filename} header must not be empty") from exc
+            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
         except (OSError, UnicodeError, csv.Error) as exc:
             raise DataBridgeValidationError(f"{filename} header is invalid") from exc
-        validate_unique_csv_header(filename, header)
-        frames[filename] = pd.read_csv(
-            path,
-            dtype="string",
-            keep_default_na=False,
-        )
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise DataBridgeValidationError(f"{filename} must be a regular file")
+            with os.fdopen(descriptor, "r", encoding="utf-8-sig", newline="", closefd=False) as handle:
+                try:
+                    header = next(csv.reader(handle))
+                except StopIteration as exc:
+                    raise DataBridgeValidationError(f"{filename} header must not be empty") from exc
+                except (OSError, UnicodeError, csv.Error) as exc:
+                    raise DataBridgeValidationError(f"{filename} header is invalid") from exc
+                validate_unique_csv_header(filename, header)
+                handle.seek(0)
+                frames[filename] = pd.read_csv(
+                    handle,
+                    dtype="string",
+                    keep_default_na=False,
+                )
+        finally:
+            os.close(descriptor)
     return frames
 
 

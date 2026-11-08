@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import contextmanager
@@ -13,6 +16,7 @@ from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import pytest
 
 SCHEMA_PATH = (
     Path(__file__).resolve().parents[1]
@@ -20,6 +24,96 @@ SCHEMA_PATH = (
     / "blackbox_v2"
     / "data_bridge_v1_schema.json"
 )
+
+
+def _fifo_current_read(root: str, location: str) -> None:
+    """只在隔离目录中驱动 current 读取与发布的真实 FIFO 错误。"""
+    from shared.data_bridge.refresh import (
+        CURRENT_PUBLICATION_MANIFEST, DataBridgeCurrentInvalidError,
+        DataBridgeRefreshConfig, DataBridgeRefreshError, DataBridgeStore,
+        check_current_dataset,
+    )
+    from shared.data_bridge.validation import DataBridgeValidationError, read_dataset_directory
+
+    root = Path(root)
+    data, runtime = root/'data', root/'runtime'
+    data.mkdir(mode=0o700)
+    runtime.mkdir(mode=0o700)
+    store = DataBridgeStore(data_root=data, runtime_root=runtime)
+    pipe = None
+    if location in ('lock', 'state', 'manifest'):
+        store.current_dir.mkdir()
+        store.lock_path.touch(mode=0o600)
+        store.state_path.write_text('{}')
+        pipe = {'lock': store.lock_path, 'state': store.state_path,
+                'manifest': store.current_dir/CURRENT_PUBLICATION_MANIFEST}[location]
+        pipe.unlink(missing_ok=True)
+        os.mkfifo(pipe, 0o600)
+        error_type = DataBridgeCurrentInvalidError
+        operation = lambda: check_current_dataset(DataBridgeRefreshConfig(data_root=data, runtime_root=runtime, schema_path=SCHEMA_PATH), strict_read_only=True)
+    else:
+        candidate = root/'candidate'
+        candidate.mkdir()
+        current = _current_dataset()
+        for name, frame in current.dataset.frames.items():
+            frame.to_csv(candidate/name, index=False)
+        if location == 'csv':
+            pipe = candidate/'daily_output.csv'
+            pipe.unlink()
+            os.mkfifo(pipe, 0o600)
+            try:
+                read_dataset_directory(candidate)
+            except DataBridgeValidationError:
+                assert stat.S_ISFIFO(pipe.lstat().st_mode)
+                return
+            raise AssertionError('FIFO CSV must be rejected')
+        original_open = os.open
+
+        def replace_before_open(path, flags, *args, **kwargs):
+            nonlocal pipe
+            path = Path(path)
+            selected = (path == candidate/'daily_output.csv') if location == 'copy-race' else (
+                path.parent.name.startswith('.current-next-') and path.name == 'daily_output.csv' and not flags & os.O_WRONLY
+            )
+            if selected and pipe is None:
+                path.unlink()
+                os.mkfifo(path, 0o600)
+                pipe = path
+            return original_open(path, flags, *args, **kwargs)
+
+        os.open = replace_before_open
+        error_type = DataBridgeRefreshError
+        operation = lambda: store.publish(candidate, dict(current.state))
+    try:
+        operation()
+    except error_type:
+        assert pipe is not None and stat.S_ISFIFO(pipe.lstat().st_mode)
+    else:
+        raise AssertionError('FIFO must be rejected')
+
+
+@pytest.mark.parametrize('location', ['lock', 'state', 'manifest', 'copy-race', 'fsync-race', 'csv'])
+def test_current_files_reject_fifo_without_waiting_or_removing_it(tmp_path, location):
+    command = "import runpy,sys; runpy.run_path(sys.argv[1])['_fifo_current_read'](sys.argv[2],sys.argv[3])"
+    subprocess.run(
+        [sys.executable, '-B', '-c', command, __file__, str(tmp_path), location],
+        check=True, capture_output=True, text=True, timeout=5,
+    )
+
+
+@pytest.mark.parametrize('encoding', ['utf-8', 'utf-8-sig'])
+def test_dataset_reader_preserves_complete_frames_and_literal_na(tmp_path, encoding):
+    from shared.data_bridge.validation import read_dataset_directory
+
+    frames = {name: frame.astype('string') for name, frame in _current_dataset().dataset.frames.items()}
+    columns = frames['daily_output.csv'].columns
+    frames['daily_output.csv'].loc[0, columns[1:4]] = ['NA', 'NULL', '']
+    for name, frame in frames.items():
+        frame.to_csv(tmp_path/name, index=False, encoding=encoding)
+    loaded = read_dataset_directory(tmp_path)
+    assert set(loaded) == set(frames)
+    for name, expected in frames.items():
+        pd.testing.assert_frame_equal(loaded[name], expected)
 
 
 def _frame(filename: str, keys: list[str]) -> pd.DataFrame:

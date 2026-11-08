@@ -345,10 +345,12 @@ def _generation_snapshot_cache_lock(root: Path, *, shared: bool = False):
         lock_path,
         os.O_RDWR
         | os.O_CREAT
+        | os.O_NONBLOCK
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NOFOLLOW", 0),
         0o600,
     )
+    locked = False
     try:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
@@ -364,10 +366,14 @@ def _generation_snapshot_cache_lock(root: Path, *, shared: bool = False):
             descriptor,
             fcntl.LOCK_SH if shared else fcntl.LOCK_EX,
         )
+        locked = True
         yield
     finally:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
+        try:
+            if locked:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
 
 
 def _read_generation_snapshot_cache(

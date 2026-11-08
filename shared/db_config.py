@@ -36,7 +36,7 @@ def _read_explicit_database_environment(
         raise RuntimeError(
             "database environment file must be an absolute path"
         )
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)

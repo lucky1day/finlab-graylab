@@ -200,7 +200,7 @@ def _copy_ready_snapshot_file(
     expected_fingerprint: tuple[int, ...] | None,
 ) -> tuple[int, ...]:
     """稳定复制 producer 已封存的文件，不重复哈希或解析内容。"""
-    read_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    read_flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
     write_flags = (
         os.O_WRONLY
         | os.O_CREAT

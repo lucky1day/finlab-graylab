@@ -43,6 +43,26 @@ def _write_private_environment(path: Path, values: dict[str, str]) -> None:
     path.chmod(0o600)
 
 
+def test_explicit_database_environment_rejects_fifo_without_waiting(tmp_path):
+    import stat
+
+    path = tmp_path / 'database.env'
+    os.mkfifo(path, 0o600)
+    before = path.lstat().st_ino
+    command = '''
+import sys
+from shared.db_config import DatabaseConfig
+try:
+    DatabaseConfig.from_env({}, environment_file=sys.argv[1])
+except RuntimeError as error:
+    assert str(error) == 'database environment file must be a private regular file'
+else:
+    raise AssertionError('FIFO must be rejected')
+'''
+    subprocess.run([sys.executable, '-B', '-c', command, str(path)], check=True, capture_output=True, text=True, timeout=3)
+    assert stat.S_ISFIFO(path.lstat().st_mode) and path.lstat().st_ino == before
+
+
 def test_import_does_not_load_project_dotenv_or_modify_environment(
     tmp_path: Path,
 ) -> None:
