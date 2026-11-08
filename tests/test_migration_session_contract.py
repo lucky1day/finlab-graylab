@@ -168,9 +168,25 @@ def test_migration_owner_lock_rejects_non_owner_release_result(
             pass
 
 
-def test_migration_owner_lock_preserves_body_when_release_result_fails() -> None:
+@pytest.mark.parametrize(
+    ("released", "release_error", "release_note"),
+    [
+        pytest.param(
+            0, None,
+            "MigrationHistoryError: migration owner lock release failed",
+            id="non-owner-result",
+        ),
+        pytest.param(
+            1, RuntimeError("release failed"), "RuntimeError: release failed",
+            id="release-exception",
+        ),
+    ],
+)
+def test_migration_owner_lock_preserves_body_failure_when_release_fails(
+    released: int, release_error: RuntimeError | None, release_note: str,
+) -> None:
     body_error = RuntimeError("migration body failed")
-    connection = _LockConnection(released=0)
+    connection = _LockConnection(released=released, release_error=release_error)
     with (
         patch("migrations.runner.preflight_migration_session"),
         pytest.raises(RuntimeError, match="migration body failed") as raised,
@@ -180,8 +196,7 @@ def test_migration_owner_lock_preserves_body_when_release_result_fails() -> None
 
     assert raised.value is body_error
     assert raised.value.__notes__ == [
-        "migration owner lock release failed: MigrationHistoryError: "
-        "migration owner lock release failed"
+        f"migration owner lock release failed: {release_note}"
     ]
 
 
@@ -249,24 +264,6 @@ def test_migration_024_dynamic_ddl_failure_is_reported_as_partial() -> None:
                 )
             ],
         )
-
-
-def test_migration_owner_lock_preserves_body_failure_when_release_fails() -> None:
-    body_error = RuntimeError("migration body failed")
-    connection = _LockConnection(
-        release_error=RuntimeError("release failed"),
-    )
-    with (
-        patch("migrations.runner.preflight_migration_session"),
-        pytest.raises(RuntimeError, match="migration body failed") as raised,
-    ):
-        with _migration_owner_connection(_LockEngine(connection)):
-            raise body_error
-
-    assert raised.value is body_error
-    assert raised.value.__notes__ == [
-        "migration owner lock release failed: RuntimeError: release failed"
-    ]
 
 
 def _safe_facts(lower_case_table_names: object) -> dict[str, object]:

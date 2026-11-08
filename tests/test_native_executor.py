@@ -59,32 +59,6 @@ def _trusted_release(tmp_path: Path) -> tuple[Path, Path]:
     return release, runtime
 
 
-def test_ephemeral_native_runtime_only_sets_shared_input_environment(
-    tmp_path: Path,
-) -> None:
-    from scheduler.executor import run_scheme_subprocess
-    from shared.input_artifacts import EPHEMERAL_NATIVE_INPUT_ROOT_ENV
-
-    captured: dict[str, str] = {}
-
-    def fake_run(cmd, *, cwd, env, timeout):
-        captured.update(env)
-        return CompletedProcess(cmd, 0, "[]", "")
-
-    root = tmp_path.resolve()
-    with patch(
-        "scheduler.executor._run_process_group",
-        side_effect=fake_run,
-    ):
-        run_scheme_subprocess(
-            "daily_demo",
-            "2026-07-24",
-            ephemeral_native_runtime_root=root,
-        )
-
-    assert captured[EPHEMERAL_NATIVE_INPUT_ROOT_ENV] == str(root)
-
-
 @pytest.mark.parametrize("stream", ["stderr", "stdout"])
 def test_called_process_error_does_not_persist_unrecognized_output(
     stream: str,
@@ -142,8 +116,12 @@ def test_native_execution_rejects_invalid_runtime_controls() -> None:
         )
 
 
-def test_native_subprocess_environment_is_allowlisted() -> None:
+@pytest.mark.parametrize("ephemeral_input", [False, True], ids=["default-input", "ephemeral-input"])
+def test_native_subprocess_environment_is_allowlisted(
+    tmp_path: Path, ephemeral_input: bool,
+) -> None:
     from scheduler.executor import run_scheme_subprocess
+    from shared.input_artifacts import EPHEMERAL_NATIVE_INPUT_ROOT_ENV
 
     captured: dict[str, str] = {}
 
@@ -176,7 +154,10 @@ def test_native_subprocess_environment_is_allowlisted() -> None:
             side_effect=fake_run,
         ),
     ):
-        run_scheme_subprocess("daily_demo", "2026-07-24")
+        run_scheme_subprocess(
+            "daily_demo", "2026-07-24",
+            **({"ephemeral_native_runtime_root": tmp_path.resolve()} if ephemeral_input else {}),
+        )
 
     assert captured["PATH"] == parent["PATH"]
     assert captured["BFL_RUNTIME_ROOT"] == (
@@ -189,6 +170,11 @@ def test_native_subprocess_environment_is_allowlisted() -> None:
     ]
     assert "BOND_DB_PASSWORD" not in captured
     assert "UNTRUSTED_PARENT_VALUE" not in captured
+
+    if ephemeral_input:
+        assert captured[EPHEMERAL_NATIVE_INPUT_ROOT_ENV] == str(tmp_path.resolve())
+    else:
+        assert EPHEMERAL_NATIVE_INPUT_ROOT_ENV not in captured
 
 
 def test_launchd_environment_passes_only_trusted_database_file_to_native(

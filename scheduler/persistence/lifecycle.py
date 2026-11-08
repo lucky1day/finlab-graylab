@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -29,9 +28,6 @@ from scheduler.persistence.prediction_rows import (
 BLACKBOX_REGISTRY_STATUSES = {"active", "paused", "archived"}
 
 _BLACKBOX_LIFECYCLE_LOCK_TIMEOUT_SEC = 5.0
-
-_LOGGER = logging.getLogger(__name__)
-
 
 class BlackboxActivationLockTimeout(RuntimeError):
     """Blackbox 激活未能取得方案级互斥锁。"""
