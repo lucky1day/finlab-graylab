@@ -6,6 +6,7 @@ from typing import Any
 from shared.calendar_service import get_calendar
 from shared.input_artifacts import build_monthly_input_artifact, create_input_engine
 from shared.models import PredictionRecord
+from shared.native_output import require_source_integer
 from shared.monthly_source_evidence import MONTHLY_SOURCE_ROLE, require_monthly_source_evidence
 from shared.monthly_source_runner import run_source_monthly_live
 from shared.prediction_context import MONTHLY_TARGET_RULE, build_monthly_live_context
@@ -142,12 +143,8 @@ def _extra_from_source(
 
 
 def _direction_from_y_pred(value: Any) -> int:
-    parsed = _int_or_none(value)
-    if parsed == 1:
-        return 1
-    if parsed == 0:
-        return -1
-    return 0
+    parsed = require_source_integer(value, field="y_pred", allowed_values={0, 1})
+    return 1 if parsed == 1 else -1
 
 
 def _clean_internal_field(field: str, value: Any) -> Any:

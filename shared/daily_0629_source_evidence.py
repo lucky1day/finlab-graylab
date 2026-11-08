@@ -12,7 +12,6 @@ from shared.source_runtime_database import (
 
 
 DAILY_0629_SOURCE_ROLE = "source_original_daily_0629_algorithm"
-PLATFORM_CURRENT_DAILY_0629_ROLE = "platform_current_daily_0629_adapter"
 DAILY_0629_SOURCE_BATCH = "daily_0629"
 
 

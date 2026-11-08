@@ -12,7 +12,6 @@ from shared.source_runtime_database import (
 
 
 MONTHLY_SOURCE_ROLE = "source_original_monthly_algorithm"
-PLATFORM_CURRENT_MONTHLY_ROLE = "platform_current_monthly_adapter"
 MONTHLY_SOURCE_BATCH = "monthly_0629"
 
 
