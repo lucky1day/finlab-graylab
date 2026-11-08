@@ -95,11 +95,6 @@ def _require_mapping(value: Any, path: Path) -> dict[str, Any]:
 
 def load_scheme_config(config_path: Path) -> SchemeConfig:
     """读取 immutable config.yaml 中声明的方案身份。"""
-    return _load_declared_scheme_config(config_path)
-
-
-def _load_declared_scheme_config(config_path: Path) -> SchemeConfig:
-    """读取单个方案 config.yaml 中声明的配置，不含本机生命周期状态。"""
     raw = _require_mapping(
         yaml.safe_load(config_path.read_text(encoding="utf-8")), config_path,
     )
