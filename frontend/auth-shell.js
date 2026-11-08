@@ -148,13 +148,13 @@
 
   function stopDashboard() {
     if (window.BondFactorLabDashboard) {
-      window.BondFactorLabDashboard.stop();
+      window.BondFactorLabDashboard.stop({ identity: state.identitySeq });
     }
   }
 
   function startDashboard() {
     if (window.BondFactorLabDashboard) {
-      window.BondFactorLabDashboard.start();
+      window.BondFactorLabDashboard.start({ identity: state.identitySeq });
     }
   }
 
@@ -637,10 +637,15 @@
   document.getElementById("authLogoutButton").addEventListener("click", function () {
     closeAccountMenu(false);
     showLogoutPending();
+    var identitySeq = state.identitySeq;
     apiRequest("/api/auth/logout", { method: "POST", body: {} })
-      .then(function () { showLogin(); })
+      .then(function () {
+        if (identitySeq === state.identitySeq) showLogin();
+      })
       .catch(function (error) {
-        if (error.status !== 401) showLogin(errorMessage(error.errorCode));
+        if (identitySeq === state.identitySeq && error.code !== "request_aborted" && error.status !== 401) {
+          showLogin(errorMessage(error.errorCode));
+        }
       });
   });
 
@@ -726,8 +731,9 @@
       form.reset();
       closeDialog(dialog);
       if (selfSessionRevoked) {
+        var identitySeq = state.identitySeq;
         window.setTimeout(function () {
-          showLogin("账户信息已更新，请重新登录");
+          if (identitySeq === state.identitySeq) showLogin("账户信息已更新，请重新登录");
         }, 150);
         return null;
       }

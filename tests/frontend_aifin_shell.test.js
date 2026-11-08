@@ -46,11 +46,12 @@ function okResponse(payload) {
 
 function createHarness(fetchImpl, elements = {}) {
   const listeners = new Map();
+  const documentListeners = new Map();
   const scheduledDelays = [];
   const dispatchedEvents = [];
   const document = {
     visibilityState: "visible",
-    addEventListener() {},
+    addEventListener(type, listener) { documentListeners.set(type, listener); },
     getElementById(id) { return elements[id] || null; },
     querySelector(selector) {
       return selector === '[data-view="factor-lab"]' ? elements.factorPage || null : null;
@@ -103,6 +104,10 @@ function createHarness(fetchImpl, elements = {}) {
     hooks: context.__BFL_TEST_HOOKS__,
     dispatchedEvents,
     scheduledDelays,
+    setVisibility(value) {
+      document.visibilityState = value;
+      documentListeners.get("visibilitychange")?.();
+    },
     setFetch(nextFetch) { context.__fetchImpl = nextFetch; }
   };
 }
@@ -128,6 +133,76 @@ function waitFor(predicate, timeoutMs = 250) {
 function flushPromises() {
   return new Promise((resolve) => setImmediate(resolve));
 }
+
+test("a new authenticated Dashboard scope starts with its own retry history", async (t) => {
+  const harness = createHarness(() => Promise.reject(new Error("offline")));
+  t.after(() => harness.hooks.stop());
+  harness.hooks.start();
+  await waitFor(() => harness.hooks.state().consecutiveFailures === 1);
+  for (let attempt = 1; attempt < 4; attempt++) await harness.hooks.load({ force: true });
+  assert.equal(harness.hooks.state().consecutiveFailures, 4);
+  harness.hooks.stop();
+  harness.hooks.start();
+  await flushPromises();
+  assert.equal(harness.hooks.state().consecutiveFailures, 1);
+  assert.equal(harness.scheduledDelays.filter((delay) => delay !== 6000 && delay !== 0).at(-1), 10000);
+});
+
+for (const retryAfter of ["120", "9999999999999999"]) {
+  test(`visibility does not bypass Retry-After ${retryAfter}, while explicit refresh remains available`, async (t) => {
+    let requests = 0;
+    const harness = createHarness(() => {
+      requests += 1;
+      return Promise.resolve({
+        ok: false, status: 429,
+        headers: { get: (name) => name === "Retry-After" ? retryAfter : null },
+        json: () => Promise.resolve({})
+      });
+    });
+    t.after(() => harness.hooks.stop());
+    harness.hooks.start();
+    await waitFor(() => harness.hooks.state().consecutiveFailures === 1);
+    harness.setVisibility("hidden");
+    harness.setVisibility("visible");
+    await flushPromises();
+    assert.equal(requests, 1);
+    if (retryAfter === "120") {
+      assert.ok(harness.scheduledDelays.at(-1) >= 119000);
+    } else {
+      assert.equal(harness.hooks.state().hasRefreshTimer, false);
+    }
+    harness.setFetch(() => {
+      requests += 1;
+      return Promise.resolve(okResponse(dashboardPayload("explicit-refresh")));
+    });
+    await harness.hooks.load({ force: true });
+    assert.equal(requests, 2);
+    assert.equal(harness.hooks.state().snapshotId, "explicit-refresh");
+  });
+}
+
+test("the same identity retains Retry-After across admin view stop/start, while a replacement starts fresh", async (t) => {
+  let requests = 0;
+  const harness = createHarness(() => {
+    requests += 1;
+    return Promise.resolve({ ok: false, status: 429,
+      headers: { get: (name) => name === "Retry-After" ? "120" : null },
+      json: () => Promise.resolve({}) });
+  });
+  t.after(() => harness.hooks.stop());
+  harness.hooks.start({ identity: 1 });
+  await waitFor(() => harness.hooks.state().consecutiveFailures === 1);
+  harness.hooks.stop({ identity: 1 });
+  harness.hooks.start({ identity: 1 });
+  await flushPromises();
+  assert.equal(requests, 1);
+  assert.equal(harness.hooks.state().consecutiveFailures, 1);
+  assert.ok(harness.scheduledDelays.at(-1) >= 119000);
+  harness.hooks.start({ identity: 2 });
+  await flushPromises();
+  assert.equal(requests, 2);
+  assert.equal(harness.hooks.state().consecutiveFailures, 1);
+});
 
 test("all pending month requests end with their identity and cannot invalidate the next login", async (t) => {
   let pageClick;

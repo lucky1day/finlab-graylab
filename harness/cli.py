@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import select
 import stat
 from datetime import date
 from dataclasses import fields, is_dataclass
@@ -369,7 +370,11 @@ def _read_dashboard_session(
     session_file: Path | None,
     session_fd: int | None,
 ) -> str:
-    """从私有文件或调用方传入的文件描述符读取 Dashboard 会话。"""
+    """单消费者读取私有会话；调用方 FD 的共享 flags 始终保持原样。
+
+    session-fd 是本次调用独占消费的输入，不支持与其他 reader 竞争读取。
+    管道每次读取前只检查就绪或 EOF，不修改 dup 与调用方共享的阻塞状态。
+    """
     if (session_file is None) == (session_fd is None):
         raise SystemExit(
             "dashboard gate requires exactly one of --session-file or --session-fd"
@@ -396,11 +401,6 @@ def _read_dashboard_session(
             descriptor = os.dup(session_fd)
         except OSError as exc:
             raise SystemExit("dashboard session fd is unavailable") from exc
-        try:
-            os.set_blocking(descriptor, False)
-        except OSError as exc:
-            os.close(descriptor)
-            raise SystemExit("dashboard session fd is unavailable") from exc
     try:
         details = os.fstat(descriptor)
         if session_file is not None:
@@ -422,6 +422,10 @@ def _read_dashboard_session(
         chunks: list[bytes] = []
         remaining = 1025
         while remaining:
+            if stat.S_ISFIFO(details.st_mode) and not select.select(
+                [descriptor], [], [], 0,
+            )[0]:
+                raise BlockingIOError("dashboard session pipe is not ready")
             chunk = os.read(descriptor, min(remaining, 1025))
             if not chunk:
                 break

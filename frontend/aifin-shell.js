@@ -214,6 +214,8 @@
     pendingSelection: null,
     draftSelection: null,
     consecutiveFailures: 0,
+    retryIdentity: null,
+    retryNotBeforeAt: 0,
     refreshTimer: null,
     visibilityBound: false,
     aggregateCache: new Map(),
@@ -1078,11 +1080,12 @@
 
   function scheduleFactorLabRefresh(delayMs) {
     clearFactorLabRefreshTimer();
+    if (!Number.isFinite(delayMs) || delayMs > FACTOR_LAB_MAX_RETRY_DELAY_MS) return;
     if (!factorLabRuntimeState.authenticated || !window.setTimeout || document.visibilityState === "hidden") return;
     factorLabRuntimeState.refreshTimer = window.setTimeout(function () {
       factorLabRuntimeState.refreshTimer = null;
       if (document.visibilityState === "hidden" || getActiveView() !== "factor-lab") return;
-      loadFactorLabData({ force: true });
+      loadFactorLabData({ force: true, automatic: true });
     }, delayMs);
   }
 
@@ -1229,6 +1232,7 @@
     }
 
     factorLabRuntimeState.consecutiveFailures = 0;
+    factorLabRuntimeState.retryNotBeforeAt = 0;
     scheduleFactorLabRefresh(FACTOR_LAB_HEALTHY_REFRESH_MS);
     var rowCounts = countFactorLabRows(candidate.tasks);
     var readyFrame = window.requestAnimationFrame || function (callback) {
@@ -1277,10 +1281,14 @@
       FACTOR_LAB_RETRY_DELAYS_MS.length - 1
     );
     var retryDelayMs = FACTOR_LAB_RETRY_DELAYS_MS[delayIndex];
-    if (error && error.retryAfterAt === Infinity) return false;
+    if (error && error.retryAfterAt === Infinity) {
+      factorLabRuntimeState.retryNotBeforeAt = Infinity;
+      return false;
+    }
     if (error && Number.isFinite(error.retryAfterAt)) {
       retryDelayMs = Math.max(retryDelayMs, error.retryAfterAt - Date.now());
     }
+    factorLabRuntimeState.retryNotBeforeAt = Date.now() + retryDelayMs;
     scheduleFactorLabRefresh(retryDelayMs);
     return false;
   }
@@ -1288,6 +1296,12 @@
   function loadFactorLabData(options) {
     var force = options && options.force === true;
     if (!factorLabRuntimeState.authenticated || !window.fetch) return Promise.resolve(false);
+    if ((!force || options.automatic === true) && factorLabRuntimeState.retryNotBeforeAt > Date.now()) {
+      if (Number.isFinite(factorLabRuntimeState.retryNotBeforeAt)) {
+        scheduleFactorLabRefresh(factorLabRuntimeState.retryNotBeforeAt - Date.now());
+      }
+      return Promise.resolve(false);
+    }
     if (factorLabRemoteLoading && !(options && options.selection)) return Promise.resolve(false);
     if (!force && factorLabRemoteLoaded) {
       if (factorLabRuntimeState.refreshTimer === null &&
@@ -1374,7 +1388,7 @@
           : FACTOR_LAB_HEALTHY_REFRESH_MS;
         if (factorLabRuntimeState.consecutiveFailures > 0 ||
             snapshotAge >= FACTOR_LAB_HEALTHY_REFRESH_MS) {
-          loadFactorLabData({ force: true });
+          loadFactorLabData({ force: true, automatic: true });
         } else {
           scheduleFactorLabRefresh(
             FACTOR_LAB_HEALTHY_REFRESH_MS - snapshotAge
@@ -1384,16 +1398,36 @@
     });
   }
 
-  function startAuthenticatedFactorLab() {
-    if (factorLabRuntimeState.authenticated) return Promise.resolve(false);
+  function retainFactorLabRetryIdentity(options) {
+    // 仅使用认证模块的既有代次标记退避归属，不推导或维护另一套登录身份。
+    var explicit = options && Object.prototype.hasOwnProperty.call(options, "identity");
+    var same = explicit && options.identity === factorLabRuntimeState.retryIdentity;
+    if (!same) {
+      factorLabRuntimeState.retryIdentity = explicit ? options.identity : null;
+      factorLabRuntimeState.consecutiveFailures = 0;
+      factorLabRuntimeState.retryNotBeforeAt = 0;
+    }
+    return same;
+  }
+
+  function startAuthenticatedFactorLab(options) {
+    if (factorLabRuntimeState.authenticated) {
+      if (!options || !Object.prototype.hasOwnProperty.call(options, "identity") ||
+          options.identity === factorLabRuntimeState.retryIdentity) return Promise.resolve(false);
+      clearAuthenticatedFactorLab(options);
+    }
+    retainFactorLabRetryIdentity(options);
     factorLabRuntimeState.identitySeq += 1;
     factorLabRuntimeState.authenticated = true;
     setActiveRoute("/factor-lab", false);
     startFactorLabAutoRefresh();
-    return loadFactorLabData({ force: true });
+    return loadFactorLabData({ force: true, automatic: true });
   }
 
-  function clearAuthenticatedFactorLab() {
+  function clearAuthenticatedFactorLab(options) {
+    var sameIdentity = retainFactorLabRetryIdentity(options);
+    var waitingToRetry = sameIdentity && factorLabRuntimeState.consecutiveFailures > 0;
+    var previousError = waitingToRetry ? factorLabApiError : "";
     var datePicker = document.getElementById("factorDatePicker");
     if (datePicker && datePicker.matches(":popover-open")) datePicker.hidePopover();
     factorLabRuntimeState.identitySeq += 1;
@@ -1419,10 +1453,10 @@
     factorLabRuntimeState.lastSuccessfulGeneratedAt = "";
     factorTaskSchemes = initEmptyTaskSchemes();
     factorTargetLabels = Object.assign(Object.create(null), factorDefaultTargetLabels);
-    factorLabRemoteLoaded = false;
+    factorLabRemoteLoaded = waitingToRetry;
     factorLabRemoteLoading = false;
-    factorLabApiError = "";
-    factorLabDataMode = "loading";
+    factorLabApiError = previousError;
+    factorLabDataMode = waitingToRetry ? "error" : "loading";
     factorLabDrawerSelection = null;
     updateFactorFilterUi();
     window.__factorLabReady = null;

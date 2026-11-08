@@ -93,6 +93,7 @@ function createHarness(fetchImpl) {
   let timerSequence = 0;
   let dashboardStarts = 0;
   let dashboardStops = 0;
+  const dashboardCalls = [];
   const getElement = (id) => {
     if (!elements.has(id)) {
       const element = createElement(id);
@@ -134,8 +135,8 @@ function createHarness(fetchImpl) {
     },
     clearTimeout(token) { timers.delete(token); },
     BondFactorLabDashboard: {
-      start() { dashboardStarts += 1; },
-      stop() { dashboardStops += 1; }
+      start(options) { dashboardStarts += 1; dashboardCalls.push({ action: "start", options }); },
+      stop(options) { dashboardStops += 1; dashboardCalls.push({ action: "stop", options }); }
     }
   };
   window.window = window;
@@ -164,6 +165,7 @@ function createHarness(fetchImpl) {
   return {
     hooks: window.__BFL_AUTH_TEST_HOOKS__,
     getElement,
+    dashboardCalls,
     runTimers(delay) {
       for (const [token, timer] of [...timers.entries()]) {
         if (timer.delay === delay) {
@@ -179,6 +181,21 @@ function createHarness(fetchImpl) {
 function flush() {
   return new Promise((resolve) => setImmediate(resolve));
 }
+
+test("Dashboard view transitions receive the existing authentication identity", async () => {
+  const harness = createHarness((url) => Promise.resolve(jsonResponse(200,
+    url.endsWith("/api/admin/users") ? { users: [] } : { user: validUser() }
+  )));
+  await flush();
+  const first = harness.dashboardCalls.at(-1).options.identity;
+  harness.getElement("authUsersNav")._listeners.get("click")();
+  assert.equal(harness.dashboardCalls.at(-1).options.identity, first);
+  harness.getElement("factorLabNav")._listeners.get("click")();
+  assert.equal(harness.dashboardCalls.at(-1).options.identity, first);
+  harness.hooks.showLogin();
+  harness.hooks.showAuthenticated(validUser({ id: 3, username: "replacement" }));
+  assert.notEqual(harness.dashboardCalls.at(-1).options.identity, first);
+});
 
 test("auth shell validates reads and accepts create-user write payloads", async () => {
   const requests = [];
@@ -300,6 +317,55 @@ test("logout keeps login unavailable until its Set-Cookie response completes", a
 
   assert.equal(harness.getElement("authLoading").hidden, true);
   assert.equal(harness.getElement("authLogin").hidden, false);
+});
+
+for (const stage of ["headers", "body"]) {
+  test(`an old logout cancelled during ${stage} cannot change a replacement identity`, async () => {
+    let completeLogout;
+    const harness = createHarness((url) => {
+      if (url.endsWith("/api/auth/me")) return Promise.resolve(jsonResponse(200, { user: validUser() }));
+      if (stage === "headers") return new Promise((resolve) => { completeLogout = resolve; });
+      return Promise.resolve({ ok: true, status: 200,
+        json: () => new Promise((resolve) => { completeLogout = resolve; }) });
+    });
+    await flush();
+    harness.getElement("authLogoutButton")._listeners.get("click")();
+    await flush();
+    harness.hooks.showAuthenticated(validUser({ id: 3, username: "replacement" }));
+    const login = harness.getElement("authLoginSubmit");
+    login.disabled = true;
+    await flush();
+    assert.equal(harness.hooks.state().user.username, "replacement");
+    assert.equal(harness.getElement("aifin-shell").hidden, false);
+    assert.equal(login.disabled, true);
+    completeLogout(stage === "headers" ? jsonResponse(200, { status: "ok" }) : { status: "ok" });
+    await flush();
+    assert.equal(harness.hooks.state().user.username, "replacement");
+    assert.equal(login.disabled, true);
+  });
+}
+
+test("an old self-rename login timer cannot clear a replacement identity", async () => {
+  const owner = validUser({ is_protected_admin: false });
+  const harness = createHarness((url, options) => Promise.resolve(jsonResponse(200,
+    url.endsWith("/api/auth/me") ? { user: owner } : options.method === "GET"
+      ? { users: [owner] } : { user: validUser({ username: "renamed", is_protected_admin: false }) }
+  )));
+  await flush();
+  harness.getElement("authUsersNav")._listeners.get("click")();
+  await flush();
+  const button = { dataset: { userAction: "edit", userId: "1" }, disabled: false };
+  harness.getElement("authUsersBody")._listeners.get("click")({
+    target: { closest: (selector) => selector === "[data-user-action]" ? button : null }
+  });
+  const form = harness.getElement("authUserEditForm");
+  form.elements.username.value = "renamed";
+  form._listeners.get("submit")({ preventDefault() {}, currentTarget: form });
+  await flush();
+  harness.hooks.showAuthenticated(validUser({ id: 3, username: "replacement" }));
+  harness.runTimers(150);
+  assert.equal(harness.hooks.state().user.username, "replacement");
+  assert.equal(harness.getElement("aifin-shell").hidden, false);
 });
 
 for (const [formId, endpoint, buttonId] of [

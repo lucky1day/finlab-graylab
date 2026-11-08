@@ -924,6 +924,76 @@ def test_dashboard_session_fd_does_not_block_while_writer_remains_open() -> None
         os.close(write_fd)
 
 
+@pytest.mark.parametrize("blocking", [True, False])
+@pytest.mark.parametrize(
+    "outcome", ["success", "incomplete", "partial", "eof", "invalid", "oversized"],
+)
+def test_dashboard_session_fd_preserves_caller_flags(
+    blocking: bool, outcome: str,
+) -> None:
+    import fcntl
+    from harness.cli import _read_dashboard_session
+
+    reader, writer = os.pipe()
+    alias = os.dup(reader)
+    try:
+        os.set_blocking(reader, blocking)
+        before = fcntl.fcntl(reader, fcntl.F_GETFL)
+        if outcome == "partial":
+            os.write(writer, b"partial_token")
+        elif outcome != "incomplete":
+            content = {
+                "success": b"fixture_token\n", "eof": b"",
+                "invalid": b"invalid token", "oversized": b"x" * 1025,
+            }[outcome]
+            os.write(writer, content)
+            os.close(writer)
+            writer = -1
+        if outcome == "success":
+            assert _read_dashboard_session(session_file=None, session_fd=reader) == "fixture_token"
+        else:
+            message = "not ready or is incomplete" if outcome in {"incomplete", "partial"} else None
+            with pytest.raises(SystemExit, match=message):
+                _read_dashboard_session(session_file=None, session_fd=reader)
+        assert fcntl.fcntl(reader, fcntl.F_GETFL) == before
+        assert fcntl.fcntl(alias, fcntl.F_GETFL) == before
+    finally:
+        os.close(reader)
+        os.close(alias)
+        if writer >= 0:
+            os.close(writer)
+
+
+def test_dashboard_session_fd_never_changes_shared_flags_during_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from harness.cli import _read_dashboard_session
+
+    reader, writer = os.pipe()
+    real_read = os.read
+    try:
+        os.write(writer, b"fixture_token\n")
+        os.close(writer)
+        writer = -1
+        observations = []
+
+        def read_with_observer(descriptor, size):
+            observations.append(os.get_blocking(reader))
+            data = real_read(descriptor, size)
+            # 模拟调用方在读取期间自主修改自己的flag；函数不能在finally写回旧值。
+            os.set_blocking(reader, False)
+            return data
+
+        monkeypatch.setattr(os, "read", read_with_observer)
+        assert _read_dashboard_session(session_file=None, session_fd=reader) == "fixture_token"
+        assert observations[0] is True
+        assert os.get_blocking(reader) is False
+    finally:
+        os.close(reader)
+        if writer >= 0:
+            os.close(writer)
+
+
 def test_dashboard_session_file_rejects_public_permissions(
     tmp_path: Path,
 ) -> None:
