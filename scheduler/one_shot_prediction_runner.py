@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import argparse
 import errno
 import fcntl
 import json
@@ -1170,3 +1171,36 @@ def configuration_summary(
         exit_code=2,
     )
     return summary
+
+
+def run_prediction_cli(
+    argv: Sequence[str] | None,
+    *,
+    run: Callable[..., OneShotPredictionSummary],
+    event: str,
+    description: str | None,
+    default_algo_env: str,
+) -> int:
+    """共享宿主入口的参数与摘要处理，执行能力由各宿主固定的 run 注入。"""
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument("--cadence", required=True, choices=sorted(PREDICTION_CADENCES))
+    parser.add_argument("--predict-date", default=today())
+    parser.add_argument("--algo-env", default=default_algo_env)
+    parser.add_argument("--scheme-id", action="append", dest="scheme_ids")
+    parser.add_argument("--lock-timeout-sec", type=float, default=RUNNER_LOCK_TIMEOUT_SEC)
+    args = parser.parse_args(argv)
+    try:
+        summary = run(
+            args.cadence, predict_date=args.predict_date, algo_env=args.algo_env,
+            scheme_ids=args.scheme_ids, lock_timeout_sec=args.lock_timeout_sec,
+        )
+    except Exception as exc:  # noqa: BLE001 - 不向宿主日志序列化底层异常
+        summary = (
+            exc.summary
+            if isinstance(exc, OneShotPredictionRunError) and exc.summary is not None
+            else configuration_summary(args.cadence, args.predict_date, event=event)
+        )
+    print(json.dumps(
+        summary.to_payload(), ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+    ))
+    return summary.exit_code

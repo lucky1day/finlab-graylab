@@ -7,8 +7,6 @@
 
 from __future__ import annotations
 
-import argparse
-import json
 from typing import Sequence
 
 from scheduler.executor import (
@@ -17,14 +15,11 @@ from scheduler.executor import (
 )
 from scheduler.one_shot_prediction_runner import (
     RUNNER_LOCK_TIMEOUT_SEC,
-    OneShotPredictionRunError,
     OneShotPredictionSummary,
-    configuration_summary,
     run_one_shot_with_retries,
-    today,
+    run_prediction_cli,
 )
 from shared.one_shot_control_plane import LAUNCHD_ONE_SHOT_CONTROL_PLANE
-from shared.task_specs import PREDICTION_CADENCES
 
 
 _LAUNCHD_EVENT = "launchd_prediction_run"
@@ -53,49 +48,10 @@ def run(
 
 def main(argv: Sequence[str] | None = None) -> int:
     """解析 launchd one-shot 参数并输出脱敏结构化摘要。"""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--cadence",
-        required=True,
-        choices=sorted(PREDICTION_CADENCES),
+    return run_prediction_cli(
+        argv, run=run, event=_LAUNCHD_EVENT, description=__doc__,
+        default_algo_env=DEFAULT_ALGO_ENV,
     )
-    parser.add_argument("--predict-date", default=today())
-    parser.add_argument("--algo-env", default=DEFAULT_ALGO_ENV)
-    parser.add_argument("--scheme-id", action="append", dest="scheme_ids")
-    parser.add_argument(
-        "--lock-timeout-sec",
-        type=float,
-        default=RUNNER_LOCK_TIMEOUT_SEC,
-    )
-    args = parser.parse_args(argv)
-    try:
-        summary = run(
-            args.cadence,
-            predict_date=args.predict_date,
-            algo_env=args.algo_env,
-            scheme_ids=args.scheme_ids,
-            lock_timeout_sec=args.lock_timeout_sec,
-        )
-    except Exception as exc:  # noqa: BLE001 - 不序列化底层异常
-        summary = (
-            exc.summary
-            if isinstance(exc, OneShotPredictionRunError)
-            and exc.summary is not None
-            else configuration_summary(
-                args.cadence,
-                args.predict_date,
-                event=_LAUNCHD_EVENT,
-            )
-        )
-    print(
-        json.dumps(
-            summary.to_payload(),
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    )
-    return summary.exit_code
 
 
 if __name__ == "__main__":
