@@ -9,7 +9,7 @@ Nginx → 中继 `127.0.0.1:18101` → 当前 Mac（`QiyodeMac-Studio.local`，�
 由 `com.bond-factor-lab.cutover-candidate.backend` / `.ssh-tunnel` 两个 LaunchAgent 托管（label 沿用候选验收时名称）。
 隧道以 `-B en1` 绑定实际联网接口，不改全局 VPN/路由；Backend 经 `caffeinate -i` 防空闲休眠，并以
 `--timeout-keep-alive 75` 匹配中继连接复用。GUI 会话注销或关机后的可用性须按实际宿主状态判断。
-**隧道仍使用2026-10-31增加的SOCKS代理参数**：当时出方向22端口受阻，plist增加 `-o ProxyCommand=/usr/bin/nc -X 5 -x 127.0.0.1:12377 %h %p`（改前备份 `/Users/macstudio0/.config/bond-factor-lab/launchagents-backup-20261031/`）。2026-11-08本次核验中，ECS手工SSH直连已成功，SOCKS连接曾间歇中断；本轮未修改已安装公网隧道。现用隧道仍依赖该代理，移除参数前须独立核验中继直连、installed/loaded与恢复边界，再按网络维护授权处理。
+生产隧道显式使用 `-o ProxyCommand=none`，通过 `en1` 直连中继 IPv4。2026-10-31为绕过当时出方向22端口受阻而增加的SOCKS ProxyCommand属于历史临时路径；2026-11-08同Backend对照已确认该转发路径导致秒级抖动及公网504。维护时按实际installed/loaded和 `ssh -G` 核验直连，结合中继SSH peer与本机TCP连接确认；不以调大Nginx超时处理。切换回执与旧plist恢复位置见[当前状态](../CURRENT_STATUS.md#已知限制)，2026-10-31原备份仍保留在 `/Users/macstudio0/.config/bond-factor-lab/launchagents-backup-20261031/`。
 原本机 `8100` Backend 与中继 `18100` 回退隧道已于 2026-10-24 退役，plist 备份于
 `/Users/macstudio0/.config/bond-factor-lab/launchagents-retired-20261024/`，不再作为访问或回退路径。
 

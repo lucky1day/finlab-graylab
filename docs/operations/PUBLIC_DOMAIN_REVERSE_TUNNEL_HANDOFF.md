@@ -63,7 +63,7 @@ location = /bond-factor-lab/api/health {
 }
 ```
 
-隧道使用 `ExitOnForwardFailure=yes`、`StrictHostKeyChecking=yes`、`IdentitiesOnly=yes`、15 秒 SSH 存活探测、10 秒连接超时；`-B en1` 让 SSH 绑定实际联网接口，避免经过本机 VPN/TUN。LaunchAgent 用 `RunAtLoad`、`KeepAlive` 和 10 秒节流拉起断开的 SSH 进程，plist 位于 `/Users/qiyo3/Library/LaunchAgents/com.bond-factor-lab.cutover-candidate.ssh-tunnel.plist`；第 4.6 节有完整的新服务范例。LaunchAgent 属于登录用户的 GUI domain；电脑休眠、关机、用户会话消失时不能把 `KeepAlive` 理解为 24 小时可用保证。
+现有生产隧道显式设置 `ProxyCommand=none` 直连中继，使用 `ExitOnForwardFailure=yes`、`StrictHostKeyChecking=yes`、`IdentitiesOnly=yes`、15 秒 SSH 存活探测、10 秒连接超时；`-B en1` 让 SSH 绑定实际联网接口，避免经过本机 VPN/TUN。LaunchAgent 用 `RunAtLoad`、`KeepAlive` 和 10 秒节流拉起断开的 SSH 进程，plist 位于 `/Users/qiyo3/Library/LaunchAgents/com.bond-factor-lab.cutover-candidate.ssh-tunnel.plist`；第 4.6 节有完整的新服务范例。LaunchAgent 属于登录用户的 GUI domain；电脑休眠、关机、用户会话消失时不能把 `KeepAlive` 理解为 24 小时可用保证。
 
 本网站的 Mac 连接中继时使用：
 

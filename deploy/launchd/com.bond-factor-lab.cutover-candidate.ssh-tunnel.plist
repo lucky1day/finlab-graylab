@@ -28,7 +28,7 @@
 		<string>-o</string>
 		<string>StrictHostKeyChecking=yes</string>
 		<string>-o</string>
-		<string>ProxyCommand=/usr/bin/nc -X 5 -x 127.0.0.1:12377 %h %p</string>
+		<string>ProxyCommand=none</string>
 		<string>-o</string>
 		<string>IdentitiesOnly=yes</string>
 		<string>-i</string>
