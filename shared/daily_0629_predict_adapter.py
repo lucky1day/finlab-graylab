@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from typing import Any
 
 from shared.calendar_service import get_calendar
@@ -8,7 +7,14 @@ from shared.daily_0629_source_evidence import DAILY_0629_SOURCE_ROLE, require_da
 from shared.daily_0629_source_runner import run_source_daily_live
 from shared.input_artifacts import build_daily_input_artifact, create_input_engine
 from shared.models import DIRECTION_VALUES, PredictionRecord
-from shared.native_output import require_source_integer
+from shared.native_output import (
+    require_source_integer,
+    select_frequency_row as _select_frequency_row,
+    source_int_or_none as _int_or_none,
+    source_float_or_none as _float_or_none,
+    source_text_or_none as _str_or_none,
+    clean_source_value as _clean_value,
+)
 from shared.prediction_context import build_daily_live_context
 from shared.source_runtime_database import (
     load_source_runtime_database_config,
@@ -103,13 +109,6 @@ def run_daily_0629_prediction(scheme_id: str, predict_date: str) -> list[Predict
     ]
 
 
-def _select_frequency_row(source_rows: list[dict[str, Any]], frequency: str, scheme_id: str) -> dict[str, Any]:
-    matches = [row for row in source_rows if str(row.get("frequency")) == frequency]
-    if len(matches) != 1:
-        raise RuntimeError(f"{scheme_id}: expected exactly one source row for {frequency}, got {len(matches)}")
-    return matches[0]
-
-
 def _assert_source_context_matches(source: dict[str, Any], feature_date: str, target_date: str, scheme_id: str) -> None:
     source_feature = _str_or_none(source.get("prediction_date") or source.get("expected_prediction_date"))
     source_target = _str_or_none(source.get("rdate"))
@@ -185,27 +184,6 @@ def _clean_internal_field(field: str, value: Any) -> Any:
     return _clean_value(value)
 
 
-def _int_or_none(value: Any) -> int | None:
-    value = _clean_value(value)
-    if value in (None, ""):
-        return None
-    try:
-        return int(float(value))
-    except (TypeError, ValueError):
-        return None
-
-
-def _float_or_none(value: Any) -> float | None:
-    value = _clean_value(value)
-    if value in (None, ""):
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    return None if math.isnan(parsed) or math.isinf(parsed) else parsed
-
-
 def _bool_or_none(value: Any) -> bool | None:
     value = _clean_value(value)
     if value in (None, ""):
@@ -213,20 +191,3 @@ def _bool_or_none(value: Any) -> bool | None:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes"}
-
-
-def _str_or_none(value: Any) -> str | None:
-    value = _clean_value(value)
-    return None if value is None else str(value)
-
-
-def _clean_value(value: Any) -> Any:
-    if value is None:
-        return None
-    if hasattr(value, "item"):
-        value = value.item()
-    if isinstance(value, str):
-        return None if value == "" else value
-    if isinstance(value, float):
-        return None if math.isnan(value) or math.isinf(value) else value
-    return value

@@ -93,3 +93,11 @@ def test_daily_missing_final_direction_uses_existing_fallback(adapter):
     adapter.source["pred_label"] = "invalid"
     with pytest.raises(RuntimeError, match="direction"):
         adapter.run()
+
+
+def test_native_adapter_preserves_source_probability_audit(adapter):
+    adapter.source[adapter.field] = "1.0"
+    probability_field = "pred_proba_up" if adapter.kind == "monthly" else "prob_up"
+    adapter.source[probability_field] = 0.625
+    record, = adapter.run()
+    assert record.extra[probability_field] == 0.625

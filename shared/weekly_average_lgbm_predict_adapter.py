@@ -8,7 +8,10 @@ import pandas as pd
 from shared.calendar_service import get_calendar
 from shared.input_artifacts import build_weekly_input_artifact, create_input_engine
 from shared.models import DIRECTION_VALUES, PredictionRecord
-from shared.native_output import require_source_integer
+from shared.native_output import (
+    require_source_integer,
+    select_frequency_row as _select_frequency_row,
+)
 from shared.prediction_context import WEEKLY_AVERAGE_TARGET_RULE, next_calendar_week_id
 from shared.weekly_average_lgbm_source_runner import run_source_weekly_live
 from shared.weekly_average_source_evidence import (
@@ -94,17 +97,6 @@ def run_weekly_average_lgbm_prediction(scheme_id: str, predict_date: str) -> lis
             ),
         )
     ]
-
-
-def _select_frequency_row(
-    source_rows: list[dict[str, Any]],
-    frequency: str,
-    scheme_id: str,
-) -> dict[str, Any]:
-    matches = [row for row in source_rows if str(row.get("frequency")) == frequency]
-    if len(matches) != 1:
-        raise RuntimeError(f"{scheme_id}: expected exactly one source row for {frequency}, got {len(matches)}")
-    return matches[0]
 
 
 def _extra_from_source(
