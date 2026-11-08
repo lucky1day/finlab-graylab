@@ -153,6 +153,8 @@
     "yield_5y_t5_fab79abb41a405199259": ["mac3-production", "aliyun-gray"],
     "yield_5y_t5_fafe87c946801b336b08": ["mac3-production", "aliyun-gray"],
     "yield_5y_t5_fb31572f9b7dd2d13b2a": ["mac3-production", "aliyun-gray"],
-    "yield_5y_t5_fd49826f5648fd6c3162": ["mac3-production", "aliyun-gray"]
+    "yield_5y_t5_fd49826f5648fd6c3162": ["mac3-production", "aliyun-gray"],
+    "yield_7y_t1_c2b223e761b00964efc7": ["mac3-production", "aliyun-gray"],
+    "yield_10y_t1_fcaf9b9391df63ce0fd7": ["mac3-production", "aliyun-gray"]
   }
 }

@@ -14901,6 +14901,38 @@
           "mode": "audit"
         }
       ]
+    },
+    "input-45fc705d7a046a7d": {
+      "requirements": [
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "J10Y000D",
+            "TB7YWI0C"
+          ],
+          "offset": 0,
+          "rows": 1,
+          "min_valid": 1,
+          "role": "referenced_or_candidate",
+          "mode": "audit"
+        }
+      ]
+    },
+    "input-a6c9fdf03f89cc66": {
+      "requirements": [
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "SI801230",
+            "TB0YWI0C"
+          ],
+          "offset": 0,
+          "rows": 1,
+          "min_valid": 1,
+          "role": "referenced_or_candidate",
+          "mode": "audit"
+        }
+      ]
     }
   },
   "schemes": {
@@ -16861,6 +16893,32 @@
           "sha256": "8764cd4c9ab8e770c15bc3a29416d3bcd9f275188bb0152cee7cc39505e3791c",
           "profiles": [
             "input-fa52cd8ae4361da8"
+          ]
+        }
+      }
+    },
+    "yield_7y_t1_c2b223e761b00964efc7": {
+      "scheme_version": "5ba92af35ee1",
+      "runtime_type": "blackbox_v2",
+      "coverage": "declared_frozen_raw_columns_point_only_not_model_readiness",
+      "scripts": {
+        "yield_7y_t1_c2b223e761b00964efc7.py": {
+          "sha256": "6a6bdc1d26c5481ce9f591df9ad59a18ef91298f8acb0562d7506fbd7bbbdf38",
+          "profiles": [
+            "input-45fc705d7a046a7d"
+          ]
+        }
+      }
+    },
+    "yield_10y_t1_fcaf9b9391df63ce0fd7": {
+      "scheme_version": "bcee80bdac41",
+      "runtime_type": "blackbox_v2",
+      "coverage": "declared_frozen_raw_columns_point_only_not_model_readiness",
+      "scripts": {
+        "yield_10y_t1_fcaf9b9391df63ce0fd7.py": {
+          "sha256": "ff9b1f23bfae0bc6aa17fb2af29f569fd5148666eaa0cf4738084815b7a23475",
+          "profiles": [
+            "input-a6c9fdf03f89cc66"
           ]
         }
       }

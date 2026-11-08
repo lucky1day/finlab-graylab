@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "yield_7y_t1_c2b223e761b00964efc7",
+  "name": "符号状态校准",
+  "owner": "lw",
+  "description": "使用D:J10Y000D|diff40，按固定conditional参数与严格成熟标签形成方向。0表示平或阈值不出手；缺失输入及历史不足失败退出。历史多重搜索研究，非新盲测。",
+  "algorithm_version": "20261105.five_tenor_t1.1",
+  "target_tenor": "7Y",
+  "task_type": "T+1",
+  "horizon": 1,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}

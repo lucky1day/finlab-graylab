@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "yield_10y_t1_fcaf9b9391df63ce0fd7",
+  "name": "序模式条件分布",
+  "owner": "lw",
+  "description": "使用活跃国债收益率及SI801230原始字段，按冻结的ordinal_pattern状态和126个成熟交易位置进行分层概率收缩。数据按自身截止，0表示平或合法不出手，缺失或历史不足失败退出。历史多重搜索研究，非新盲测。",
+  "algorithm_version": "20261105.symbolic_t1.1",
+  "target_tenor": "10Y",
+  "task_type": "T+1",
+  "horizon": 1,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}
