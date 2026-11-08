@@ -1223,23 +1223,29 @@ def _run_process(
                     process_group_id=process_group_id,
                 )
                 if not termination.confirmed_gone:
-                    raise ProcessGroupTerminationError(
+                    cleanup_error = ProcessGroupTerminationError(
                         termination=termination,
                         context=(
                             "Blackbox V2 process interrupted: "
                             f"{type(execution_error).__name__}: {execution_error}"
                         ),
-                    ) from execution_error
+                    )
+                    if isinstance(process_start_guard, ProcessStartGuard):
+                        process_start_guard.poison(cleanup_error)
+                    raise cleanup_error from execution_error
                 raise
             termination = _terminate_process_group(
                 process,
                 process_group_id=process_group_id,
             )
             if not termination.confirmed_gone:
-                raise ProcessGroupTerminationError(
+                cleanup_error = ProcessGroupTerminationError(
                     termination=termination,
                     context=failure or f"Blackbox V2 process exited {process.returncode}",
                 )
+                if isinstance(process_start_guard, ProcessStartGuard):
+                    process_start_guard.poison(cleanup_error)
+                raise cleanup_error
             stdout = _read_capture(stdout_file, max_capture_bytes)
             stderr = _read_capture(stderr_file, max_capture_bytes)
             if failure is not None:

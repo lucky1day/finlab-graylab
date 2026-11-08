@@ -1031,10 +1031,13 @@ def _run_process_group(
         if isinstance(exc, subprocess.TimeoutExpired):
             stdout, stderr = _drain_timed_out_process_output(process)
             if not termination.confirmed_gone:
-                raise ProcessGroupTerminationError(
+                cleanup_error = ProcessGroupTerminationError(
                     termination=termination,
                     context=f"Native process timed out after {timeout}s",
-                ) from exc
+                )
+                if isinstance(process_start_guard, ProcessStartGuard):
+                    process_start_guard.poison(cleanup_error)
+                raise cleanup_error from exc
             raise subprocess.TimeoutExpired(
                 cmd,
                 timeout,
@@ -1042,23 +1045,29 @@ def _run_process_group(
                 stderr=stderr,
             ) from exc
         if not termination.confirmed_gone:
-            raise ProcessGroupTerminationError(
+            cleanup_error = ProcessGroupTerminationError(
                 termination=termination,
                 context=(
                     "Native process interrupted: "
                     f"{type(exc).__name__}: {exc}"
                 ),
-            ) from exc
+            )
+            if isinstance(process_start_guard, ProcessStartGuard):
+                process_start_guard.poison(cleanup_error)
+            raise cleanup_error from exc
         raise
     termination = _terminate_process_group(
         process,
         process_group_id=process_group_id,
     )
     if not termination.confirmed_gone:
-        raise ProcessGroupTerminationError(
+        cleanup_error = ProcessGroupTerminationError(
             termination=termination,
             context=f"Native process exited with status {process.returncode}",
         )
+        if isinstance(process_start_guard, ProcessStartGuard):
+            process_start_guard.poison(cleanup_error)
+        raise cleanup_error
     completed = subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
     if completed.returncode != 0:
         raise subprocess.CalledProcessError(

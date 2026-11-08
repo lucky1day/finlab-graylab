@@ -118,6 +118,12 @@ class ProcessStartGuard:
             self._lock.release()
         return False
 
+    def poison(self, error: ProcessGroupTerminationError) -> None:
+        """运行阶段清理未确认时，永久拒绝本批次后续启动。"""
+        with self._lock:
+            if self._poison_error is None:
+                self._poison_error = error
+
 
 def require_process_start_guard(
     guard: object | None,
