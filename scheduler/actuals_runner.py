@@ -76,10 +76,6 @@ def _is_trading_day(calendar: CalendarService, run_date: str) -> bool:
     return calendar.is_trading_day(run_date)
 
 
-def _previous_trading_day(calendar: CalendarService, run_date: str) -> str:
-    return calendar.previous_trading_day(run_date)
-
-
 def run_actuals_job(
     run_date: str | date | None = None,
 ) -> ActualsJobSummary:
@@ -89,10 +85,7 @@ def run_actuals_job(
     try:
         calendar = get_calendar(engine=engine)
         if not _is_trading_day(calendar, target_date):
-            daily_weekly_end_date = _previous_trading_day(
-                calendar,
-                target_date,
-            )
+            daily_weekly_end_date = calendar.previous_trading_day(target_date)
             logger.info(
                 "Refresh daily/weekly actuals to previous trading day %s on non-trading day %s; "
                 "monthly actuals still refresh to %s",
