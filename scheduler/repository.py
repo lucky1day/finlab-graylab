@@ -124,7 +124,5 @@ from scheduler.persistence.predictions import (
     complete_gray_gap_runs_atomic,
     create_scheme_run,
     fail_scheme_run_atomic,
-    prediction_day_backup_digest,
-    replace_authorized_prediction_day,
     write_run_log,
 )

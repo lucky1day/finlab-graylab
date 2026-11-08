@@ -23,22 +23,6 @@ from shared.actual_facts import (
 from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES
 
 
-def update_period_average_actuals(
-    start_date: str | date | datetime | None = None,
-    end_date: str | date | datetime | None = None,
-    tenors: Iterable[str] | None = None,
-    *,
-    engine: Engine | None = None,
-) -> int:
-    """兼容入口：刷新周期均值 Actual，并返回本批处理条数。"""
-    return update_period_average_actuals_detailed(
-        start_date=start_date,
-        end_date=end_date,
-        tenors=tenors,
-        engine=engine,
-    ).attempted
-
-
 def update_period_average_actuals_detailed(
     start_date: str | date | datetime | None = None,
     end_date: str | date | datetime | None = None,
