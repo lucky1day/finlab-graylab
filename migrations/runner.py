@@ -610,11 +610,12 @@ def _migration_owner_connection(
                 )
 
 
-def _unsafe_applying_017_inspection(
+def _unsafe_applying_inspection(
     *,
     manifest: Iterable[PreparedMigration],
     database_identity: Mapping[str, object],
     reason: BaseException,
+    version: int,
 ) -> dict[str, object]:
     """在 history/schema 无法完整读取时仍返回稳定 UNSAFE 结果。"""
     canonical_state = {
@@ -626,7 +627,7 @@ def _unsafe_applying_017_inspection(
                 "sha256": migration.sha256,
             }
             for migration in manifest
-            if migration.version <= DAILY_LEDGER_MIGRATION_VERSION
+            if migration.version <= version
         ],
         "inspection_error": {
             "type": type(reason).__name__,
@@ -640,6 +641,14 @@ def _unsafe_applying_017_inspection(
         "migration": None,
         "reason": str(reason),
     }
+
+
+def _read_validated_migration_history(connection: object) -> list[dict[str, object]]:
+    """按既有顺序检查历史表、校验结构，再读取历史；不改变调用方事务。"""
+    if not _migration_history_table_exists(connection):
+        raise MigrationHistoryError("migration history table does not exist")
+    _validate_migration_history_schema(_read_migration_history_schema(connection))
+    return _read_migration_history(connection)
 
 
 def _read_database_identity(connection: object) -> dict[str, str]:
@@ -663,14 +672,7 @@ def _read_applying_017_inspection(
     """在 owner lock 内读取一次 canonical APPLYING 017 状态。"""
     database_identity = _read_database_identity(connection)
     try:
-        if not _migration_history_table_exists(connection):
-            raise MigrationHistoryError(
-                "migration history table does not exist"
-            )
-        _validate_migration_history_schema(
-            _read_migration_history_schema(connection)
-        )
-        history = _read_migration_history(connection)
+        history = _read_validated_migration_history(connection)
         upgrade_state = read_daily_ledger_upgrade_state(connection)
         return build_applying_017_inspection(
             manifest=manifest,
@@ -686,7 +688,8 @@ def _read_applying_017_inspection(
         TypeError,
         ValueError,
     ) as exc:
-        return _unsafe_applying_017_inspection(
+        return _unsafe_applying_inspection(
+            version=17,
             manifest=manifest,
             database_identity=database_identity,
             reason=exc,
@@ -800,38 +803,6 @@ def recover_applying_migration_017(
     )
 
 
-def _unsafe_applying_018_inspection(
-    *,
-    manifest: Iterable[PreparedMigration],
-    database_identity: Mapping[str, object],
-    reason: BaseException,
-) -> dict[str, object]:
-    canonical_state = {
-        "database_identity": dict(database_identity),
-        "manifest": [
-            {
-                "version": migration.version,
-                "filename": migration.path.name,
-                "sha256": migration.sha256,
-            }
-            for migration in manifest
-            if migration.version
-            <= SCHEDULE_RUN_STARTED_AT_MIGRATION_VERSION
-        ],
-        "inspection_error": {
-            "type": type(reason).__name__,
-            "message": str(reason),
-        },
-    }
-    return {
-        "classification": "UNSAFE",
-        "state_digest": _applying_017_state_digest(canonical_state),
-        "database_identity": dict(database_identity),
-        "migration": None,
-        "reason": str(reason),
-    }
-
-
 def _read_applying_018_inspection(
     connection: object,
     manifest: list[PreparedMigration],
@@ -839,16 +810,10 @@ def _read_applying_018_inspection(
     """在 owner lock 内读取一次 canonical APPLYING 018 状态。"""
     database_identity = _read_database_identity(connection)
     try:
-        if not _migration_history_table_exists(connection):
-            raise MigrationHistoryError(
-                "migration history table does not exist"
-            )
-        _validate_migration_history_schema(
-            _read_migration_history_schema(connection)
-        )
+        history = _read_validated_migration_history(connection)
         return build_applying_018_inspection(
             manifest=manifest,
-            history=_read_migration_history(connection),
+            history=history,
             database_identity=database_identity,
             started_at_shape=_read_schedule_run_started_at_shape(
                 connection
@@ -862,7 +827,8 @@ def _read_applying_018_inspection(
         TypeError,
         ValueError,
     ) as exc:
-        return _unsafe_applying_018_inspection(
+        return _unsafe_applying_inspection(
+            version=18,
             manifest=manifest,
             database_identity=database_identity,
             reason=exc,
@@ -897,37 +863,6 @@ def recover_applying_migration_018(
     )
 
 
-def _unsafe_applying_019_inspection(
-    *,
-    manifest: Iterable[PreparedMigration],
-    database_identity: Mapping[str, object],
-    reason: BaseException,
-) -> dict[str, object]:
-    canonical_state = {
-        "database_identity": dict(database_identity),
-        "manifest": [
-            {
-                "version": migration.version,
-                "filename": migration.path.name,
-                "sha256": migration.sha256,
-            }
-            for migration in manifest
-            if migration.version <= SERVING_POINTER_RETIREMENT_MIGRATION_VERSION
-        ],
-        "inspection_error": {
-            "type": type(reason).__name__,
-            "message": str(reason),
-        },
-    }
-    return {
-        "classification": "UNSAFE",
-        "state_digest": _applying_017_state_digest(canonical_state),
-        "database_identity": dict(database_identity),
-        "migration": None,
-        "reason": str(reason),
-    }
-
-
 def _read_applying_019_inspection(
     connection: object,
     manifest: list[PreparedMigration],
@@ -935,16 +870,10 @@ def _read_applying_019_inspection(
     """在 owner lock 内读取一次 canonical APPLYING 019 状态。"""
     database_identity = _read_database_identity(connection)
     try:
-        if not _migration_history_table_exists(connection):
-            raise MigrationHistoryError(
-                "migration history table does not exist"
-            )
-        _validate_migration_history_schema(
-            _read_migration_history_schema(connection)
-        )
+        history = _read_validated_migration_history(connection)
         return build_applying_019_inspection(
             manifest=manifest,
-            history=_read_migration_history(connection),
+            history=history,
             database_identity=database_identity,
             pointer_state=_read_serving_pointer_retirement_state(connection),
         )
@@ -956,7 +885,8 @@ def _read_applying_019_inspection(
         TypeError,
         ValueError,
     ) as exc:
-        return _unsafe_applying_019_inspection(
+        return _unsafe_applying_inspection(
+            version=19,
             manifest=manifest,
             database_identity=database_identity,
             reason=exc,
@@ -991,37 +921,6 @@ def recover_applying_migration_019(
     )
 
 
-def _unsafe_applying_021_inspection(
-    *,
-    manifest: Iterable[PreparedMigration],
-    database_identity: Mapping[str, object],
-    reason: BaseException,
-) -> dict[str, object]:
-    canonical_state = {
-        "database_identity": dict(database_identity),
-        "manifest": [
-            {
-                "version": migration.version,
-                "filename": migration.path.name,
-                "sha256": migration.sha256,
-            }
-            for migration in manifest
-            if migration.version <= REGISTRY_OWNER_MIGRATION_VERSION
-        ],
-        "inspection_error": {
-            "type": type(reason).__name__,
-            "message": str(reason),
-        },
-    }
-    return {
-        "classification": "UNSAFE",
-        "state_digest": _applying_017_state_digest(canonical_state),
-        "database_identity": dict(database_identity),
-        "migration": None,
-        "reason": str(reason),
-    }
-
-
 def _read_applying_021_inspection(
     connection: object,
     manifest: list[PreparedMigration],
@@ -1029,16 +928,10 @@ def _read_applying_021_inspection(
     """在 owner lock 内读取一次 canonical APPLYING 021 状态。"""
     database_identity = _read_database_identity(connection)
     try:
-        if not _migration_history_table_exists(connection):
-            raise MigrationHistoryError(
-                "migration history table does not exist"
-            )
-        _validate_migration_history_schema(
-            _read_migration_history_schema(connection)
-        )
+        history = _read_validated_migration_history(connection)
         return build_applying_021_inspection(
             manifest=manifest,
-            history=_read_migration_history(connection),
+            history=history,
             database_identity=database_identity,
             registry_state=_read_registry_owner_recovery_state(connection),
         )
@@ -1050,7 +943,8 @@ def _read_applying_021_inspection(
         TypeError,
         ValueError,
     ) as exc:
-        return _unsafe_applying_021_inspection(
+        return _unsafe_applying_inspection(
+            version=21,
             manifest=manifest,
             database_identity=database_identity,
             reason=exc,
@@ -1085,37 +979,6 @@ def recover_applying_migration_021(
     )
 
 
-def _unsafe_applying_022_inspection(
-    *,
-    manifest: Iterable[PreparedMigration],
-    database_identity: Mapping[str, object],
-    reason: BaseException,
-) -> dict[str, object]:
-    canonical_state = {
-        "database_identity": dict(database_identity),
-        "manifest": [
-            {
-                "version": migration.version,
-                "filename": migration.path.name,
-                "sha256": migration.sha256,
-            }
-            for migration in manifest
-            if migration.version <= AUTH_MIGRATION_VERSION
-        ],
-        "inspection_error": {
-            "type": type(reason).__name__,
-            "message": str(reason),
-        },
-    }
-    return {
-        "classification": "UNSAFE",
-        "state_digest": _applying_017_state_digest(canonical_state),
-        "database_identity": dict(database_identity),
-        "migration": None,
-        "reason": str(reason),
-    }
-
-
 def _read_applying_022_inspection(
     connection: object,
     manifest: list[PreparedMigration],
@@ -1123,16 +986,10 @@ def _read_applying_022_inspection(
     """在 owner lock 内读取一次 canonical APPLYING 022 状态。"""
     database_identity = _read_database_identity(connection)
     try:
-        if not _migration_history_table_exists(connection):
-            raise MigrationHistoryError(
-                "migration history table does not exist"
-            )
-        _validate_migration_history_schema(
-            _read_migration_history_schema(connection)
-        )
+        history = _read_validated_migration_history(connection)
         return build_applying_022_inspection(
             manifest=manifest,
-            history=_read_migration_history(connection),
+            history=history,
             database_identity=database_identity,
             auth_schema=read_auth_schema(connection),
         )
@@ -1144,7 +1001,8 @@ def _read_applying_022_inspection(
         TypeError,
         ValueError,
     ) as exc:
-        return _unsafe_applying_022_inspection(
+        return _unsafe_applying_inspection(
+            version=22,
             manifest=manifest,
             database_identity=database_identity,
             reason=exc,
@@ -1179,37 +1037,6 @@ def recover_applying_migration_022(
     )
 
 
-def _unsafe_applying_023_inspection(
-    *,
-    manifest: Iterable[PreparedMigration],
-    database_identity: Mapping[str, object],
-    reason: BaseException,
-) -> dict[str, object]:
-    canonical_state = {
-        "database_identity": dict(database_identity),
-        "manifest": [
-            {
-                "version": migration.version,
-                "filename": migration.path.name,
-                "sha256": migration.sha256,
-            }
-            for migration in manifest
-            if migration.version <= AUTH_PROFILE_MIGRATION_VERSION
-        ],
-        "inspection_error": {
-            "type": type(reason).__name__,
-            "message": str(reason),
-        },
-    }
-    return {
-        "classification": "UNSAFE",
-        "state_digest": _applying_017_state_digest(canonical_state),
-        "database_identity": dict(database_identity),
-        "migration": None,
-        "reason": str(reason),
-    }
-
-
 def _read_applying_023_inspection(
     connection: object,
     manifest: list[PreparedMigration],
@@ -1217,16 +1044,10 @@ def _read_applying_023_inspection(
     """在 owner lock 内读取一次 canonical APPLYING 023 状态。"""
     database_identity = _read_database_identity(connection)
     try:
-        if not _migration_history_table_exists(connection):
-            raise MigrationHistoryError(
-                "migration history table does not exist"
-            )
-        _validate_migration_history_schema(
-            _read_migration_history_schema(connection)
-        )
+        history = _read_validated_migration_history(connection)
         return build_applying_023_inspection(
             manifest=manifest,
-            history=_read_migration_history(connection),
+            history=history,
             database_identity=database_identity,
             auth_profile_schema=read_auth_profile_schema(connection),
         )
@@ -1238,7 +1059,8 @@ def _read_applying_023_inspection(
         TypeError,
         ValueError,
     ) as exc:
-        return _unsafe_applying_023_inspection(
+        return _unsafe_applying_inspection(
+            version=23,
             manifest=manifest,
             database_identity=database_identity,
             reason=exc,
@@ -1280,16 +1102,10 @@ def _read_applying_024_inspection(
     """在 owner lock 内读取一次 canonical APPLYING 024 状态。"""
     database_identity = _read_database_identity(connection)
     try:
-        if not _migration_history_table_exists(connection):
-            raise MigrationHistoryError(
-                "migration history table does not exist"
-            )
-        _validate_migration_history_schema(
-            _read_migration_history_schema(connection)
-        )
+        history = _read_validated_migration_history(connection)
         return build_applying_024_inspection(
             manifest=manifest,
-            history=_read_migration_history(connection),
+            history=history,
             database_identity=database_identity,
             fact_state=read_scheme_prediction_fact_state(connection),
         )
