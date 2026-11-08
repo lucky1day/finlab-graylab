@@ -12,7 +12,8 @@ from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError, TimeoutError as PoolTimeoutError
 
-from backend.auth.repository import get_session_user, lock_session_user
+from backend.auth.repository import lock_session_user
+from backend.auth.service import AuthService
 from backend.factor_lab_dashboard_queries import (
     SummaryPredictionReadStats,
     iter_summary_product_predictions,
@@ -294,13 +295,11 @@ def test_session_read_does_not_wait_for_user_write_lock(
             text("UPDATE t_auth_users SET full_name = 'pending' WHERE id = :id"),
             {"id": user_id},
         )
-        with mysql_test_engine.connect() as reader:
-            started = time.monotonic()
-            session = get_session_user(reader, token_hash, now)
-            elapsed = time.monotonic() - started
-        assert session is not None
-        assert session[0].username == username
-        assert session[0].full_name is None
+        started = time.monotonic()
+        session = AuthService(mysql_test_engine, now=lambda: now).current_session(username)
+        elapsed = time.monotonic() - started
+        assert session.user.username == username
+        assert session.user.full_name is None
         assert elapsed < 0.75
 
         with mysql_test_engine.connect() as lock_waiter:

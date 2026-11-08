@@ -16,8 +16,6 @@ from backend.db import (
     create_http_request_context,
 )
 from backend.factor_lab_dashboard_semantics import (
-    choose_live_prediction_rows,
-    iter_grouped_live_prediction_rows,
     live_actual_selector,
 )
 from backend.factor_lab_dashboard_queries import (
@@ -393,13 +391,26 @@ def test_selected_base_backtest_maps_multiple_targets_and_checks_runtime(runtime
     assert all(row["backtest"] is None for row in build_factor_lab_dashboard(engine)["schemes"])
 
 
+@pytest.mark.parametrize(
+    "task_type,frequency,candidates,expected_detail",
+    [
+        ("T+1", "daily", [
+            (1, "2026-01-02", "2026-01-01", "2026-01-05", 1, 1),
+            (2, "2026-01-03", "2026-01-02", "2026-01-05", -1, -1),
+        ], ["backtest", "2026-01-03", "2026-01-02", "2026-01-05", -1, -1]),
+        ("weekly_point", "weekly", [
+            (3, "2026-01-10", "2026-01-08", "2026-01-16", 1, 1),
+            (4, "2026-01-09", "2026-01-08", "2026-01-16", -1, -1),
+            (5, "2026-01-11", "2026-01-07", "2026-01-16", 0, 0),
+        ], ["backtest", "2026-01-09", "2026-01-08", "2026-01-16", -1, -1]),
+    ],
+    ids=["daily-latest-id", "weekly-latest-feature-earliest-predict"],
+)
 def test_summary_streams_across_fetch_boundaries_without_changing_counts(
-    monkeypatch,
+    monkeypatch, task_type, frequency, candidates, expected_detail,
 ) -> None:
     from backend import factor_lab_dashboard as dashboard
-    from backend.factor_lab_dashboard_queries import (
-        iter_summary_product_predictions,
-    )
+    from backend.factor_lab_dashboard_queries import iter_summary_product_predictions
 
     engine = _engine()
     monkeypatch.setattr(
@@ -407,104 +418,42 @@ def test_summary_streams_across_fetch_boundaries_without_changing_counts(
         "iter_summary_product_predictions",
         lambda connection, registry_rows, *, stats, replacement_plan=None: (
             iter_summary_product_predictions(
-                connection,
-                registry_rows,
-                stats=stats,
-                replacement_plan=replacement_plan,
-                fetch_rows=2,
+                connection, registry_rows, stats=stats,
+                replacement_plan=replacement_plan, fetch_rows=2,
             )
         ),
     )
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                """INSERT INTO t_scheme_predictions VALUES
-                (10,'demo_daily','5Y',1,'2026-02-01','2026-01-30',
-                 '2026-02-02',1,1,'{}'),
-                (11,'demo_daily','5Y',1,'2026-02-02','2026-01-31',
-                 '2026-02-02',-1,-1,'{}'),
-                (12,'demo_daily','5Y',1,'2026-03-01','2026-02-27',
-                 '2026-03-02',0,NULL,'{}')"""
-            )
-        )
-
-    rows = build_factor_lab_dashboard(engine)["schemes"][0]["monthly_rows"]
-
-    assert ["2026-01", "backtest", 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1] in rows
-    assert ["2026-02", "backtest", *([0] * 11)] in rows
-
-
-def test_streaming_canonical_selection_matches_previous_fixed_oracle() -> None:
     rows = [
-        {
-            "id": 1,
-            "scheme_id": "daily",
-            "target_tenor": "5Y",
-            "horizon": 1,
-            "predict_date": "2026-01-02",
-            "feature_date": "2026-01-01",
-            "target_date": "2026-01-05",
-        },
-        {
-            "id": 2,
-            "scheme_id": "daily",
-            "target_tenor": "5Y",
-            "horizon": 1,
-            "predict_date": "2026-01-03",
-            "feature_date": "2026-01-02",
-            "target_date": "2026-01-05",
-        },
-        {
-            "id": 3,
-            "scheme_id": "weekly",
-            "target_tenor": "10Y",
-            "horizon": 1,
-            "predict_date": "2026-01-10",
-            "feature_date": "2026-01-08",
-            "target_date": "2026-01-16",
-        },
-        {
-            "id": 4,
-            "scheme_id": "weekly",
-            "target_tenor": "10Y",
-            "horizon": 1,
-            "predict_date": "2026-01-09",
-            "feature_date": "2026-01-08",
-            "target_date": "2026-01-16",
-        },
+        # 领先业务点将后面的重复候选放到 fetch 第2/3行，覆盖跨批选择。
+        (100, "2025-12-31", "2025-12-30", "2026-01-01", 1, 1),
+        *candidates,
+        (12, "2026-03-01", "2026-02-27", "2026-03-02", 0, None),
     ]
-    task_types = {
-        ("daily", "5Y", 1): "T+1",
-        ("weekly", "10Y", 1): "weekly_point",
-    }
-    grouped_rows = sorted(
-        rows,
-        key=lambda row: (
-            row["scheme_id"],
-            row["target_tenor"],
-            row["horizon"],
-            row["target_date"],
-            row["predict_date"],
-            row["id"],
-        ),
-    )
-
-    previous = choose_live_prediction_rows(
-        rows,
-        display_until="2026-12-31",
-        task_type_by_scheme=task_types,
-    )
-    streaming = list(
-        iter_grouped_live_prediction_rows(
-            grouped_rows,
-            display_until="2026-12-31",
-            task_type_by_scheme=task_types,
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM t_scheme_predictions"))
+        connection.execute(text(
+            "UPDATE t_scheme_registry SET task_type=:task_type, frequency=:frequency"
+        ), {"task_type": task_type, "frequency": frequency})
+        connection.execute(text("""INSERT INTO t_scheme_predictions VALUES
+            (:id,'demo_daily','5Y',1,:predict,:feature,:target,:direction,:actual,'{}')"""), [
+                dict(zip(("id", "predict", "feature", "target", "direction", "actual"), row))
+                for row in rows
+            ])
+    # 固定业务预期；不由任何一条生产选择/聚合实现生成另一条的 oracle。
+    summary = build_factor_lab_dashboard(engine)
+    assert summary["schemes"][0]["monthly_rows"] == [
+        ["2025-12", "backtest", 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0],
+        ["2026-01", "backtest", 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1],
+        ["2026-02", "backtest", *([0] * 11)],
+    ]
+    for month, expected in (
+        ("2026-01", expected_detail),
+        ("2026-02", ["backtest", "2026-03-01", "2026-02-27", "2026-03-02", 0, None]),
+    ):
+        detail = build_factor_lab_dashboard_detail(
+            engine, scheme_id="demo_daily__h1__5Y", month=month, source="backtest",
         )
-    )
-
-    assert {int(row["id"]) for row in streaming} == {
-        int(row["id"]) for row in previous
-    } == {2, 4}
+        assert detail is not None and detail["rows"] == [expected]
 
 
 def test_summary_still_fails_closed_on_conflicting_actual_facts() -> None:

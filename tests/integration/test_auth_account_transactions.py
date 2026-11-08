@@ -121,11 +121,30 @@ def test_profile_only_updates_keep_sessions_and_protected_admin_rules(mysql_test
         service.update_user_profile(token, user_id=actor.id, **kwargs)
     assert service.authenticate(token).full_name == "Updated"
     assert _audit(mysql_test_engine, request_id)[0][0] == "user_profile_changed"
-    for method, values in [("change_role", {"role": "user"}),
-                           ("edit_user", {"username": actor.username, "full_name": "Rejected",
-                                          "organization_name": None, "role": "user", "status": "active"})]:
-        with pytest.raises(AuthError, match="protected_admin"):
-            getattr(service, method)(token, user_id=actor.id, request_id=uuid.uuid4().hex, **values)
+    _, other_admin, other_token = _account(mysql_test_engine, role="admin")
+
+    def protected_state():
+        """读回目标及操作者的账户、会话与审计，拒绝操作不得留半份变更。"""
+        with mysql_test_engine.connect() as connection:
+            params = {"target": actor.id, "other": other_admin.id}
+            return [connection.execute(text(statement), params).all() for statement in (
+                "SELECT * FROM t_auth_users WHERE id IN (:target,:other) ORDER BY id",
+                "SELECT * FROM t_auth_sessions WHERE user_id IN (:target,:other) ORDER BY id",
+                "SELECT * FROM t_auth_audit_logs WHERE target_user_id IN (:target,:other) ORDER BY id",
+            )]
+
+    before = protected_state()
+    for acting_token in (token, other_token):
+        for method, values in [("change_role", {"role": "user"}),
+                               ("edit_user", {"username": actor.username, "full_name": "Rejected",
+                                              "organization_name": None, "role": "user", "status": "active"})]:
+            rejected_request = uuid.uuid4().hex
+            with pytest.raises(AuthError, match="protected_admin"):
+                getattr(service, method)(acting_token, user_id=actor.id,
+                                          request_id=rejected_request, **values)
+            assert _audit(mysql_test_engine, rejected_request) == []
+            assert protected_state() == before
+            assert service.authenticate(acting_token).status == "active"
     assert service.authenticate(token).full_name == "Updated"
 
 

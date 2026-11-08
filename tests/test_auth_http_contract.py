@@ -158,20 +158,6 @@ def test_session_repository_exposes_locked_and_unlocked_reads():
     assert "FOR UPDATE" in locked_sql
 
 
-def test_current_session_uses_nonlocking_read(monkeypatch):
-    user = _user()
-    ordinary_read = Mock(return_value=(user, datetime(2099, 1, 1)))
-    locked_read = Mock(side_effect=AssertionError("read path must not lock"))
-    monkeypatch.setattr(repository, "get_session_user", ordinary_read)
-    monkeypatch.setattr(repository, "lock_session_user", locked_read)
-
-    result = AuthService(MagicMock()).current_session("session-token")
-
-    assert result.user is user
-    ordinary_read.assert_called_once()
-    locked_read.assert_not_called()
-
-
 def test_logout_revalidates_with_lock_in_revocation_transaction(monkeypatch):
     user = _user()
     locked_read = Mock(return_value=(user, datetime(2099, 1, 1)))
@@ -247,30 +233,6 @@ def test_new_admin_request_rechecks_changed_role(monkeypatch):
     assert first.status_code == 200
     assert after_role_change.status_code == 403
     assert session_read.call_count == 2
-
-
-def test_role_mutation_revalidates_locked_actor_and_protected_target(monkeypatch):
-    actor = _user(user_id=1, role="admin")
-    target = replace(
-        _user(user_id=2, role="admin"),
-        is_protected_admin=True,
-    )
-    locked_session = Mock(return_value=(actor, datetime(2099, 1, 1)))
-    update_role = Mock(side_effect=AssertionError("protected user must not change"))
-    monkeypatch.setattr(repository, "lock_session_user", locked_session)
-    monkeypatch.setattr(repository, "lock_user_by_id", lambda *_args: target)
-    monkeypatch.setattr(repository, "update_role", update_role)
-
-    with pytest.raises(AuthError, match="protected_admin"):
-        AuthService(MagicMock()).change_role(
-            "session-token",
-            user_id=target.id,
-            role="user",
-            request_id="role-change",
-        )
-
-    locked_session.assert_called_once()
-    update_role.assert_not_called()
 
 
 @pytest.mark.parametrize("method", ["GET", "HEAD"])
