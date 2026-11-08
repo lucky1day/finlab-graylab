@@ -4,7 +4,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from backtests._base_runner import RunOutput, make_run_output
+from backtests.result import RunOutput, make_run_output
 from shared.blackbox_v2.contracts import BlackboxMetadata
 from shared.blackbox_v2.history import (
     CURRENT_SNAPSHOT_REPLAY,

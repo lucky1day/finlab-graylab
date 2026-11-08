@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 if TYPE_CHECKING:
-    from backtests._base_runner import RunOutput
+    from backtests.result import RunOutput
 
 
 def clean_json(value: Any) -> Any:
