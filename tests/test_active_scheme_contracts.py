@@ -55,11 +55,11 @@ class ActiveSchemeContractTests(unittest.TestCase):
 
 def test_native_inventory_matches_fixed_w4_policy() -> None:
     from harness.contracts.onboarding_policy import load_onboarding_policy
-    from shared.scheme_config_loader import load_yaml_mapping
+    from scheduler.discovery import load_scheme_config
 
     native_ids = {
         path.parent.name
         for path in SCHEMES_ROOT.glob("*/config.yaml")
-        if load_yaml_mapping(path).get("runtime_type", "native_adapter") == "native_adapter"
+        if load_scheme_config(path).runtime_type == "native_adapter"
     }
     assert set(load_onboarding_policy(PROJECT_ROOT).legacy_native_scheme_ids) == native_ids

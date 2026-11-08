@@ -16,7 +16,6 @@ from typing import (
 import pandas as pd
 
 from shared import data_service as _data_service
-from shared.artifact_paths import safe_path_part
 from shared._input_artifacts.contract import (
     BLACKBOX_SCHEMA_PATH,
     DAILY_DATA_VERSION,
@@ -44,6 +43,11 @@ def create_input_engine(*, database_config: Any | None = None):
     return _data_service.create_sqlalchemy_engine(
         db_config=database_config,
     )
+
+
+def safe_path_part(value: str) -> str:
+    """Return a filesystem-safe path segment for scheme and benchmark ids."""
+    return "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in str(value))
 
 
 def input_artifact_path(

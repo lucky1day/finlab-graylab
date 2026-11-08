@@ -6,10 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from scheduler.deployment_scope import filter_schemes_for_configured_target
 from shared.blackbox_v2.versioning import compute_blackbox_config_hash
 from shared.blackbox_v2.contracts import BlackboxDelivery, BlackboxMetadata
-from shared.scheme_config_loader import load_yaml_mapping
 from shared.scheme_config_schema import resolve_fact_horizon, validate_config
 from shared.versioning import (
     compute_code_hash,
@@ -99,7 +100,9 @@ def load_scheme_config(config_path: Path) -> SchemeConfig:
 
 def _load_declared_scheme_config(config_path: Path) -> SchemeConfig:
     """读取单个方案 config.yaml 中声明的配置，不含本机生命周期状态。"""
-    raw = load_yaml_mapping(config_path)
+    raw = _require_mapping(
+        yaml.safe_load(config_path.read_text(encoding="utf-8")), config_path,
+    )
     errors = validate_config(raw, config_path.parent.name)
     if errors:
         raise ValueError(f"{config_path}: " + "; ".join(errors))

@@ -15,10 +15,6 @@ _DATASETS = {'daily_output.csv': ('date', 'daily_cutoff_key'),
              'monthly_output.csv': ('month_id', 'monthly_cutoff_key')}
 
 
-class InputDataIncomplete(ValueError):
-    """保留旧调用兼容；审计函数不因缺数抛出该异常。"""
-
-
 class PredictionInputAuditBatch:
     """仅在一次封存 runtime view 内复用读取，不缓存逐日期审计结论。"""
 

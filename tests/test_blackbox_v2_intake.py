@@ -7,12 +7,13 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
+import yaml
+
 
 class BlackboxV2IntakeTests(unittest.TestCase):
     def test_cli_intake_preserves_bytes_and_creates_paused_config(self) -> None:
         from harness.cli import main
         from scheduler.discovery import load_scheme_config
-        from shared.scheme_config_loader import load_yaml_mapping
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -22,7 +23,7 @@ class BlackboxV2IntakeTests(unittest.TestCase):
                              "--project-root", str(root)])
             scheme_dir = root / "schemes" / "trial_10y"
             config = load_scheme_config(scheme_dir / "config.yaml")
-            raw = load_yaml_mapping(scheme_dir / "config.yaml")
+            raw = yaml.safe_load((scheme_dir / "config.yaml").read_text(encoding="utf-8"))
             self.assertEqual(code, 0)
             self.assertEqual(json.loads(output.getvalue()), {
                 "scheme_id": "trial_10y", "runtime_type": "blackbox_v2",
@@ -73,9 +74,8 @@ class BlackboxV2IntakeTests(unittest.TestCase):
                     schemes_root=root / "schemes",
                 )
 
-                from shared.scheme_config_loader import load_yaml_mapping
 
-                config = load_yaml_mapping(scheme_dir / "config.yaml")
+                config = yaml.safe_load((scheme_dir / "config.yaml").read_text(encoding="utf-8"))
                 self.assertEqual(config["schedule"]["cron"], "0 18 * * 1-5")
 
 

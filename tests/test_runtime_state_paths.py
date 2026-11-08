@@ -137,18 +137,25 @@ def test_runtime_consumers_share_the_unified_root(tmp_path: Path) -> None:
     assert monthly_path.is_relative_to(tmp_path / "cache" / "monthly")
 
 
-def test_artifact_paths_use_unified_root_in_fresh_process(
-    tmp_path: Path,
+@pytest.mark.parametrize("configured_root", [True, False])
+def test_input_artifacts_use_unified_root_in_fresh_process(
+    tmp_path: Path, configured_root: bool,
 ) -> None:
     project_root = Path(__file__).resolve().parents[1]
     environment = os.environ.copy()
-    environment["BFL_RUNTIME_ROOT"] = str(tmp_path)
+    environment.pop("BFL_DEPLOYMENT_TARGET", None)
+    if configured_root:
+        environment["BFL_RUNTIME_ROOT"] = str(tmp_path)
+    else:
+        environment.pop("BFL_RUNTIME_ROOT", None)
     completed = subprocess.run(
         [
             sys.executable,
             "-c",
-            "from shared.artifact_paths import BACKTEST_ARTIFACT_ROOT; "
-            "print(BACKTEST_ARTIFACT_ROOT)",
+            "from shared.input_artifacts import DEFAULT_OUTPUT_ROOT, "
+            "BLACKBOX_SNAPSHOT_ROOT, BLACKBOX_RUNTIME_VIEW_ROOT; "
+            "print(DEFAULT_OUTPUT_ROOT); print(BLACKBOX_SNAPSHOT_ROOT); "
+            "print(BLACKBOX_RUNTIME_VIEW_ROOT)",
         ],
         cwd=project_root,
         env=environment,
@@ -157,6 +164,9 @@ def test_artifact_paths_use_unified_root_in_fresh_process(
         text=True,
     )
 
+    root = tmp_path / "artifacts" if configured_root else project_root / "backtest_artifacts"
     assert completed.stdout.splitlines() == [
-        str(tmp_path / "artifacts"),
+        str(root / "runtime_inputs"),
+        str(root / "blackbox_v2" / "snapshots"),
+        str(root / "blackbox_v2" / "runtime_views"),
     ]

@@ -7,13 +7,16 @@ from dataclasses import dataclass
 from pathlib import Path
 import pandas as pd
 
-from shared.artifact_paths import (
-    BACKTEST_ARTIFACT_ROOT,
-    RUNTIME_INPUT_ROOT,
-)
+from shared.runtime_paths import resolve_runtime_state_path
 from shared.blackbox_v2.snapshot import SNAPSHOT_FILENAMES
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+BACKTEST_ARTIFACT_ROOT = resolve_runtime_state_path(
+    relative_path="artifacts",
+    development_default=PROJECT_ROOT / "backtest_artifacts",
+)
+RUNTIME_INPUT_ROOT = BACKTEST_ARTIFACT_ROOT / "runtime_inputs"
 DEFAULT_OUTPUT_ROOT = RUNTIME_INPUT_ROOT
 BLACKBOX_SNAPSHOT_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "snapshots"
 BLACKBOX_GENERATION_SNAPSHOT_ROOT = (
