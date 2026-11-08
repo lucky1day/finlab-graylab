@@ -149,6 +149,9 @@ Dashboard 只从产品事实表聚合逐点结果。
 | 输入与产物 | W4 运行使用作业临时输入根并清理；Blackbox ready snapshot 与私有状态分别受控；历史证据由 repository 与外置 artifact 保存 |
 | 错误 | executor 记录失败 run/log；Harness 返回 Gate 结果，涉及持久化时核实相应 repository 的事务结果 |
 
+W4 源包的私有副本准备与解释器选择由 `shared._native_source` 统一实现；
+各 runner 保留原摘要规则、运行命令和结果读取。
+
 `migrations.runner` 只接收 caller-supplied `Engine`，实现 manifest、inspect、apply 与 APPLYING recovery，不读环境变量或解析 CLI，也不判定生产授权。`scripts/apply_migrations.py` 负责受限参数、目标环境与数据库身份围栏；其他模块不得复制迁移行为。命令、恢复摘要、备份及版本兼容要求集中在[部署手册](../../deploy/README.md)。
 
 内部持久化按职责分为 `scheduler.persistence.lifecycle`、`prediction_rows` 和 `predictions`；
