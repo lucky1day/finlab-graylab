@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "yield_5y_t5_bce441c074f187418e7b",
+  "name": "固定 S5470409/rsi7 d2 t0.25 o-1",
+  "owner": "国债收益率预测项目",
+  "description": "冻结信号D:S5470409|rsi7，按已成熟T+5标签及固定参数运行。0为平或阈值不出手；无效输入或历史不足报错。历史多重搜索研究，非新盲测。",
+  "algorithm_version": "20261108.fullspace.2",
+  "target_tenor": "5Y",
+  "task_type": "T+5",
+  "horizon": 5,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}
