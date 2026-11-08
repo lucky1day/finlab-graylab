@@ -411,12 +411,6 @@
     return "direction-neutral";
   }
 
-  function normalizeDirection(value) {
-    if (value === null || value === undefined || value === "") return null;
-    var numeric = Number(value);
-    return numeric === 1 || numeric === -1 || numeric === 0 ? numeric : null;
-  }
-
   function numberOrNull(value) {
     if (value === null || value === undefined) return null;
     var number = Number(value);

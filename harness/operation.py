@@ -45,7 +45,7 @@ def build_direct_operation(
     if action not in SIDE_EFFECT_ACTIONS:
         raise ValueError(f"unknown operation action: {action}")
     normalized_predict_date = (
-        _normalize_action_predict_date(action, predict_date)
+        _normalize_iso_date(f"{action} predict_date", predict_date)
         if action in EXACT_PREDICT_DATE_ACTIONS
         else None
     )
@@ -97,7 +97,7 @@ def verify_direct_operation(
 
     if action in EXACT_PREDICT_DATE_ACTIONS:
         try:
-            expected_date = _normalize_action_predict_date(action, predict_date)
+            expected_date = _normalize_iso_date(f"{action} predict_date", predict_date)
         except ValueError as exc:
             errors.append(str(exc))
         else:
@@ -140,10 +140,6 @@ def operation_scope_sha256(operation: DirectOperation) -> str:
 def normalize_backtest_start_date(value: str | None) -> str:
     resolved = DEFAULT_BACKTEST_START_DATE if value is None else value
     return _normalize_iso_date("backtest_start_date", resolved)
-
-
-def _normalize_action_predict_date(action: str, value: str | None) -> str:
-    return _normalize_iso_date(f"{action} predict_date", value)
 
 
 def _normalize_iso_date(field: str, value: object) -> str:

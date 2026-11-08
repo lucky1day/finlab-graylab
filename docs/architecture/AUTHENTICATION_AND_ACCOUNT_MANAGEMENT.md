@@ -165,7 +165,11 @@ release/schema 兼容检查和 lockdown site 按[部署恢复](../../deploy/READ
 
 ## 验收
 
-长期测试仅保留[访问边界与错误脱敏检查](../../tests/test_auth_http_contract.py)。账户完整生命周期、会话撤销持久化、并发管理员保护、密码工具和离线恢复不再维护独立常驻测试；涉及这些功能的变更按下列合同专项验证，不以访问测试通过代替。
+长期回归保留[HTTP 访问边界与错误脱敏](../../tests/test_auth_http_contract.py)、
+[隔离 MySQL 账户事务合同](../../tests/integration/test_auth_account_transactions.py)及
+[MySQL 运行时读写锁合同](../../tests/integration/test_mysql_runtime_contracts.py)，覆盖会话撤销、事务回滚、
+受保护及并发管理员规则和非阻塞会话读取。MySQL 集成测试仅在显式隔离实例及身份、DDL 围栏下运行。
+涉及密码工具、离线恢复或上述矩阵未覆盖的生命周期操作，仍按下列合同专项核验；单项测试通过不替代完整业务验收。
 
 按变更影响在每个授权环境的独立认证数据中核验：
 

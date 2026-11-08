@@ -51,17 +51,12 @@ def make_run_output(
 def build_monthly_metrics(rows: list[dict[str, Any]], *, benchmark_id: str) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for row in rows:
-        month = _metric_month(row)
+        month = _required_target_date(row)[:7]
         grouped.setdefault((row["target_tenor"], month), []).append(row)
     metrics: list[dict[str, Any]] = []
     for (tenor, month), items in sorted(grouped.items()):
         metrics.append(metric_row(items, tenor, month, benchmark_id=benchmark_id))
     return metrics
-
-
-def _metric_month(row: dict[str, Any]) -> str:
-    """返回历史回测月度指标归属月份（按 target_date 分组）。"""
-    return _required_target_date(row)[:7]
 
 
 def _required_target_date(row: dict[str, Any]) -> str:

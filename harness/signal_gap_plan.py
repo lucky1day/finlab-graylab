@@ -583,7 +583,12 @@ def read_signal_gap_snapshot(
     expected_cases: list[ExpectedSignalCase] = []
     context_blockers: list[Mapping[str, Any]] = []
     for target in registry_targets:
-        if not _is_due(target, predict_date=predict_date, calendar=calendar):
+        if not _is_frequency_due(
+            target.frequency,
+            predict_date=predict_date,
+            calendar=calendar,
+            task_type=target.task_type,
+        ):
             continue
         try:
             case = _expected_case(
@@ -1649,20 +1654,6 @@ def _read_calendar(connection: Any) -> _SingleDateCalendar:
     return _SingleDateCalendar(
         trade_calendar_rows=trade_rows,
         week_calendar_rows=week_rows,
-    )
-
-
-def _is_due(
-    target: RegistryTarget,
-    *,
-    predict_date: str,
-    calendar: _SingleDateCalendar,
-) -> bool:
-    return _is_frequency_due(
-        target.frequency,
-        predict_date=predict_date,
-        calendar=calendar,
-        task_type=target.task_type,
     )
 
 
