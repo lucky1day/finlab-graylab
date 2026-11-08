@@ -335,3 +335,77 @@ def test_execution_preflight_failure_preserves_engine_ownership(
             **({} if owns_engine else {"engine": engine}),
         )
     assert engine.dispose.call_count == int(owns_engine)
+
+
+@pytest.fixture
+def run_native_stdout(monkeypatch: pytest.MonkeyPatch):
+    """以受控真实子进程输出模拟 Native IPC，不加载方案或数据库。"""
+    import json
+    import subprocess
+    import sys
+
+    from scheduler.executor import run_scheme_subprocess
+
+    system_popen = subprocess.Popen
+
+    def run(**overrides):
+        row = {
+            "scheme_id": "ipc_contract_trial", "target_tenor": "10Y",
+            "horizon": 1, "predicted_direction": 1,
+            "predict_date": "2026-11-06", "feature_date": "2026-11-05",
+            "target_date": "2026-11-06",
+            **overrides,
+        }
+        payload = json.dumps([row])
+
+        def launch(command, **options):
+            assert "scheduler.scheme_runner" in command
+            return system_popen(
+                [sys.executable, "-c",
+                 "import sys; sys.stdout.write(sys.argv[1]); "
+                 "sys.stderr.write('unrecognized-private-model-stderr')",
+                 payload],
+                **options,
+            )
+
+        monkeypatch.setattr(subprocess, "Popen", launch)
+        return run_scheme_subprocess("ipc_contract_trial", "2026-11-06")
+
+    return run
+
+
+@pytest.mark.parametrize("field,value", [
+    ("predicted_direction", value)
+    for value in (0.9, -0.9, 1.9, True, False, 2, -2, float("nan"),
+                  float("inf"), -float("inf"), None, "bad", "1.0")
+] + [
+    ("horizon", value)
+    for value in (1.9, True, False, 0, -1, float("nan"), float("inf"),
+                  -float("inf"), None, "bad", "1.0")
+])
+def test_native_ipc_rejects_invalid_direction_and_horizon(
+    run_native_stdout, capsys, field: str, value: object,
+) -> None:
+    """畸形方向或身份数值不得被截断、补平或当作布尔整数接收。"""
+    with pytest.raises(ValueError, match=field) as error:
+        run_native_stdout(**{field: value})
+    assert "unrecognized-private-model-stderr" not in str(error.value)
+    assert "unrecognized-private-model-stderr" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("field,value,expected", [
+    ("predicted_direction", value, expected)
+    for value, expected in ((-1, -1), (0, 0), (1, 1), (1.0, 1),
+                            ("-1", -1), ("0", 0), (" +1 ", 1), ("01", 1))
+] + [
+    ("horizon", value, expected)
+    for value, expected in ((1, 1), (6, 6), (1.0, 1),
+                            ("1", 1), ("06", 6), (" +6 ", 6))
+])
+def test_native_ipc_preserves_compatible_integer_representations(
+    run_native_stdout, field: str, value: object, expected: int,
+) -> None:
+    """保留既有整数数字和数字字符串表示，不改变合法 Native 输出。"""
+    record, = run_native_stdout(**{field: value})
+    assert getattr(record, field) == expected
+    assert type(getattr(record, field)) is int

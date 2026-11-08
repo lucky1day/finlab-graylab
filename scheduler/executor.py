@@ -59,7 +59,8 @@ from shared.input_artifacts import (
 )
 from shared.blackbox_v2.snapshot import BlackboxSnapshot
 from shared.db_config import DATABASE_ENV_FILE_ENV
-from shared.models import PredictionRecord
+from shared.models import DIRECTION_VALUES, PredictionRecord
+from shared.native_output import require_source_integer
 from shared.one_shot_control_plane import (
     LAUNCHD_ONE_SHOT_CONTROL_PLANE,
     SCHEDULED_ONE_SHOT_CONTROL_PLANES,
@@ -176,14 +177,34 @@ def _is_scheduled_execution_context(
     return context is _SCHEDULED_EXECUTION_CONTEXTS[control_plane]
 
 
+def _payload_integer(value: object, *, field: str) -> int:
+    """保留既有整数表示，拒绝 IPC 身份与方向的小数截断或布尔值。"""
+    try:
+        # 旧 IPC 接受 int() 可解析的字符串；不扩大到 "1.0" 等新表示。
+        if isinstance(value, str):
+            value = int(value)
+        parsed = require_source_integer(
+            value,
+            field=field,
+            allowed_values=DIRECTION_VALUES if field == "predicted_direction" else None,
+        )
+        if field == "horizon" and parsed <= 0:
+            raise ValueError("horizon must be positive")
+    except (RuntimeError, TypeError, ValueError):
+        raise ValueError(f"scheme runner returned invalid {field}") from None
+    return parsed
+
+
 def _record_from_payload(item: dict) -> PredictionRecord:
     return PredictionRecord(
         scheme_id=str(item["scheme_id"]),
         target_tenor=str(item["target_tenor"]),
-        horizon=int(item["horizon"]),
+        horizon=_payload_integer(item["horizon"], field="horizon"),
         predict_date=str(item["predict_date"]),
         target_date=str(item["target_date"]),
-        predicted_direction=int(item["predicted_direction"]),
+        predicted_direction=_payload_integer(
+            item["predicted_direction"], field="predicted_direction",
+        ),
         feature_date=str(item["feature_date"]) if item.get("feature_date") is not None else None,
         prediction_phase=str(item["prediction_phase"]) if item.get("prediction_phase") is not None else None,
         model_version=str(item["model_version"]) if item.get("model_version") is not None else None,
