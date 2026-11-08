@@ -1164,59 +1164,60 @@ def _run_process(
                 )
             if process_group_id is None:
                 raise AssertionError("process group was not captured")
-            deadline = time.monotonic() + timeout
-            failure: str | None = None
-            while process.poll() is None:
-                if time.monotonic() >= deadline:
-                    failure = f"Blackbox V2 process timed out after {timeout}s"
-                    break
+            try:
+                deadline = time.monotonic() + timeout
+                failure: str | None = None
+                while process.poll() is None:
+                    if time.monotonic() >= deadline:
+                        failure = f"Blackbox V2 process timed out after {timeout}s"
+                        break
+                    captured_bytes = _capture_size(stdout_file) + _capture_size(stderr_file)
+                    if captured_bytes > max_capture_bytes:
+                        failure = (
+                            "Blackbox V2 process log output exceeded limit: "
+                            f"captured={captured_bytes}, limit={max_capture_bytes}"
+                        )
+                        break
+                    try:
+                        quota_failure = _run_directory_limit_failure(
+                            cwd,
+                            max_bytes=max_run_dir_bytes,
+                            max_entries=max_run_dir_entries,
+                        )
+                    except OSError as exc:
+                        failure = f"Blackbox V2 could not inspect run directory quota: {exc}"
+                        break
+                    if quota_failure is not None:
+                        failure = quota_failure
+                        break
+                    rss_bytes = _process_group_rss_bytes(process.pid)
+                    if memory_limit_bytes > 0 and rss_bytes > memory_limit_bytes:
+                        failure = (
+                            f"Blackbox V2 process exceeded memory limit: "
+                            f"rss={rss_bytes}, limit={memory_limit_bytes}"
+                        )
+                        break
+                    time.sleep(0.25)
+
                 captured_bytes = _capture_size(stdout_file) + _capture_size(stderr_file)
-                if captured_bytes > max_capture_bytes:
+                if failure is None and captured_bytes > max_capture_bytes:
                     failure = (
                         "Blackbox V2 process log output exceeded limit: "
                         f"captured={captured_bytes}, limit={max_capture_bytes}"
                     )
-                    break
-                try:
-                    quota_failure = _run_directory_limit_failure(
-                        cwd,
-                        max_bytes=max_run_dir_bytes,
-                        max_entries=max_run_dir_entries,
-                    )
-                except OSError as exc:
-                    failure = f"Blackbox V2 could not inspect run directory quota: {exc}"
-                    break
-                if quota_failure is not None:
-                    failure = quota_failure
-                    break
-                rss_bytes = _process_group_rss_bytes(process.pid)
-                if memory_limit_bytes > 0 and rss_bytes > memory_limit_bytes:
-                    failure = (
-                        f"Blackbox V2 process exceeded memory limit: "
-                        f"rss={rss_bytes}, limit={memory_limit_bytes}"
-                    )
-                    break
-                time.sleep(0.25)
-
-            captured_bytes = _capture_size(stdout_file) + _capture_size(stderr_file)
-            if failure is None and captured_bytes > max_capture_bytes:
-                failure = (
-                    "Blackbox V2 process log output exceeded limit: "
-                    f"captured={captured_bytes}, limit={max_capture_bytes}"
-                )
-            if failure is None:
-                try:
-                    quota_failure = _run_directory_limit_failure(
-                        cwd,
-                        max_bytes=max_run_dir_bytes,
-                        max_entries=max_run_dir_entries,
-                    )
-                except OSError as exc:
-                    failure = f"Blackbox V2 could not inspect run directory quota: {exc}"
-                else:
-                    if quota_failure is not None:
-                        failure = quota_failure
-            if failure is not None:
+                if failure is None:
+                    try:
+                        quota_failure = _run_directory_limit_failure(
+                            cwd,
+                            max_bytes=max_run_dir_bytes,
+                            max_entries=max_run_dir_entries,
+                        )
+                    except OSError as exc:
+                        failure = f"Blackbox V2 could not inspect run directory quota: {exc}"
+                    else:
+                        if quota_failure is not None:
+                            failure = quota_failure
+            except BaseException as execution_error:
                 termination = _terminate_process_group(
                     process,
                     process_group_id=process_group_id,
@@ -1224,8 +1225,21 @@ def _run_process(
                 if not termination.confirmed_gone:
                     raise ProcessGroupTerminationError(
                         termination=termination,
-                        context=failure,
-                    )
+                        context=(
+                            "Blackbox V2 process interrupted: "
+                            f"{type(execution_error).__name__}: {execution_error}"
+                        ),
+                    ) from execution_error
+                raise
+            termination = _terminate_process_group(
+                process,
+                process_group_id=process_group_id,
+            )
+            if not termination.confirmed_gone:
+                raise ProcessGroupTerminationError(
+                    termination=termination,
+                    context=failure or f"Blackbox V2 process exited {process.returncode}",
+                )
             stdout = _read_capture(stdout_file, max_capture_bytes)
             stderr = _read_capture(stderr_file, max_capture_bytes)
             if failure is not None:

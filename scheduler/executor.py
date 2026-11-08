@@ -1050,6 +1050,15 @@ def _run_process_group(
                 ),
             ) from exc
         raise
+    termination = _terminate_process_group(
+        process,
+        process_group_id=process_group_id,
+    )
+    if not termination.confirmed_gone:
+        raise ProcessGroupTerminationError(
+            termination=termination,
+            context=f"Native process exited with status {process.returncode}",
+        )
     completed = subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
     if completed.returncode != 0:
         raise subprocess.CalledProcessError(
