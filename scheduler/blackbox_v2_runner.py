@@ -904,10 +904,6 @@ def _clear_user_file_flags(path: Path) -> None:
         os.chflags(path, 0, follow_symlinks=False)
 
 
-def _python_command(profile: RuntimeProfile) -> list[str]:
-    return [str(_python_runtime(profile).executable)]
-
-
 @lru_cache(maxsize=8)
 def _conda_runtime_info(conda_env: str) -> tuple[str, str]:
     conda_executable = shutil.which("conda")
@@ -1043,7 +1039,9 @@ def _runtime_environment(
         if key in os.environ:
             env[key] = os.environ[key]
 
-    executable = Path(python_executable or _python_command(profile)[0]).resolve(strict=True)
+    executable = Path(
+        python_executable or str(_python_runtime(profile).executable)
+    ).resolve(strict=True)
     run_dir = str(writable_dir)
     env.update(
         {
