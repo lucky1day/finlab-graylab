@@ -78,6 +78,42 @@ def test_period_cutoff_uses_its_own_axis_and_records_value_age(tmp_path):
     assert report['findings'][0]['last_available_observation']=={'snapshot_axis':'202641','value':2.0}
 
 
+def test_batch_keeps_one_input_view_and_new_batch_observes_new_inputs(tmp_path):
+    """批次内复用已读取输入，后续批次不会继承旧策略或数据。"""
+    from shared.prediction_input_quality import PredictionInputAuditBatch
+
+    cfg, script, data, request, policy, frame = setup_case(tmp_path)
+    batch = PredictionInputAuditBatch(data, policy_path=policy)
+    first = check_prediction_input_quality(cfg, script, data, request, batch=batch)
+    assert first['status'] == 'complete'
+    (data/'daily_output.csv').unlink()
+    policy.write_text('{broken')
+    second = check_prediction_input_quality(cfg, script, data, request, batch=batch)
+    assert second == first
+    later = check_prediction_input_quality(
+        cfg, script, data, request,
+        batch=PredictionInputAuditBatch(data, policy_path=policy),
+    )
+    assert later['status'] == 'check_error'
+    assert later['coverage'] == 'unverified'
+
+
+def test_batch_audits_each_cutoff_and_rejects_another_input_directory(tmp_path):
+    """复用读取不能复用某天结论，也不能混用另一个输入目录。"""
+    from shared.prediction_input_quality import PredictionInputAuditBatch
+
+    cfg, script, data, request, policy, frame = setup_case(tmp_path)
+    batch = PredictionInputAuditBatch(data, policy_path=policy)
+    first = check_prediction_input_quality(cfg, script, data, request, batch=batch)
+    request.daily_cutoff_key = request.feature_date = frame.iloc[4]['date']
+    earlier = check_prediction_input_quality(cfg, script, data, request, batch=batch)
+    assert first['status'] == 'complete'
+    assert earlier['status'] == 'incomplete'
+    assert earlier['checked_windows'][0]['observed_end'] == frame.iloc[3]['date']
+    other = check_prediction_input_quality(cfg, script, tmp_path/'other', request, batch=batch)
+    assert other['status'] == 'check_error'
+
+
 def test_concurrent_jsonl_events_are_complete_and_never_create_directions(tmp_path,monkeypatch,capsys):
     monkeypatch.setenv('BFL_RUNTIME_ROOT',str(tmp_path))
     def write(n):

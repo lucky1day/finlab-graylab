@@ -19,6 +19,64 @@ class InputDataIncomplete(ValueError):
     """保留旧调用兼容；审计函数不因缺数抛出该异常。"""
 
 
+class PredictionInputAuditBatch:
+    """仅在一次封存 runtime view 内复用读取，不缓存逐日期审计结论。"""
+
+    def __init__(self, data_dir: Path, *, policy_path: Path | None = None) -> None:
+        self.data_dir = Path(data_dir).resolve()
+        self.policy_path = Path(policy_path or POLICY_PATH).resolve()
+        self._policy_loaded = False
+        self._policy: Any = None
+        self._frames: dict[str, pd.DataFrame | Exception] = {}
+        self._script_hashes: dict[Path, str] = {}
+
+    def require_source(
+        self, data_dir: Path | None, policy_path: Path | None,
+        frames: Mapping[str, pd.DataFrame] | None,
+    ) -> None:
+        """拒绝把批次读取混用于其他目录、策略或 Native 传入数据。"""
+        if (data_dir is None or Path(data_dir).resolve() != self.data_dir
+                or frames is not None
+                or (policy_path is not None
+                    and Path(policy_path).resolve() != self.policy_path)):
+            raise ValueError('audit batch source mismatch')
+
+    def read_policy(self) -> Any:
+        """读取一次策略；同批读取失败也保持相同的可审计结果。"""
+        if not self._policy_loaded:
+            try:
+                self._policy = json.loads(self.policy_path.read_text(encoding='utf-8'))
+            except (OSError, ValueError) as exc:
+                self._policy = exc
+            self._policy_loaded = True
+        if isinstance(self._policy, Exception):
+            raise self._policy
+        return self._policy
+
+    def read_frame(self, filename: str) -> pd.DataFrame:
+        """读取一次已声明数据集，调用方只读该私有 DataFrame。"""
+        if filename not in _DATASETS:
+            raise ValueError('unsupported input dataset')
+        if filename not in self._frames:
+            try:
+                self._frames[filename] = pd.read_csv(
+                    self.data_dir/filename, dtype='string',
+                ).reset_index(drop=True)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                self._frames[filename] = exc
+        frame = self._frames[filename]
+        if isinstance(frame, Exception):
+            raise frame
+        return frame
+
+    def script_sha256(self, path: Path) -> str:
+        """同一不可变 release 的执行文件摘要在该批次内复用。"""
+        path = Path(path).resolve()
+        if path not in self._script_hashes:
+            self._script_hashes[path] = hashlib.sha256(path.read_bytes()).hexdigest()
+        return self._script_hashes[path]
+
+
 def _finite(value: object) -> bool:
     return pd.notna(value) and math.isfinite(float(value))
 
@@ -32,7 +90,7 @@ def _axis(frame: pd.DataFrame, name: str) -> pd.Series:
 def check_prediction_input_quality(
     cfg: Any, script_path: Path, data_dir: Path | None, request: Any, *,
     policy_path: Path | None = None, frames: Mapping[str, pd.DataFrame] | None = None,
-    calendar: Any = None,
+    calendar: Any = None, batch: PredictionInputAuditBatch | None = None,
 ) -> dict[str, Any]:
     """缺列、错期、非有限值和历史缺口全部留证；返回的可用旧值不是实际使用值。"""
     result: dict[str, Any] = {
@@ -46,7 +104,10 @@ def check_prediction_input_quality(
     }
     findings = result['findings']
     try:
-        policy = json.loads((policy_path or POLICY_PATH).read_text(encoding='utf-8'))
+        if batch is not None:
+            batch.require_source(data_dir, policy_path, frames)
+        policy = (batch.read_policy() if batch is not None else
+                  json.loads((policy_path or POLICY_PATH).read_text(encoding='utf-8')))
         if policy.get('schema_version') not in ('prediction-input-quality-v1', 'prediction-input-quality-v2'):
             raise ValueError('invalid policy schema')
         result['policy_version'] = policy['schema_version']
@@ -58,7 +119,8 @@ def check_prediction_input_quality(
         binding = rules.get('scripts', {}).get(Path(script_path).name)
         expected = binding['sha256'] if binding else rules.get('script_sha256')
         if (rules['scheme_version'] != cfg.scheme_version or not expected
-                or expected != hashlib.sha256(Path(script_path).read_bytes()).hexdigest()):
+                or expected != (batch.script_sha256(script_path) if batch is not None
+                                else hashlib.sha256(Path(script_path).read_bytes()).hexdigest())):
             result.update(status='policy_mismatch', coverage='unverified')
             findings.append({'kind': 'policy_identity_mismatch', 'meaning': 'input declaration needs revalidation'})
             return result
@@ -90,7 +152,9 @@ def check_prediction_input_quality(
                     'required_valid_differences': differences}
             if filename not in cache:
                 try:
-                    cache[filename] = (frames[filename] if frames is not None else pd.read_csv(Path(data_dir)/filename, dtype='string')).reset_index(drop=True)
+                    cache[filename] = (batch.read_frame(filename) if batch is not None else
+                                       (frames[filename] if frames is not None else
+                                        pd.read_csv(Path(data_dir)/filename, dtype='string')).reset_index(drop=True))
                 except (OSError, ValueError, KeyError, TypeError) as exc:
                     cache[filename] = None
                     findings.append({**base, 'kind': 'input_unreadable', 'error_type': type(exc).__name__})

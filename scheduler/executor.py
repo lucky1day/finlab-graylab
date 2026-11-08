@@ -535,9 +535,13 @@ def run_blackbox_scheme_subprocess(
     deadline = time.monotonic() + (timeout_sec or profile.predict_timeout_sec)
     with open_blackbox_runtime_view(input_bundle) as runtime_view:
         trusted_bundle = runtime_view.bundle
-        from shared.prediction_input_quality import audit_prediction_input_quality
+        from shared.prediction_input_quality import (
+            PredictionInputAuditBatch,
+            audit_prediction_input_quality,
+        )
 
         # 所有目标先审计；缺值照常执行原算法，不以平台填数替代。
+        audit_batch = PredictionInputAuditBatch(runtime_view.data_dir)
         quality_reports = {}
         for delivery in deliveries:
             quality_request = request if len(deliveries) == 1 else build_live_request(
@@ -547,6 +551,7 @@ def run_blackbox_scheme_subprocess(
                 cfg, delivery.script_path, runtime_view.data_dir, quality_request,
                 snapshot_id=trusted_bundle.combined_snapshot_id, calendar=calendar,
                 target_tenor=delivery.metadata.target_tenor,
+                batch=audit_batch,
             )
         predict_kwargs = {
             "metadata": metadata,
@@ -745,13 +750,18 @@ def run_blackbox_gray_replay_batch(
             "data_snapshot_id": trusted_bundle.combined_snapshot_id,
             "profile": effective_profile,
         }
-        from shared.prediction_input_quality import audit_prediction_input_quality
+        from shared.prediction_input_quality import (
+            PredictionInputAuditBatch,
+            audit_prediction_input_quality,
+        )
 
+        audit_batch = PredictionInputAuditBatch(runtime_view.data_dir)
         quality_reports = {}
         for target_request in batch_requests:
             quality_reports[target_request.request_id] = audit_prediction_input_quality(
                 cfg, cfg.delivery_script, runtime_view.data_dir, target_request,
                 snapshot_id=trusted_bundle.combined_snapshot_id,
+                batch=audit_batch,
             )
         from scheduler.blackbox_v2_runner import state_binding_for_scheme
         seed_state = None
