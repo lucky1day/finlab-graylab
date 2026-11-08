@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "v8_week_10y_point",
+  "name": "V8 因子滚动 XGB",
+  "owner": "lw",
+  "description": "使用固定 V8 因子池滚动训练 XGBoost；历史回测为事后固定因子池诊断，非当时实盘表现；实盘仅在冻结后运行，输出收益率方向。",
+  "algorithm_version": "v8.20261108.bb2",
+  "target_tenor": "10Y",
+  "task_type": "weekly_point",
+  "horizon": 1,
+  "target_rule": "target_week_end_yield_vs_feature_week_end_yield"
+}

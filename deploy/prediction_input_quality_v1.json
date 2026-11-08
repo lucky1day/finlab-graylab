@@ -14631,6 +14631,31 @@
           "role": "required"
         }
       ]
+    },
+    "input-4a781fa865a44851": {
+      "requirements": [
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TB1YWI0C",
+            "TB3YWI0C",
+            "TB5YWI0C",
+            "TB7YWI0C",
+            "TB0YWI0C",
+            "TB5YWI0V",
+            "90000007",
+            "DR007IB0",
+            "DR007IBC",
+            "DR007IBH",
+            "DR007IBL"
+          ],
+          "offset": 0,
+          "rows": 1,
+          "min_valid": 1,
+          "role": "referenced_or_candidate",
+          "mode": "audit"
+        }
+      ]
     }
   },
   "schemes": {
@@ -16097,6 +16122,84 @@
           "sha256": "fc422fc92aab3019986a852a90675d2904973601489e907c756779617e604694",
           "profiles": [
             "input-25290261b26430c4"
+          ]
+        }
+      }
+    },
+    "v8_daily_10y_t5": {
+      "scheme_version": "3a6bdc881a8f",
+      "runtime_type": "blackbox_v2",
+      "coverage": "declared_daily_raw_columns_point_only_not_model_readiness",
+      "scripts": {
+        "v8_daily_10y_t5.py": {
+          "sha256": "d5ba4e8eb8229555fdab3896ec7e6409e787198ef52a7db1e0a081db659a461f",
+          "profiles": [
+            "input-4a781fa865a44851"
+          ]
+        }
+      }
+    },
+    "v8_daily_3y_t5": {
+      "scheme_version": "411fcd3317b5",
+      "runtime_type": "blackbox_v2",
+      "coverage": "declared_daily_raw_columns_point_only_not_model_readiness",
+      "scripts": {
+        "v8_daily_3y_t5.py": {
+          "sha256": "a5cbbd5d441c324b4ddf941433ab4f3c1db153ca1f904f3fc284892c7b3c5d57",
+          "profiles": [
+            "input-4a781fa865a44851"
+          ]
+        }
+      }
+    },
+    "v8_daily_5y_t5": {
+      "scheme_version": "d31928d7fb7f",
+      "runtime_type": "blackbox_v2",
+      "coverage": "declared_daily_raw_columns_point_only_not_model_readiness",
+      "scripts": {
+        "v8_daily_5y_t5.py": {
+          "sha256": "d266971bfe2abf91b2b07a54c4d7e88ca344234e29aa27b2e0a995111b253430",
+          "profiles": [
+            "input-4a781fa865a44851"
+          ]
+        }
+      }
+    },
+    "v8_week_10y_point": {
+      "scheme_version": "04d3d5e43a05",
+      "runtime_type": "blackbox_v2",
+      "coverage": "declared_daily_raw_columns_point_only_not_model_readiness",
+      "scripts": {
+        "v8_week_10y_point.py": {
+          "sha256": "13e626f7c9cd79aa56066b3a7af116e8fa66370984cb52152e6a309725b303b9",
+          "profiles": [
+            "input-4a781fa865a44851"
+          ]
+        }
+      }
+    },
+    "v8_week_3y_point": {
+      "scheme_version": "8e6c6f26c0c9",
+      "runtime_type": "blackbox_v2",
+      "coverage": "declared_daily_raw_columns_point_only_not_model_readiness",
+      "scripts": {
+        "v8_week_3y_point.py": {
+          "sha256": "841e7810744e640f726519f87d55fa13f58ac06a0755aab1b6ff279e07cbf6fb",
+          "profiles": [
+            "input-4a781fa865a44851"
+          ]
+        }
+      }
+    },
+    "v8_week_5y_point": {
+      "scheme_version": "49661e2bd5aa",
+      "runtime_type": "blackbox_v2",
+      "coverage": "declared_daily_raw_columns_point_only_not_model_readiness",
+      "scripts": {
+        "v8_week_5y_point.py": {
+          "sha256": "2814223d61dd4b1fa549b03793c75d84fa0ad6ac6c5f66dc1ec19a401ae85d05",
+          "profiles": [
+            "input-4a781fa865a44851"
           ]
         }
       }
