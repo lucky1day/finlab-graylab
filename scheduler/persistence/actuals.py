@@ -203,11 +203,7 @@ def claim_and_classify_actual_rows_conn(
 
 def upsert_actuals(engine: Engine, records: Iterable[ActualRecord]) -> int:
     """兼容入口：UPSERT 日频 Actual，并返回本批处理条数。"""
-    rows = [asdict(record) for record in records]
-    if not rows:
-        return 0
-    with engine.begin() as conn:
-        return _upsert_actuals_conn(conn, rows)
+    return upsert_actuals_detailed(engine, records).attempted
 
 
 def upsert_actuals_detailed(
@@ -220,18 +216,6 @@ def upsert_actuals_detailed(
         return ActualWriteStats()
     with engine.begin() as conn:
         return _upsert_actuals_detailed_conn(conn, rows)
-
-
-def _upsert_actuals_conn(
-    conn: Connection,
-    records: Iterable[ActualRecord | Mapping[str, object]],
-) -> int:
-    """兼容入口：在调用方事务中 UPSERT，并返回本批处理条数。"""
-    rows = [
-        asdict(record) if isinstance(record, ActualRecord) else dict(record)
-        for record in records
-    ]
-    return _upsert_actuals_detailed_conn(conn, rows).attempted
 
 
 def _upsert_actuals_detailed_conn(

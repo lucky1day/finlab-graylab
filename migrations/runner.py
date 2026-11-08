@@ -65,10 +65,6 @@ from migrations._contracts import (
     SERVING_POINTER_RETIREMENT_MIGRATION_VERSION,
 )
 from migrations._sql import (
-    _append_comment_separator,
-    _error_location,
-    _is_dash_comment_start,
-    _is_delimiter_directive,
     split_sql_statements,
 )
 from migrations._manifest import (
@@ -81,30 +77,15 @@ from migrations._manifest import (
     validate_release_migration_manifest,
 )
 from migrations._schema import (
-    _canonical_check_clause,
-    _canonical_legacy_view_definition,
     _classify_registry_owner_recovery_state,
     _classify_schedule_run_started_at_shape,
     _classify_serving_pointer_retirement_state,
-    _daily_ledger_reserved_constraint_names,
-    _expected_period_average_actuals_schema,
-    _expected_serving_pointer_retirement_state,
-    _expected_serving_pointer_retirement_target_state,
-    _normalize_serving_pointer_column,
-    _normalize_serving_pointer_foreign_keys,
-    _normalize_serving_pointer_indexes,
-    _quote_mysql_identifier,
     _read_period_average_actuals_schema,
     _read_registry_owner_recovery_state,
     _read_registry_owner_schema,
     _read_schedule_run_started_at_shape,
-    _read_serving_pointer_dependent_objects,
     _read_serving_pointer_retirement_state,
     _registry_owner_authority,
-    _schedule_run_started_at_shape,
-    _serving_pointer_dependency_visible,
-    _show_create_mentions_serving_pointer,
-    _validate_daily_ledger_constraint_namespace,
     _validate_period_average_actuals_schema,
     _validate_registry_owner_schema,
     daily_ledger_nullable_transition_definitions,
@@ -122,15 +103,7 @@ from migrations._schema import (
 )
 from migrations._recovery_state import (
     _applying_017_state_digest,
-    _canonical_migration_state_value,
     _recovery_target,
-    _validate_applying_017_history,
-    _validate_applying_018_history,
-    _validate_applying_019_history,
-    _validate_applying_021_history,
-    _validate_applying_022_history,
-    _validate_applying_023_history,
-    _validate_applying_024_history,
     build_applying_017_inspection,
     build_applying_018_inspection,
     build_applying_019_inspection,
