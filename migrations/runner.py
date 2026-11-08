@@ -8,8 +8,8 @@ from pathlib import Path
 import re
 from typing import Callable, Iterable, Mapping
 from sqlalchemy import text
-from migrations.recovery_orchestration import RecoveryOrchestrationSpec
-from migrations.recovery_versions import (
+from migrations.recovery_orchestration import (
+    RecoveryOrchestrationSpec,
     SPEC_017,
     SPEC_018,
     SPEC_019,

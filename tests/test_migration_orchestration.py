@@ -9,7 +9,7 @@ from unittest.mock import ANY, Mock, patch
 
 import pytest
 
-from migrations.recovery_versions import RECOVERY_SPECS
+from migrations.recovery_orchestration import RECOVERY_SPECS
 from migrations.runner import (
     MIGRATIONS_DIR,
     MigrationHistoryError,

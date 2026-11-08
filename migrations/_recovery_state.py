@@ -5,8 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from typing import Iterable, Mapping
-from migrations.recovery_orchestration import RecoveryOrchestrationSpec
-from migrations.recovery_versions import SPEC_025
+from migrations.recovery_orchestration import RecoveryOrchestrationSpec, SPEC_025
 from migrations.platform_confidence_025 import classify_prediction_schema
 from migrations.auth_022 import classify_auth_schema
 from migrations.auth_profile_023 import classify_auth_profile_schema

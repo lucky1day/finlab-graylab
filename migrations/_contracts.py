@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from migrations.recovery_versions import (
+from migrations.recovery_orchestration import (
     SPEC_017,
     SPEC_018,
     SPEC_019,
