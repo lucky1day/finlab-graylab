@@ -18,7 +18,7 @@ from harness.operation import (
 )
 from harness.context import GateContext
 from harness.gates.activate_gate import ActivationGate
-from harness.registry import gate_for_name
+from harness.gates.dashboard_gate import DashboardGate
 from harness.result import GateResult, GateStatus
 from harness.signal_gap_fill import run_signal_gap_fill
 from harness.signal_gap_plan import (
@@ -26,10 +26,13 @@ from harness.signal_gap_plan import (
     plan_signal_gap_target_range,
     plan_signal_gaps,
 )
+from scheduler.blackbox_v2_runner import DEFAULT_RUNTIME_PROFILE, _stateful_timeout_sec
 from scheduler.discovery import load_scheme_config
+from scheduler.executor import DEFAULT_ALGO_ENV, run_blackbox_scheme_subprocess
 from scheduler.repository import create_engine_from_env
 from shared.blackbox_v2.intake import intake_delivery
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
+from shared.input_artifacts import create_input_engine
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -105,8 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.command == "rebuild-blackbox-state":
-        from harness.blackbox_v2.state import rebuild_blackbox_state
-        report = rebuild_blackbox_state(
+        report = _rebuild_blackbox_state(
             project_root=args.project_root.resolve(), scheme_id=args.scheme_id,
             predict_date=args.predict_date, expected_scheme_version=args.expected_scheme_version,
             approved_by=args.approved_by,
@@ -143,6 +145,37 @@ def main(argv: list[str] | None = None) -> int:
         return _run_signal_gap_fill_command(args)
     parser.error("unsupported command")
     return 1
+
+
+def _rebuild_blackbox_state(*, project_root: Path, scheme_id: str, predict_date: str,
+                           expected_scheme_version: str, approved_by: str) -> dict:
+    """在显式版本与操作者范围内从源输入重建；算法结果只用于合同验证。"""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_]{0,199}", scheme_id):
+        raise ValueError("invalid state rebuild scheme_id")
+    if date.fromisoformat(predict_date).isoformat() != predict_date:
+        raise ValueError("state rebuild predict_date must be an ISO date")
+    if not approved_by.strip() or len(approved_by) > 200:
+        raise ValueError("state rebuild requires approved_by")
+    cfg = load_scheme_config(project_root / "schemes" / scheme_id / "config.yaml")
+    if (cfg.runtime_type != "blackbox_v2" or not cfg.incremental_state
+            or cfg.scheme_version != expected_scheme_version):
+        raise ValueError("state rebuild requires matching incremental Blackbox exact version")
+    engine = create_input_engine()
+    try:
+        records = run_blackbox_scheme_subprocess(
+            cfg, predict_date, engine=engine, algo_env=DEFAULT_ALGO_ENV,
+            timeout_sec=_stateful_timeout_sec(DEFAULT_RUNTIME_PROFILE), rebuild_state=True,
+        )
+    finally:
+        engine.dispose()
+    record = records[0]
+    return {
+        "operation": "rebuild-blackbox-state", "approved_by": approved_by,
+        "scheme_id": scheme_id, "scheme_version": cfg.scheme_version,
+        "predict_date": predict_date, "feature_date": record.feature_date,
+        "prediction_written": False,
+        "state": {key: value for key, value in record.extra.items() if key.startswith("state_")},
+    }
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -314,7 +347,20 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         dashboard_scheme_ids=scheme_ids,
         dashboard_session_token=session_token,
     )
-    gate = gate_for_name(args.gate_name, ctx=ctx)
+    if args.gate_name == "dashboard":
+        gate = DashboardGate()
+    elif args.gate_name == "data-consistency":
+        from harness.gates.data_consistency_gate import DataConsistencyGate
+
+        gate = DataConsistencyGate()
+    else:
+        if config.runtime_type != "blackbox_v2":
+            raise ValueError("Native validation gates are retired; W4 remains on its fixed version")
+        from harness.blackbox_v2.gates import BlackboxBacktestGate
+
+        if args.gate_name != "backtest":
+            raise ValueError(f"unsupported Blackbox V2 gate: {args.gate_name}")
+        gate = BlackboxBacktestGate()
     return gate.run(ctx)
 
 

@@ -15,7 +15,6 @@ import pandas as pd
 import pytest
 
 from harness.context import GateContext
-from harness.registry import gate_for_name
 
 
 class BlackboxV2HarnessGateTests(unittest.TestCase):
@@ -364,9 +363,9 @@ class BlackboxStateRebuildCliTests(unittest.TestCase):
         for missing in ("scheme-id", "predict-date", "expected-scheme-version", "approved-by"):
             with (
                 self.subTest(missing=missing),
-                patch("harness.blackbox_v2.state.load_scheme_config") as load,
-                patch("harness.blackbox_v2.state.create_input_engine") as create_engine,
-                patch("harness.blackbox_v2.state.run_blackbox_scheme_subprocess") as execute,
+                patch("harness.cli.load_scheme_config") as load,
+                patch("harness.cli.create_input_engine") as create_engine,
+                patch("harness.cli.run_blackbox_scheme_subprocess") as execute,
                 redirect_stderr(io.StringIO()),
             ):
                 with self.assertRaises(SystemExit) as error:
@@ -390,9 +389,9 @@ class BlackboxStateRebuildCliTests(unittest.TestCase):
         for argument, value in invalid:
             with (
                 self.subTest(argument=argument, value=value),
-                patch("harness.blackbox_v2.state.load_scheme_config") as load,
-                patch("harness.blackbox_v2.state.create_input_engine") as create_engine,
-                patch("harness.blackbox_v2.state.run_blackbox_scheme_subprocess") as execute,
+                patch("harness.cli.load_scheme_config") as load,
+                patch("harness.cli.create_input_engine") as create_engine,
+                patch("harness.cli.run_blackbox_scheme_subprocess") as execute,
                 redirect_stdout(io.StringIO()) as output,
             ):
                 with self.assertRaises(ValueError):
@@ -413,9 +412,9 @@ class BlackboxStateRebuildCliTests(unittest.TestCase):
         for values in invalid_configs:
             with (
                 self.subTest(config=values),
-                patch("harness.blackbox_v2.state.load_scheme_config", return_value=SimpleNamespace(**values)),
-                patch("harness.blackbox_v2.state.create_input_engine") as create_engine,
-                patch("harness.blackbox_v2.state.run_blackbox_scheme_subprocess") as execute,
+                patch("harness.cli.load_scheme_config", return_value=SimpleNamespace(**values)),
+                patch("harness.cli.create_input_engine") as create_engine,
+                patch("harness.cli.run_blackbox_scheme_subprocess") as execute,
                 redirect_stdout(io.StringIO()) as output,
             ):
                 with self.assertRaisesRegex(ValueError, "matching incremental Blackbox exact version"):
@@ -437,9 +436,9 @@ class BlackboxStateRebuildCliTests(unittest.TestCase):
                    "predicted_direction": -1},
         )
         with (
-            patch("harness.blackbox_v2.state.load_scheme_config", return_value=cfg),
-            patch("harness.blackbox_v2.state.create_input_engine", return_value=engine),
-            patch("harness.blackbox_v2.state.run_blackbox_scheme_subprocess", return_value=[record]),
+            patch("harness.cli.load_scheme_config", return_value=cfg),
+            patch("harness.cli.create_input_engine", return_value=engine),
+            patch("harness.cli.run_blackbox_scheme_subprocess", return_value=[record]),
             patch("harness.cli.create_engine_from_env", side_effect=AssertionError("business engine forbidden")),
             redirect_stdout(io.StringIO()) as output,
         ):
@@ -503,13 +502,17 @@ def _snapshot_frames() -> dict[str, pd.DataFrame]:
 
 
 @pytest.mark.parametrize("runtime", ["native_adapter", "unknown"])
-def test_backtest_gate_rejects_non_blackbox(tmp_path, runtime) -> None:
-    ctx = GateContext(
-        scheme_id="trial", predict_date="2026-09-13", project_root=tmp_path,
-        config=SimpleNamespace(runtime_type=runtime),
-    )
-    with pytest.raises(ValueError, match="Native validation gates are retired"):
-        gate_for_name("backtest", ctx=ctx)
+def test_backtest_cli_rejects_non_blackbox(tmp_path, runtime) -> None:
+    from harness.cli import main
+
+    with (
+        patch("harness.cli._load_config_for_dispatch", return_value=SimpleNamespace(runtime_type=runtime)),
+        pytest.raises(ValueError, match="Native validation gates are retired"),
+    ):
+        main([
+            "gate", "backtest", "--scheme-id", "trial",
+            "--predict-date", "2026-09-13", "--project-root", str(tmp_path),
+        ])
 
 
 def test_direct_operation_requires_canonical_dates() -> None:
