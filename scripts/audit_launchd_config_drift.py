@@ -32,7 +32,8 @@ LAUNCHD_INJECTED_ENVIRONMENT_VARIABLES = frozenset(
 )
 DATA_BRIDGE_LABEL = "com.bond-factor-lab.data-bridge-refresh"
 DATA_BRIDGE_PRODUCER = ("BFL_DATABRIDGE_PRODUCER", "launchd-one-shot")
-BACKEND_LABEL = "com.bond-factor-lab.backend"
+BACKEND_LABEL = "com.bond-factor-lab.cutover-candidate.backend"
+SSH_TUNNEL_LABEL = "com.bond-factor-lab.cutover-candidate.ssh-tunnel"
 APPROVED_LOCAL_DIFFERENCES: dict[str, frozenset[str]] = {}
 DEFAULT_RUNTIME_ROOT = Path("/Users/macstudio0/bond-factor-lab-production/runtime")
 
@@ -43,7 +44,7 @@ SSH_TUNNEL_LOCAL_ARGUMENT_PLACEHOLDERS = {
 SSH_TUNNEL_KEY_PLACEHOLDER = "/Users/macstudio0/.ssh/<TUNNEL_KEY>"
 SSH_TUNNEL_REMOTE = re.compile(r"^[^@<>\s]+@101\.132\.143\.185$")
 ALWAYS_RUNNING_LABELS = frozenset(
-    {BACKEND_LABEL, "com.bond-factor-lab.ssh-tunnel"}
+    {BACKEND_LABEL, SSH_TUNNEL_LABEL}
 )
 
 
@@ -216,7 +217,7 @@ def audit_plist_pair(
     label = str(template.get("Label") or installed.get("Label") or "")
     approved = set(APPROVED_LOCAL_DIFFERENCES.get(label, frozenset()))
     all_drift = _different_paths(template, installed)
-    if label == "com.bond-factor-lab.ssh-tunnel":
+    if label == SSH_TUNNEL_LABEL:
         template_arguments = template.get("ProgramArguments") or []
         for index, value in enumerate(template_arguments):
             if value in SSH_TUNNEL_LOCAL_ARGUMENT_PLACEHOLDERS:
@@ -246,7 +247,7 @@ def audit_plist_pair(
             loaded_required_missing.append(name)
     required_local_missing: list[str] = []
     loaded_required_local_missing: list[str] = []
-    if label == "com.bond-factor-lab.ssh-tunnel":
+    if label == SSH_TUNNEL_LABEL:
         template_arguments = template.get("ProgramArguments") or []
         installed_arguments = installed.get("ProgramArguments") or []
         loaded_arguments = _loaded_arguments(loaded_text) if launchctl_output else None

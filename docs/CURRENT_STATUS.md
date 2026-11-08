@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最近运行核验**：2026-10-24。以下是已核验基线，不替代实时现场检查；数量与摘要不能充当操作时的现场证据。
+**最近代码与控制面核验**：2026-11-08；下列未注明新日期的业务统计仍为各自历史基线。以下是已核验基线，不替代实时现场检查；数量与摘要不能充当操作时的现场证据。
 
 全局目标、已定决策与阶段进度以 `/Users/macstudio0/最终提示词-20261022.md` 为唯一来源；本文只记录灰度实验室当前的部署、范围与已知限制。固定主机、SSH/转发、生产路径和只读命令见[双机部署与访问入口](operations/DEPLOYMENT_ACCESS.md)。
 
@@ -18,8 +18,8 @@
 | 项目 | ECS 灰度 | Mac |
 |---|---|---|
 | `BFL_DEPLOYMENT_TARGET` | `aliyun-gray` | `mac3-production` |
-| current / previous release | `11aaf21a` / `4d362931` | 同左 |
-| Dashboard Backend 进程 cwd | `11aaf21a` | 同左 |
+| current / previous release（2026-11-08只读） | `2af297e9` / `e93c7c73` | 同左 |
+| Dashboard Backend 进程 cwd（2026-11-08只读） | `2af297e9` | 同左 |
 | schema | 025 | 025 |
 | 调度控制面 | 5 个 systemd timer（DataBridge、日/周/月预测、Actuals） | launchd：同样 5 项 + 公网 Backend 与反向隧道 |
 | 部署方案数（按期限计） | 106（两端共有） | 115（106 + 9 个 W4 原生方案，只在 Mac 运行） |
@@ -31,7 +31,7 @@
 - **访问入口**：只用公网域名（中继 Nginx → `18101` 反向隧道 → Mac Backend `8101`，自 2026-10-18 起）或 ECS Dashboard。Mac 本地 `8100` Backend 与 `18100` 回退隧道已于 2026-10-24 退役，原 LaunchAgent 备份在 `~/.config/bond-factor-lab/launchagents-retired-20261024`。切换回执见[公网切换](/Users/macstudio0/bond-factor-lab-production/runtime/releases/public-cutover-20261018-1631/README.md)。
 - **数据入库**在独立仓库 `bond-prediction`（两端 `a07dfc4`；DR007 分时与中债曲线只在中国工作日运行，非工作日记为 `not_workday`）：统一入口 `bin/run_job.py`，Mac crontab 由 `config/jobs.toml` 渲染，ECS 由 22 个 systemd timer 驱动。数据问题在入库层修复，不在模型或缓存侧补偿。
 - Mac 源表上写 `sync_outbox` 的 36 个触发器已于 2026-10-24 删除（下游消费者自 09-24 起已停）；两端现均无源表触发器。
-- 集成分支为 `codex/develop`（代码 = `4d362931`）。开发分支提交不代表新的生产 release；发布以目标机 manifest、current/previous 和进程 cwd 为准。
+- 集成分支为 `codex/develop`；框架清理在隔离分支整合`2af297e9`最终态并验证。开发分支提交不代表新的生产 release；发布以目标机 manifest、current/previous 和进程 cwd 为准。
 
 ## 方案范围与一致性
 

@@ -231,7 +231,7 @@ Dashboard 结构化事件写 Uvicorn error logger；认证在进入 Dashboard �
 据此定位，不继续放宽 timeout 掩盖故障。
 
 生产 SSH 固定连接中继 IPv4，host-key 核验按访问入口执行。有限超时、保活和转发失败退出的期望值见
-[tunnel plist](../../deploy/launchd/com.bond-factor-lab.ssh-tunnel.plist)。
+[tunnel plist](../../deploy/launchd/com.bond-factor-lab.cutover-candidate.ssh-tunnel.plist)。
 Clash/Mihomo TUN 开启时使用 rule 模式，将中继 IPv4 指向 DIRECT，并用 route-exclude-address 排除其 /32；
 验收看生产 SSH 不出现 dial GLOBAL，不能只检查 DNS 是否返回真实 IP。
 

@@ -100,7 +100,9 @@ Mac3 W4九套固定版本通过独立审计子进程从原legacy DB经`shared.in
 
 ### 日志与结果关联
 
-完整结构化日志追加到`BFL_RUNTIME_ROOT/logs/prediction-input-quality/YYYY-MM-DD.jsonl`（Asia/Shanghai记录日），以run_id、audit_id、scheme、执行文件、预测日和snapshot关联。文件追加使用线程锁和flock并fsync；不可写时转存完整stderr，Native父进程仅转发本审计协议行，不转发未识别的算法stderr或连接信息。日志sink异常不把预测成功反转为失败。
+完整结构化日志追加到`BFL_RUNTIME_ROOT/logs/prediction-input-quality/YYYY-MM-DD.jsonl`（Asia/Shanghai记录日），以run_id、audit_id、scheme、执行文件、预测日和snapshot关联。线程锁与flock均非阻塞；竞争或不可写时转存完整stderr，成功追加后fsync。Native父进程仅转发本审计协议行，不转发未识别的算法stderr或连接信息。日志sink异常不把预测成功反转为失败。
+
+多目标和区间预测仅在单次封存runtime view内复用策略、CSV及执行文件摘要，逐Request重新核查窗口与截止日；不跨批次缓存结论，不把不同目录或不同策略混入同一批次，也不修改算法输入。
 
 - `prediction_input_quality`：状态、输入覆盖范围、规则/版本身份、各窗口边界、缺列/缺值日期及最近可用值；明确平台未填数。
 - `prediction_result`：发布状态、原始模型方向和审计引用；无法计算时方向null及失败原因，同时保留既有run/run_log。
@@ -111,10 +113,6 @@ Mac3 W4九套固定版本通过独立审计子进程从原legacy DB经`shared.in
 
 所有人工核查保留其人工来源，不冒称自然运行。已发布事实仍遵守insert-only；新增日志不会触发旧预测重算。
 
-## 明确授权的当日预测重算
-
-默认已发布事实仍insert-only。用户明确授权替换当日预测时，操作员先保存该日全部原记录与摘要，使用既有运行器在隔离状态下暂存全部新结果；核验输入快照、完整业务键、exact和业务输出后，再持Writer互斥锁发布。暂存文件不可仅凭存在而复用，必须重新核验来源和身份。
-
-仅`scheduler.repository.replace_authorized_prediction_day`可按当前Asia/Shanghai日期、全量备份摘要、精确行数与完整键集替换该日live记录。生命周期审批、删除旧事实、新run、新事实和运行日志在同一事务完成；任一步失败整体回滚，保留全部原记录。并发变化、历史日期、回测发布记录、无效方向和旧run复用均拒绝；原run与其他日期事实保留。
-
-人工重算来源记gray_live，不能冒称原自然运行。备份、暂存结果、核对与替换回执必须保留；最终逐业务键读回目标行数、日期、exact和业务输出。此操作不是自然任务的自动恢复策略，不允许未获明确授权时调用。
+2026-10-29当日整批替换是已经闭环的独立修复，未来release不再提供该一次性改写出口。
+历史修复脚本、回执和对应immutable release仍用于追溯，不能作为现行操作入口。
+现行已发布事实保持insert-only；输入审计和失败日期追补不构成覆盖历史的授权。

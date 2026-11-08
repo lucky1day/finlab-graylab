@@ -219,4 +219,6 @@ Nginx、tunnel、Clash 的独立故障处置与验收见[Dashboard 运行验收]
 除已核验的 SSH key/user 本机差异外，其余 argv、cwd、触发器、环境和日志漂移均失败；
 环境审计同时检查本页的禁用变量及调度治理定义的 producer 标记。
 私有 service.env 顶层校验一次；Backend/tunnel 须 running，七个任务日志均与外置 runtime 模板一致。
+Backend与tunnel使用已核验的`cutover-candidate`模板，链路为Mac `8101` → 中继 `18101`；
+模板中的SSH key/user仍须填入本机已授权值，其余差异不自动豁免。
 退出 0 仅证明配置审计通过，不证明自然运行成功或授予生产操作权。

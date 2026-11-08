@@ -268,7 +268,7 @@ def _render_site(
         snippets / "bond-proxy-headers-20260722b.conf",
     )
     site = (PROJECT_ROOT / "deploy/nginx/bond-factor-lab.conf").read_text()
-    site = site.replace("server 127.0.0.1:18100;", f"server 127.0.0.1:{backend_port};")
+    site = site.replace("server 127.0.0.1:18101;", f"server 127.0.0.1:{backend_port};")
     site = site.replace("listen 80;", f"listen 127.0.0.1:{http_port};")
     site = site.replace("listen [::]:80;", "# IPv6 omitted in isolated smoke")
     site = site.replace("listen 443 ssl;", f"listen 127.0.0.1:{https_port} ssl;")

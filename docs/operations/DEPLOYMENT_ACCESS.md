@@ -144,8 +144,8 @@ curl --fail --silent --show-error http://127.0.0.1:8101/api/health
 用读回的 Backend PID 执行 `lsof -a -p <PID> -d cwd -Fn` 核对实际 cwd。
 Mac3 定时任务 label 为 `com.bond-factor-lab.daily-predictions`、`weekly-predictions`、`monthly-predictions`、
 `data-bridge-refresh`、`actuals`（后四项也带相同前缀）；公网链路为上述两项 `cutover-candidate` label。
-漂移审计只比对仓库 `deploy/launchd/` 模板：已退役的 `backend`、`ssh-tunnel` 两项会报 `installed_plist_missing`，属预期；
-两项 `cutover-candidate` 不在模板内，须以 installed plist 与 `launchctl print` 读回核对。
+漂移审计比对仓库 `deploy/launchd/` 的七个现用模板，包含两项 `cutover-candidate`；
+缺失、未加载或非允许差异均失败，不再豁免旧label的 `installed_plist_missing`。
 正常日历、发布/回滚和权限边界见[部署运行手册](../../deploy/README.md)；实际在途 run、输入 ready、
 Registry/exact 与下一触发时间还须按[入库导航](../onboarding/README.md)及[调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)核对。
 

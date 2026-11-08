@@ -135,7 +135,7 @@ body 完成前中断，必须在 JSON 解析和认证 Service 之前拒绝；完
   保留 actor/target、受控 event_type/detail、request_id。登录、me、用户查询和普通退出不重复写审计表，
   必要请求结果进入结构化日志。审计无页面修改/删除能力。
 
-认证时间按 UTC 写入，展示转换 Asia/Shanghai。模块分工：routes 处理 HTTP/Cookie；service 承担认证、
+认证时间按 UTC 写入，响应 ISO 时间包含明确 UTC 偏移，展示显式转换 Asia/Shanghai，兼容读取旧无时区 UTC 表示。模块分工：routes 处理 HTTP/Cookie；service 承担认证、
 权限和生命周期；security 负责哈希、令牌及恒定时间比较；repository 是上述三表唯一写入口。
 算法 scheduler/backtest/updater 不写认证表；认证模块不读写算法、Registry、prediction、Actual、backtest、
 DataBridge 或调度状态，repository 不写业务/源数据表。

@@ -30,6 +30,11 @@
 
 具体实现入口集中在 §6；表中的层级描述依赖位置，不表示所有上层都能调用任一下层，允许边以 §3 为准。
 
+`shared.input_artifacts` 保留统一输入接口，内部实现位于 `shared._input_artifacts`：
+`contract` 维护类型与 schema，`files` 负责稳定读取与完整性，`runtime_view` 管理私有消费视图，
+`generation` 负责 producer/ready 快照，`cutoffs` 解析截止键，`native` 构造 W4 输入。
+这些内部模块不构成新的算法输入入口，producer 和 consumer 的校验职责保持分离。
+
 ---
 
 ## 3. 包依赖方向规则（强约束核心）
@@ -145,6 +150,11 @@ Dashboard 只从产品事实表聚合逐点结果。
 | 错误 | executor 记录失败 run/log；Harness 返回 Gate 结果，涉及持久化时核实相应 repository 的事务结果 |
 
 `migrations.runner` 只接收 caller-supplied `Engine`，实现 manifest、inspect、apply 与 APPLYING recovery，不读环境变量或解析 CLI，也不判定生产授权。`scripts/apply_migrations.py` 负责受限参数、目标环境与数据库身份围栏；其他模块不得复制迁移行为。命令、恢复摘要、备份及版本兼容要求集中在[部署手册](../../deploy/README.md)。
+
+内部持久化按职责分为 `scheduler.persistence.lifecycle`、`prediction_rows` 和 `predictions`；
+业务调用方仍只通过 `scheduler.repository`，内部实现保持同一 connection、锁和事务。
+迁移的类型、SQL 解析、manifest、schema 检查和纯恢复判定分别放在内部模块，
+唯一 owner lock、SQL 执行与恢复编排仍由 `migrations.runner` 管理。
 
 ## 6. 代码导航
 

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>com.bond-factor-lab.cutover-candidate.ssh-tunnel</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/ssh</string>
+		<string>-B</string>
+		<string>en1</string>
+		<string>-o</string>
+		<string>BatchMode=yes</string>
+		<string>-o</string>
+		<string>UserKnownHostsFile=/Users/macstudio0/.ssh/known_hosts</string>
+		<string>-N</string>
+		<string>-T</string>
+		<string>-o</string>
+		<string>ServerAliveInterval=15</string>
+		<string>-o</string>
+		<string>ServerAliveCountMax=2</string>
+		<string>-o</string>
+		<string>ConnectTimeout=10</string>
+		<string>-o</string>
+		<string>ExitOnForwardFailure=yes</string>
+		<string>-o</string>
+		<string>StrictHostKeyChecking=yes</string>
+		<string>-o</string>
+		<string>ProxyCommand=/usr/bin/nc -X 5 -x 127.0.0.1:12377 %h %p</string>
+		<string>-o</string>
+		<string>IdentitiesOnly=yes</string>
+		<string>-i</string>
+		<string>/Users/macstudio0/.ssh/&lt;TUNNEL_KEY&gt;</string>
+		<string>-R</string>
+		<string>127.0.0.1:18101:127.0.0.1:8101</string>
+		<string>&lt;SSH_USER&gt;@101.132.143.185</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/macstudio0/bond-factor-lab-production/runtime/logs/com.bond-factor-lab.cutover-candidate.ssh-tunnel.err</string>
+	<key>StandardOutPath</key>
+	<string>/Users/macstudio0/bond-factor-lab-production/runtime/logs/com.bond-factor-lab.cutover-candidate.ssh-tunnel.log</string>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>WorkingDirectory</key>
+	<string>/Users/macstudio0</string>
+</dict>
+</plist>

@@ -38,8 +38,6 @@
 - Blackbox `T+1/h1` target 半开区间批量已有本地候选与回归，尚缺现场验证；不据此宣称已生产验收，也不为验证向生产写入虚构或重复预测。
 - 2026-09-30 三列 TB 收盘收益率两端均无行、日频日期轴缺 9/30（2026-10-11 记录）；是否已在入库层补齐未核实，属 `bond-prediction` 范围。
 
-- `BFL_BLACKBOX_STATEFUL_TIMEOUT_SEC` 超过单次调用的 profile 时限时目前直接报错（`scheduler/blackbox_v2_runner.py::_stateful_timeout_sec`），应改为取两者较小值；当前须同时传 `--timeout-sec`。
-- 仓库 launchd 模板 `deploy/launchd/com.bond-factor-lab.backend.plist` / `ssh-tunnel.plist` 仍描述 2026-10-24 已退役的 `8100` / `18100` 链路，实际公网链路为 `cutover-candidate.*`（不在仓库）；漂移审计因此对这两项报 `installed_plist_missing`。迁 ECS 后 Mac launchd 整体退役，届时一并处理。
 
 ## 候选 release 手工启动入口
 

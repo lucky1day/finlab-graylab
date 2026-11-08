@@ -129,7 +129,7 @@ def test_ssh_tunnel_requires_real_local_key_and_user(
     key_path: str,
     destination: str,
 ) -> None:
-    label = "com.bond-factor-lab.ssh-tunnel"
+    label = "com.bond-factor-lab.cutover-candidate.ssh-tunnel"
     template_payload = _plist(label, environment={})
     template_payload["ProgramArguments"] = [
         "/usr/bin/ssh",
@@ -137,7 +137,7 @@ def test_ssh_tunnel_requires_real_local_key_and_user(
         "-i",
         "/Users/macstudio0/.ssh/<TUNNEL_KEY>",
         "-R",
-        "127.0.0.1:18100:127.0.0.1:8100",
+        "127.0.0.1:18101:127.0.0.1:8101",
         "<SSH_USER>@101.132.143.185",
     ]
     installed_payload = dict(template_payload)
