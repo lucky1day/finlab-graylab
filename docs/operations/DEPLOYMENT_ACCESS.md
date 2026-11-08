@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**连接信息核验日期**：2026-10-24（Mac 生产链路与 LaunchAgent 现场读回；灰度 ECS 部分本轮未复核）
+**连接信息核验日期**：2026-11-08（ECS/Mac current、Backend实际cwd与控制面已读回；公网认证Summary/Detail与静态入口正向验收通过）
 
 当前只有两个访问入口：公网域名（访问 Mac3 生产）和灰度 ECS Dashboard（经临时 SSH 转发）。公网链路为
 Nginx → 中继 `127.0.0.1:18101` → 当前 Mac（`QiyodeMac-Studio.local`，登录用户 `qiyo3`）`127.0.0.1:8101` 上的不可变 release Backend，
