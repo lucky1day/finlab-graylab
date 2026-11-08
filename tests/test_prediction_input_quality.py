@@ -199,3 +199,104 @@ def test_catalog_covers_each_deployment_and_execution_file():
                 assert policy['profiles'][name]['requirements']
                 assert all(r['mode']=='audit' for r in policy['profiles'][name]['requirements'])
                 assert all(r['filename'] in {'daily_output.csv','weekly_output.csv','monthly_output.csv'} for r in policy['profiles'][name]['requirements'])
+
+
+@pytest.fixture
+def native_audit_database(tmp_path, monkeypatch):
+    """真实临时 Engine 的生命周期由公开审计上下文拥有。"""
+    from sqlalchemy import create_engine, event
+    from shared import input_artifacts, source_runtime_database
+
+    engine = create_engine('sqlite+pysqlite:///:memory:')
+    state = SimpleNamespace(disposed=False, failure=None)
+
+    @event.listens_for(engine, 'engine_disposed')
+    def disposed(_engine):
+        state.disposed = True
+
+    @event.listens_for(engine, 'before_cursor_execute')
+    def read_failure(*_args):
+        if state.failure is not None:
+            raise state.failure
+
+    monkeypatch.setenv('BFL_RUNTIME_ROOT', str(tmp_path))
+    monkeypatch.setattr(source_runtime_database, 'load_source_runtime_database_config', lambda: object())
+    monkeypatch.setattr(input_artifacts, 'create_input_engine', lambda **_kwargs: engine)
+    yield engine, state
+    engine.dispose()
+
+
+@pytest.mark.parametrize('failure_type', [KeyboardInterrupt, SystemExit, ValueError])
+def test_native_audit_releases_engine_on_preparation_failure(native_audit_database, failure_type):
+    from shared.native_prediction_input_audit import native_prediction_input_audit
+
+    _engine, state = native_audit_database
+    injected = failure_type('preparation interrupted')
+    state.failure = injected
+    cfg = SimpleNamespace(scheme_id='fixture', frequency='daily', horizon=1)
+    if issubclass(failure_type, Exception):
+        with native_prediction_input_audit(cfg, '2026-11-08') as audit:
+            assert audit.summary['status'] == 'check_error'
+            assert audit.summary['enforcement'] == 'log_only'
+    else:
+        with pytest.raises(failure_type) as raised:
+            with native_prediction_input_audit(cfg, '2026-11-08'):
+                pytest.fail('cancellation must propagate before model execution')
+        assert raised.value is injected
+    assert state.disposed
+
+
+@pytest.mark.parametrize('failure_type', [RuntimeError, KeyboardInterrupt])
+def test_native_audit_preserves_caller_failure(native_audit_database, failure_type):
+    from shared.native_prediction_input_audit import native_prediction_input_audit
+
+    _engine, state = native_audit_database
+    state.failure = ValueError('audit unavailable')
+    injected = failure_type('model interrupted')
+    cfg = SimpleNamespace(scheme_id='fixture', frequency='daily', horizon=1)
+    with pytest.raises(failure_type) as raised:
+        with native_prediction_input_audit(cfg, '2026-11-08'):
+            raise injected
+    assert raised.value is injected
+    assert state.disposed
+
+
+def test_native_audit_observation_failure_remains_log_only(native_audit_database, tmp_path, monkeypatch):
+    from shared.data_contract import FACTOR_SOURCE_TABLES
+    from shared.native_prediction_input_audit import native_prediction_input_audit
+
+    engine, state = native_audit_database
+    connect = engine.connect
+
+    def sqlite_connection():
+        connection = connect()
+        options = connection.execution_options
+
+        def sqlite_options(**kwargs):
+            # SQLite 不支持 MySQL 的隔离级别名；本例仅验证资源和审计生命周期。
+            if kwargs.get('isolation_level') == 'REPEATABLE READ':
+                kwargs['isolation_level'] = 'SERIALIZABLE'
+            return options(**kwargs)
+
+        monkeypatch.setattr(connection, 'execution_options', sqlite_options)
+        return connection
+
+    monkeypatch.setattr(engine, 'connect', sqlite_connection)
+    with engine.begin() as connection:
+        for table in FACTOR_SOURCE_TABLES:
+            connection.exec_driver_sql(f'CREATE TABLE {table} (rdate TEXT, create_time TEXT)')
+        connection.exec_driver_sql('CREATE TABLE api_wind_indicators_all (indicators_code TEXT, frequency TEXT, create_time TEXT, update_time TEXT)')
+        connection.exec_driver_sql('CREATE TABLE api_wind_date (rdate TEXT, week_id TEXT)')
+        connection.exec_driver_sql('CREATE TABLE t_trade_calendar (rdate TEXT, trade_flag TEXT)')
+        for day in ('2026-11-05', '2026-11-06', '2026-11-09', '2026-11-10'):
+            connection.exec_driver_sql('INSERT INTO api_wind_date VALUES (?, ?)', (day, '202645' if day < '2026-11-09' else '202646'))
+            connection.exec_driver_sql("INSERT INTO t_trade_calendar VALUES (?, '1')", (day,))
+    cfg = SimpleNamespace(scheme_id='fixture', frequency='daily', horizon=1, path=tmp_path, tenors=['1Y'])
+    with native_prediction_input_audit(cfg, '2026-11-09'):
+        state.failure = ValueError('post-run observation failed')
+    events = [json.loads(line) for log in (tmp_path/'logs/prediction-input-quality').glob('*.jsonl')
+              for line in log.read_text().splitlines()]
+    observation, = [event for event in events if event['event'] == 'native_input_audit_source_observation']
+    assert observation['status'] == 'check_error'
+    assert observation['error_type'] == 'ValueError'
+    assert state.disposed
