@@ -42,7 +42,7 @@ def source_int_or_none(value: Any) -> int | None:
         return None
     try:
         return int(float(value))
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
 
 

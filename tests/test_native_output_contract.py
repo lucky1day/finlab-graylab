@@ -100,3 +100,26 @@ def test_native_adapter_preserves_source_probability_audit(adapter):
     adapter.source[probability_field] = 0.625
     record, = adapter.run()
     assert record.extra[probability_field] == 0.625
+
+
+@pytest.mark.parametrize("adapter", ["daily", "monthly"], indirect=True)
+@pytest.mark.parametrize("value", ["inf", "-inf", "1e10000", "-1e10000", 10**400])
+def test_native_adapter_discards_unrepresentable_optional_integer_audit(adapter, value):
+    adapter.source[adapter.field] = "1.0"
+    field = "fit_n" if adapter.kind == "daily" else "training_rows"
+    adapter.source[field] = value
+
+    record, = adapter.run()
+
+    assert record.predicted_direction == 1
+    assert record.extra[field] is None
+
+
+@pytest.mark.parametrize("adapter", ["weekly"], indirect=True)
+@pytest.mark.parametrize("value", ["inf", "-inf", "1e10000", "-1e10000", 10**400])
+def test_weekly_adapter_rejects_unrepresentable_required_week_id(adapter, value):
+    adapter.source[adapter.field] = "1.0"
+    adapter.source["effective_week_id"] = value
+
+    with pytest.raises(RuntimeError, match="missing integer effective_week_id"):
+        adapter.run()
