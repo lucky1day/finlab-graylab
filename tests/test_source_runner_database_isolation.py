@@ -113,29 +113,6 @@ class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
                 self.assertNotIn(key, child)
 
 
-def test_prepare_private_source_runtime_tree_adds_owner_write(
-    tmp_path: Path,
-) -> None:
-    """私有 source 副本保留原只读内容，但允许源算法覆写默认参数。"""
-    from shared.source_runtime_database import (
-        prepare_private_source_runtime_tree,
-    )
-
-    params_dir = (
-        tmp_path / "monthly_project" / "hyper_params" / "2026-06-19"
-    )
-    params_dir.mkdir(parents=True)
-    params = params_dir / "params.json"
-    params.write_text("{}")
-    params_dir.chmod(0o500)
-    params.chmod(0o400)
-
-    prepare_private_source_runtime_tree(tmp_path)
-
-    assert params.stat().st_mode & stat.S_IWUSR
-    params.write_text('{"ok": true}')
-
-
 _SOURCE_FAMILIES = {
     "daily": ("daily_0629", "bfl_daily0629_source_", "daily 0629", "DAILY_0629_SOURCE_PYTHON", "D1Y"),
     "monthly": ("monthly", "bfl_monthly_source_", "monthly", "MONTHLY_SOURCE_PYTHON", "M1Y"),
@@ -163,6 +140,13 @@ def source_runner(request, tmp_path, monkeypatch):
     (pycache / "db_config.cpython-312.pyc").write_bytes(b"unchecked-bytecode")
     for directory in ("daily_project/src", "monthly_project/src", "weekly_project/src"):
         (source_root / directory).mkdir(parents=True)
+    original_params_dir = source_root / f"{kind}_project/hyper_params/2026-06-19"
+    original_params_dir.mkdir(parents=True)
+    original_params = original_params_dir / "params.json"
+    original_params.write_text("{}")
+    original_params.chmod(0o400)
+    original_params_dir.chmod(0o500)
+    request.addfinalizer(lambda: original_params_dir.chmod(0o700))
     binding = tmp_path / "source-db.json"
     _write_private_binding(binding)
     monkeypatch.setenv("BFL_SOURCE_DB_CONFIG_ROOT", str(tmp_path))
@@ -201,6 +185,12 @@ def source_runner(request, tmp_path, monkeypatch):
         }
         assert stat.S_IMODE(runtime_config.stat().st_mode) == 0o600
         assert original_config.read_bytes() == original_bytes
+        private_params = root / original_params.relative_to(source_root)
+        private_params.write_text('{"ok": true}')
+        assert json.loads(private_params.read_text()) == {"ok": True}
+        assert original_params.read_text() == "{}"
+        assert stat.S_IMODE(original_params.stat().st_mode) == 0o400
+        assert stat.S_IMODE(original_params_dir.stat().st_mode) == 0o500
         commands.append((list(command), dict(env)))
         filename = {
             "daily": "daily_selected_prediction_rows.csv",
@@ -218,6 +208,7 @@ def source_runner(request, tmp_path, monkeypatch):
     return SimpleNamespace(
         kind=kind, runner=runner, source_root=source_root, original_config=original_config,
         original_bytes=original_bytes, original_hash=original_hash, scratch=scratch,
+        original_params=original_params, original_params_dir=original_params_dir,
         prefix=prefix, label=label, interpreter_env=interpreter_env, frequency=frequency,
         evidence=evidence, roots=roots, commands=commands,
         quarantine=quarantine,
@@ -235,6 +226,9 @@ def test_source_runner_preserves_original_and_injects_only_private_copy(source_r
     assert rows[0]["frequency"] == source_runner.frequency
     assert source_runner.original_config.read_bytes() == source_runner.original_bytes
     assert stat.S_IMODE(source_runner.original_config.stat().st_mode) == 0o400
+    assert source_runner.original_params.read_text() == "{}"
+    assert stat.S_IMODE(source_runner.original_params.stat().st_mode) == 0o400
+    assert stat.S_IMODE(source_runner.original_params_dir.stat().st_mode) == 0o500
     assert source_runner.runner.source_package_tree_sha256(source_runner.source_root) == source_runner.original_hash
     _assert_private_runtime_removed(source_runner)
 

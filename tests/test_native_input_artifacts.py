@@ -150,7 +150,7 @@ def test_all_native_builders_use_current_database(
     assert list(tmp_path.rglob("*.json")) == []
 
 
-def test_ephemeral_native_input_concurrent_call_builds_once(
+def test_ephemeral_native_input_concurrent_calls_share_readonly_content(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -176,14 +176,16 @@ def test_ephemeral_native_input_concurrent_call_builds_once(
         data_service,
         "build_daily_output_from_db",
         return_value=frame,
-    ) as builder:
+    ):
         with ThreadPoolExecutor(max_workers=2) as pool:
             first, second = tuple(pool.map(run, ("first", "second")))
 
-    builder.assert_called_once()
     assert first.path != second.path
     assert first.path.stat().st_ino == second.path.stat().st_ino
     assert first.path.stat().st_mode & 0o222 == 0
+    pd.testing.assert_frame_equal(first.dataframe, second.dataframe)
+    assert first.dataframe["D"].tolist() == [1.0]
+    assert pd.read_csv(first.path)["D"].tolist() == [1.0]
 
 
 @pytest.mark.parametrize("boundary", ["date_range", "source_database"])
