@@ -2,7 +2,7 @@
 
 **文档状态**：`CURRENT`
 
-**最近代码与控制面核验**：2026-11-08；下列未注明新日期的业务统计仍为各自历史基线。以下是已核验基线，不替代实时现场检查；数量与摘要不能充当操作时的现场证据。
+**最近代码与控制面核验**：2026-11-09；下列未注明新日期的业务统计仍为各自历史基线。以下是已核验基线，不替代实时现场检查；数量与摘要不能充当操作时的现场证据。
 
 全局目标、已定决策与阶段进度以 `/Users/macstudio0/最终提示词-20261022.md` 为唯一来源；本文只记录灰度实验室当前的部署、范围与已知限制。固定主机、SSH/转发、生产路径和只读命令见[双机部署与访问入口](operations/DEPLOYMENT_ACCESS.md)。
 
@@ -18,11 +18,11 @@
 | 项目 | ECS 灰度 | Mac |
 |---|---|---|
 | `BFL_DEPLOYMENT_TARGET` | `aliyun-gray` | `mac3-production` |
-| current / previous release（2026-11-08 T+1双方案入库后） | `c82c2bbe` / `16429d5d` | 同左 |
-| Dashboard Backend 进程 cwd（2026-11-08 T+1双方案入库后） | `c82c2bbe` | 同左 |
+| current / previous release（2026-11-09修订入库后） | `3f174520` / `c82c2bbe` | 同左 |
+| Dashboard Backend 进程 cwd（2026-11-09修订入库后） | `3f174520` | 同左 |
 | schema | 025 | 025 |
 | 调度控制面 | 5 个 systemd timer（DataBridge、日/周/月预测、Actuals） | launchd：同样 5 项 + 公网 Backend 与反向隧道 |
-| 部署矩阵配置范围（按期限计，含暂停项） | 146（含既有9个暂停target） | 155（146 + 9个W4；含既有9个暂停target） |
+| 部署矩阵配置范围（按期限计，含暂停项） | 147（含1个暂停7Y候选） | 156（147 + 9个W4；含1个暂停7Y候选） |
 
 - `11aaf21a`：新增 lw 5 套日频 T+5 方案（2026-10-24 两端激活并补齐 2026-06-01 起预测，两端逐行一致；三年期方案为已确认的 pandas FMA 末位差，见[一致性总纲](architecture/MAC_ECS_PARITY_DRAFT.md) 6.3）。交付 Metadata 的 owner 为“国债收益率预测项目”/“guozhai”，经用户确认于 2026-10-25 在两端 Registry 更正为 `lw`（业务展示更正，交付两文件与 exact 不变）。
 - `4d362931`：预测失败自动重试（日/周/月预测，最多 2 次、间隔 10 分钟、只重跑失败方案；已写入的业务键跳过，批次级失败不重试；2 次后仍失败只写日志、不通知）。`3f77bc2b`：14 个方案交付的确定性修复。
@@ -32,7 +32,9 @@
 - 2026-11-08公网偶发504已定位并修复：旧反向SSH隧道经本机SOCKS代理，Backend已200但中继等待超时；同Backend的直连对照及旧代理复测确认链路差异。现用隧道显式`ProxyCommand=none`，绑定`en1`直连既有中继，Nginx超时及应用代码未改。双端同包`2f438267`，SHA256为`0e9675e234f47e5c114a1fea382e463b8ff66c84e0e38c509263e3f8d4eb03e4`；修复前认证Summary 60次有7次504，修复后同条件60次及绕过客户端HTTP代理的60次均0失败，最慢分别835/1035ms；中继与公网健康各100次0失败。两端各1136项公共测试/192项子测试、远程53项Node/24项disposable MySQL8.4/59项release测试通过；117身份、652受保护源码、Mac 57表1,577,044行/2591文件及ECS 31表159,327行/1732文件保持，两端Summary和各11组Detail相等。公网入口认证Gate、Mac七项配置漂移、ECS五timer及进程cwd回读通过。临时诊断隧道与会话已清理，旧plist及源码包保留可恢复；详细因果对照、请求记录与验收边界见[504闭环报告](/Users/qiyo3/国债期货报告/outputs/public_504_20261108/公网504闭环报告.md)。这次有限窗口验收不代替未来网络可用性保证。
 - V8首轮自然运行尚未到期：日频2026-11-09 07:03、周频2026-11-14 11:30（上海）。本次15条`gray_live`不计为`scheduled_live`，自然证据按[待办](TODO.md#v8-首轮自然运行观察)读取。
 - 2026-11-08新交付32套5Y日频T+5完成准入核验，用户确认Metadata/Registry/前端owner统一`lw`，并选择先入库通过的23套、9套待修订。双端同包`16429d5d`，SHA256为`7efedd9c172399719c9f1f32d38ebb441601a9ada021c99e2ee74bc27caa5bfb`；两端23套均已激活，各发布10,143条历史结果及92条已应发、尚未到期的`gray_live`，10,235条产品事实及529条月度指标逐项一致。历史物理来源保持`backtest/current_snapshot_as_of_not_historical_vintage`，前端仍按`feature_date=2026-06-01`分区。32套算法脚本原字节不变；旧117身份/652受保护源码、Mac 57表1,577,044行/2591运行文件及ECS 31表159,327行/1732运行文件的保护范围不变。两端各1136项公共测试/215项子测试、53项Node/24项disposable MySQL8.4/59项release合同及四项CI通过；认证Summary各144个target，原121条目不变，各69组Detail（含23组待验证明细）一致，Mac七项配置漂移与ECS五timer读回通过。9套因3个因子缺值导致78个方案×Request不可计算，保持paused/draft、无Registry/版本/产品事实；矩阵配置不等于Writer资格。结果与证据见[本批入库验收](/Users/qiyo3/国债期货报告/outputs/5y_t5_32_onboarding_20261108/验收报告.md)，9套清单见[修订反馈](/Users/qiyo3/国债期货报告/outputs/5y_t5_32_onboarding_20261108/待修订9套/交付修订反馈.md)。23套首次自然窗口为2026-11-09 07:03（上海），不将本次补缺标为自然运行。
-- 2026-11-08新增7Y/10Y两套日频T+1：`yield_7y_t1_c2b223e761b00964efc7`、`yield_10y_t1_fcaf9b9391df63ce0fd7`，Metadata、Registry及前端owner均为`lw`。双端同包`c82c2bbe`，SHA256为`f0544ed4ab939638ac7dba5b4146f6cb1a02278c8cba7a3bae5f76ac4eb197c8`；每端完整发布890条历史结果、46条月度指标，日期、方向、Actual和指标逐项一致。T+1本批没有已应发而未到期的gray缺口；最近已到期日2026-11-06的只读规划为`SKIP_PRESENT`，下一自然发出日为2026-11-09 07:03（上海），未提前写入未来信号。两套算法脚本原字节保留，仅按用户授权更正Metadata owner；已有149身份/748受保护源码、Mac 57表1,598,204行/2591文件及ECS 31表180,487行/1732文件保护范围不变。两端各1136项公共测试/217项子测试、Node/MySQL8.4/release四项远程CI、认证Summary/各4组Detail、控制面和旧9套未注册状态通过核验。两端看板各146个target，原144条目不变，前端仍按2026-06-01分区；物理历史保留当前快照回放来源。完整证据见[T+1双方案验收](/Users/qiyo3/国债期货报告/outputs/t1_pair_onboarding_20261108/验收报告.md)。用户正在处理的9套继续paused/draft，本轮未运行、修订或激活它们。
+- 2026-11-08新增7Y/10Y两套日频T+1：`yield_7y_t1_c2b223e761b00964efc7`、`yield_10y_t1_fcaf9b9391df63ce0fd7`，Metadata、Registry及前端owner均为`lw`。双端同包`c82c2bbe`，SHA256为`f0544ed4ab939638ac7dba5b4146f6cb1a02278c8cba7a3bae5f76ac4eb197c8`；每端完整发布890条历史结果、46条月度指标，日期、方向、Actual和指标逐项一致。T+1本批没有已应发而未到期的gray缺口；最近已到期日2026-11-06的只读规划为`SKIP_PRESENT`，下一自然发出日为2026-11-09 07:03（上海），未提前写入未来信号。两套算法脚本原字节保留，仅按用户授权更正Metadata owner；已有149身份/748受保护源码、Mac 57表1,598,204行/2591文件及ECS 31表180,487行/1732文件保护范围不变。两端各1136项公共测试/217项子测试、Node/MySQL8.4/release四项远程CI、认证Summary/各4组Detail、控制面和旧9套未注册状态通过核验。两端看板各146个target，原144条目不变，前端仍按2026-06-01分区；物理历史保留当前快照回放来源。完整证据见[T+1双方案验收](/Users/qiyo3/国债期货报告/outputs/t1_pair_onboarding_20261108/验收报告.md)。该时点9套仍为paused/draft；其后修订入库结果见2026-11-09记录。
+- 2026-11-09，原待修订9套5Y T+5按原始因子前向填充修订完成双端正式回测、同输入一致性、激活、灰度补齐及认证前端回读，原ID保留，Metadata/Registry/前端owner均为`lw`，算法版本`20261108.fullspace.3`，各按新exact登记。两端同包`3f174520`，SHA256 `bed0fb09baca6515742d7797e6e5de25119cd464e65709df2d5462e07c45eab8`。正式`gray_target_start=2026-06-01`：每端发布2997条分界日前历史、1008条`gray_live`及153条月度指标；完整日期、方向、Actual、指标及业务键零差异，每套4条待验证的Actual保持null。最初误用全区间回放已在激活前纠正；原未发布immutable研究证据和ECS 7Y错误区间回放受控取消回执保留，正式产品仅引用正确分界证据。7Y生命周期回退是候选包到发布包的唯一差异，9套四项身份、输入及环境保持，已完成门禁按显式证据复用，未重复回测。其余142身份/727受保护文件、Mac57表1,600,036行/2591文件、ECS31表182,319行/1732文件原保护范围不变；生产源数据、封存输入、schema025、宿主调度和入口网络未改。两端各1136项公共测试/226项子测试，Node53/MySQL8.4独立24/release59及四项源码CI通过；看板各155个target，旧146条目不变，各27组Detail含待验证明细一致。Mac七项漂移、ECS六服务/五timer及实际PID/cwd回读通过。逐项exact及原件/回执见[十套修订验收](/Users/qiyo3/国债期货报告/outputs/ten_revision_onboarding_20261108/验收报告.md)；首次自然窗口2026-11-09 07:03（上海）仍待观察。3套因TB5YWI3C缺失受阻的5Y周频不在本次范围。
+- 本批7Y `seven_y_t5_macro_logit_b213_v1`（owner `lc`、算法版本`1.0.1`、exact `9854cfd0a93b`）未通过一致性门禁，未激活、无Registry/version/产品预测；canonical为paused/draft，交付算法和Metadata原字节未改。两端正式333条历史中1条方向不同：feature/predict `2025-10-27`、target `2025-11-03`，Mac -1、ECS +1。原始五CSV及实际float32训练/测试矩阵、标签完全相同；单线程未消除分歧，实际求解迭代/系数不同。只定位到数值求解阶段，未宣称具体CPU/BLAS原因。按根规范停止该方案，数值实现修订待用户确认；原回测和最小复现保留，见[7Y阻断报告](/Users/qiyo3/国债期货报告/outputs/ten_revision_onboarding_20261108/blocked_7y/7Y一致性阻断报告.md)。本批10套中9套完成，不能标为整批闭环。
 - 产品接口为 `factor-lab-dashboard-v7`（见 [Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)）；输入为五文件 DataBridge，存量 `factor_version` 为 `V1.0`（见 [DataBridge](blackbox_v2/data_bridge_v1/README.md)）。两端各标记 9 个生产方案 target（外置 `production_schemes.json`，规则见 [Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#生产方案标记)）。
 - **访问入口**：只用公网域名（中继 Nginx → `18101` 反向隧道 → Mac Backend `8101`，自 2026-10-18 起）或 ECS Dashboard。Mac 本地 `8100` Backend 与 `18100` 回退隧道已于 2026-10-24 退役，原 LaunchAgent 备份在 `~/.config/bond-factor-lab/launchagents-retired-20261024`。切换回执见[公网切换](/Users/macstudio0/bond-factor-lab-production/runtime/releases/public-cutover-20261018-1631/README.md)。
 - **数据入库**在独立仓库 `bond-prediction`（两端 `a07dfc4`；DR007 分时与中债曲线只在中国工作日运行，非工作日记为 `not_workday`）：统一入口 `bin/run_job.py`，Mac crontab 由 `config/jobs.toml` 渲染，ECS 由 22 个 systemd timer 驱动。数据问题在入库层修复，不在模型或缓存侧补偿。
@@ -41,7 +43,7 @@
 
 ## 方案范围与一致性
 
-- 2026-11-08 T+1双方案入库后，两端看板各可见146个target，含9个仅在Mac运行的W4历史展示身份。部署矩阵配置覆盖Mac 151个base/155个target、ECS 142个base/146个target，均包含既有9个paused/draft方案，不等同有效执行范围；这9套没有Registry或active version。W4不部署ECS、不参与跨端预测比较。各机Writer资格以canonical lifecycle、[部署矩阵](../deploy/scheme_deployment_matrix_v1.json)及本机Registry/version共同核定。10月24日的110行、V8入库后的121条目及5Y批次后的144条目为各自历史基线。
+- 2026-11-09修订入库后，两端看板各155个target，含9个仅在Mac运行的W4历史展示身份。部署矩阵覆盖Mac152个base/156个target、ECS143个base/147个target，含1个未注册的paused/draft 7Y候选；原9个5Y暂停候选已按修订新exact激活。配置范围不等于Writer资格，仍以canonical lifecycle、[部署矩阵](../deploy/scheme_deployment_matrix_v1.json)及本机Registry/version共同核定。W4不部署ECS、不参与跨端预测比较；旧110/121/144/146条目为各自带日期历史基线。
 - Phase 1：21 个（2026-10-21 闭环）。Phase 2：80 个；73 个无增量方案同输入探针为 55 逐位相同、17 架构末位差异、1 架构差异放大（`weekly_10y_d_overlay_0529`），方向 0 不一致；7 个 liwei 增量方案回测方向一致、两端状态 `preds` 逐位相同，已激活并重建缓存。
 - 输入：两端 DataBridge 以五文件 SHA256 与 `business_digest` 判定一致（不以原始表全表哈希为准；实时行情不进入 DataBridge）。
 - 历史账本：2026-10-24 以 Mac 为准对齐 ECS 的预测、回测、指标、版本与注册表；两端预测 25,799 行、回测 152 条 / 明细 23,713 行内容哈希相同。历史预测与回测冻结，不重跑、不回填、不覆盖；再次对齐须用户授权。
