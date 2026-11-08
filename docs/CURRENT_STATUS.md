@@ -18,11 +18,11 @@
 | 项目 | ECS 灰度 | Mac |
 |---|---|---|
 | `BFL_DEPLOYMENT_TARGET` | `aliyun-gray` | `mac3-production` |
-| current / previous release（2026-11-08 公网504修复后） | `2f438267` / `7943052e` | 同左 |
-| Dashboard Backend 进程 cwd（2026-11-08 公网504修复后） | `2f438267` | 同左 |
+| current / previous release（2026-11-08 5Y T+5入库后） | `16429d5d` / `2f438267` | 同左 |
+| Dashboard Backend 进程 cwd（2026-11-08 5Y T+5入库后） | `16429d5d` | 同左 |
 | schema | 025 | 025 |
 | 调度控制面 | 5 个 systemd timer（DataBridge、日/周/月预测、Actuals） | launchd：同样 5 项 + 公网 Backend 与反向隧道 |
-| 部署矩阵范围（按期限计，含历史只读方案） | 112（两端共有） | 121（112 + 9 个 W4 原生方案，只在 Mac 运行） |
+| 部署矩阵配置范围（按期限计，含暂停项） | 144（含本批9个暂停target） | 153（144 + 9个W4；含本批9个暂停target） |
 
 - `11aaf21a`：新增 lw 5 套日频 T+5 方案（2026-10-24 两端激活并补齐 2026-06-01 起预测，两端逐行一致；三年期方案为已确认的 pandas FMA 末位差，见[一致性总纲](architecture/MAC_ECS_PARITY_DRAFT.md) 6.3）。交付 Metadata 的 owner 为“国债收益率预测项目”/“guozhai”，经用户确认于 2026-10-25 在两端 Registry 更正为 `lw`（业务展示更正，交付两文件与 exact 不变）。
 - `4d362931`：预测失败自动重试（日/周/月预测，最多 2 次、间隔 10 分钟、只重跑失败方案；已写入的业务键跳过，批次级失败不重试；2 次后仍失败只写日志、不通知）。`3f77bc2b`：14 个方案交付的确定性修复。
@@ -31,6 +31,7 @@
 - V8两端各发布1608条已完成target的历史结果及15条已发出日期的待到期gray补缺，1623条业务结果及138条月度指标逐项一致。历史物理来源为`backtest/current_snapshot_as_of_not_historical_vintage`，前端继续按`feature_date=2026-06-01`分区。两端各1136项公共测试/192项子测试、远程53项Node/24项disposable MySQL8.4集成及四项CI通过；原111身份/619受保护文件、业务历史、输入和模型状态保持。两端认证Summary/各12组Detail、静态入口、ECS五timer与Mac七项漂移检查通过；公网一次504后串行复测通过，失败证据保留。原范围585个旧disposable测试资产的另行移除单列记录，其余2591/1732文件未变。本机可读回执见[V8入库验收](/Users/qiyo3/国债期货报告/outputs/v8_onboarding_20261108/当前状态.json)。
 - 2026-11-08公网偶发504已定位并修复：旧反向SSH隧道经本机SOCKS代理，Backend已200但中继等待超时；同Backend的直连对照及旧代理复测确认链路差异。现用隧道显式`ProxyCommand=none`，绑定`en1`直连既有中继，Nginx超时及应用代码未改。双端同包`2f438267`，SHA256为`0e9675e234f47e5c114a1fea382e463b8ff66c84e0e38c509263e3f8d4eb03e4`；修复前认证Summary 60次有7次504，修复后同条件60次及绕过客户端HTTP代理的60次均0失败，最慢分别835/1035ms；中继与公网健康各100次0失败。两端各1136项公共测试/192项子测试、远程53项Node/24项disposable MySQL8.4/59项release测试通过；117身份、652受保护源码、Mac 57表1,577,044行/2591文件及ECS 31表159,327行/1732文件保持，两端Summary和各11组Detail相等。公网入口认证Gate、Mac七项配置漂移、ECS五timer及进程cwd回读通过。临时诊断隧道与会话已清理，旧plist及源码包保留可恢复；详细因果对照、请求记录与验收边界见[504闭环报告](/Users/qiyo3/国债期货报告/outputs/public_504_20261108/公网504闭环报告.md)。这次有限窗口验收不代替未来网络可用性保证。
 - V8首轮自然运行尚未到期：日频2026-11-09 07:03、周频2026-11-14 11:30（上海）。本次15条`gray_live`不计为`scheduled_live`，自然证据按[待办](TODO.md#v8-首轮自然运行观察)读取。
+- 2026-11-08新交付32套5Y日频T+5完成准入核验，用户确认Metadata/Registry/前端owner统一`lw`，并选择先入库通过的23套、9套待修订。双端同包`16429d5d`，SHA256为`7efedd9c172399719c9f1f32d38ebb441601a9ada021c99e2ee74bc27caa5bfb`；两端23套均已激活，各发布10,143条历史结果及92条已应发、尚未到期的`gray_live`，10,235条产品事实及529条月度指标逐项一致。历史物理来源保持`backtest/current_snapshot_as_of_not_historical_vintage`，前端仍按`feature_date=2026-06-01`分区。32套算法脚本原字节不变；旧117身份/652受保护源码、Mac 57表1,577,044行/2591运行文件及ECS 31表159,327行/1732运行文件的保护范围不变。两端各1136项公共测试/215项子测试、53项Node/24项disposable MySQL8.4/59项release合同及四项CI通过；认证Summary各144个target，原121条目不变，各69组Detail（含23组待验证明细）一致，Mac七项配置漂移与ECS五timer读回通过。9套因3个因子缺值导致78个方案×Request不可计算，保持paused/draft、无Registry/版本/产品事实；矩阵配置不等于Writer资格。结果与证据见[本批入库验收](/Users/qiyo3/国债期货报告/outputs/5y_t5_32_onboarding_20261108/验收报告.md)，9套清单见[修订反馈](/Users/qiyo3/国债期货报告/outputs/5y_t5_32_onboarding_20261108/待修订9套/交付修订反馈.md)。23套首次自然窗口为2026-11-09 07:03（上海），不将本次补缺标为自然运行。
 - 产品接口为 `factor-lab-dashboard-v7`（见 [Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)）；输入为五文件 DataBridge，存量 `factor_version` 为 `V1.0`（见 [DataBridge](blackbox_v2/data_bridge_v1/README.md)）。两端各标记 9 个生产方案 target（外置 `production_schemes.json`，规则见 [Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#生产方案标记)）。
 - **访问入口**：只用公网域名（中继 Nginx → `18101` 反向隧道 → Mac Backend `8101`，自 2026-10-18 起）或 ECS Dashboard。Mac 本地 `8100` Backend 与 `18100` 回退隧道已于 2026-10-24 退役，原 LaunchAgent 备份在 `~/.config/bond-factor-lab/launchagents-retired-20261024`。切换回执见[公网切换](/Users/macstudio0/bond-factor-lab-production/runtime/releases/public-cutover-20261018-1631/README.md)。
 - **数据入库**在独立仓库 `bond-prediction`（两端 `a07dfc4`；DR007 分时与中债曲线只在中国工作日运行，非工作日记为 `not_workday`）：统一入口 `bin/run_job.py`，Mac crontab 由 `config/jobs.toml` 渲染，ECS 由 22 个 systemd timer 驱动。数据问题在入库层修复，不在模型或缓存侧补偿。
@@ -39,7 +40,7 @@
 
 ## 方案范围与一致性
 
-- 2026-11-08 V8入库后，两端看板各可见121个target，含9个仅在Mac运行的W4历史展示身份；部署矩阵覆盖Mac 117个base/121个target、ECS 108个base/112个target，不等同全部身份都在执行。W4不部署ECS、不参与跨端预测比较。各机Writer资格以canonical lifecycle、[部署矩阵](../deploy/scheme_deployment_matrix_v1.json)及本机Registry/version共同核定。10月24日记录的110行为历史基线。
+- 2026-11-08本批23套入库后，两端看板各可见144个target，含9个仅在Mac运行的W4历史展示身份。部署矩阵配置覆盖Mac 149个base/153个target、ECS 140个base/144个target，均包含本批9个paused/draft方案，不等同有效执行范围；这9套没有Registry或active version。W4不部署ECS、不参与跨端预测比较。各机Writer资格以canonical lifecycle、[部署矩阵](../deploy/scheme_deployment_matrix_v1.json)及本机Registry/version共同核定。10月24日的110行及V8入库后的121条目为各自历史基线。
 - Phase 1：21 个（2026-10-21 闭环）。Phase 2：80 个；73 个无增量方案同输入探针为 55 逐位相同、17 架构末位差异、1 架构差异放大（`weekly_10y_d_overlay_0529`），方向 0 不一致；7 个 liwei 增量方案回测方向一致、两端状态 `preds` 逐位相同，已激活并重建缓存。
 - 输入：两端 DataBridge 以五文件 SHA256 与 `business_digest` 判定一致（不以原始表全表哈希为准；实时行情不进入 DataBridge）。
 - 历史账本：2026-10-24 以 Mac 为准对齐 ECS 的预测、回测、指标、版本与注册表；两端预测 25,799 行、回测 152 条 / 明细 23,713 行内容哈希相同。历史预测与回测冻结，不重跑、不回填、不覆盖；再次对齐须用户授权。
