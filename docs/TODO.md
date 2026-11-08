@@ -14,7 +14,7 @@
 
 4. **评估关闭 FMA 重编译 Mac pandas**：见[一致性总纲](architecture/MAC_ECS_PARITY_DRAFT.md) O8；全局环境改动，阶段 D 观察通过后单独验证。
 
-5. **现用隧道代理的独立复核**：2026-11-08 ECS手工SSH直连已验证，公网隧道仍保留10月31日的SOCKS代理参数；本轮框架发布未修改隧道。是否移除代理须另核验中继直连与恢复条件，按[部署访问入口](operations/DEPLOYMENT_ACCESS.md)处理。
+5. **现用隧道代理的独立复核**：2026-11-08 ECS手工SSH直连已验证，公网隧道仍保留10月31日的SOCKS代理参数；本轮框架发布未修改隧道。16:53公网曾出现中继504而同request ID的Backend为200/20.781ms，复测通过，具体链路原因仍需查明，证据见[当前状态](CURRENT_STATUS.md#已知限制)。是否移除代理须另核验中继直连与恢复条件，按[部署访问入口](operations/DEPLOYMENT_ACCESS.md)处理。
 
 ## ECS 算力卡点与新验证流程
 
