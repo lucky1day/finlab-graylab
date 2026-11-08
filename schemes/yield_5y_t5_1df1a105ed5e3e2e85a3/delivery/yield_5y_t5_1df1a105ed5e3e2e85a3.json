@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "scheme_id": "yield_5y_t5_1df1a105ed5e3e2e85a3",
   "name": "岭回归 JE5Y000D/z40 w126 n48 t0",
-  "owner": "国债收益率预测项目",
+  "owner": "lw",
   "description": "使用固定JE5Y000D的z40特征及原岭回归参数。数据齐全的常量窗口为合法不出手，不填补特征，不改变后续训练样本；缺失输入及校准不足仍报错。历史多重搜索研究，非新盲测。",
   "algorithm_version": "20261108.fullspace.2",
   "target_tenor": "5Y",
