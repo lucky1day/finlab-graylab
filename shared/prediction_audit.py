@@ -54,15 +54,19 @@ def emit_prediction_audit(event: str, *, scheme_id: str, predict_date: str,
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         if directory.is_symlink():
             raise OSError('audit directory is a symlink')
-        with _LOCK:
+        if not _LOCK.acquire(blocking=False):
+            raise BlockingIOError('audit thread lock is busy')
+        try:
             descriptor = os.open(base / relative, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
             with os.fdopen(descriptor, 'a', encoding='utf-8') as handle:
                 if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
                     raise OSError('audit sink must be a regular file')
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 handle.write(line)
                 handle.flush()
                 os.fsync(handle.fileno())
+        finally:
+            _LOCK.release()
         _safe_stderr(json.dumps({'event': event, 'audit_id': payload['audit_id'],
                           'scheme_id': scheme_id, 'predict_date': predict_date,
                           'run_id': payload['run_id'], 'status': details.get('status'),

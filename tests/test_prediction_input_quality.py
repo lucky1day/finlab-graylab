@@ -78,17 +78,57 @@ def test_period_cutoff_uses_its_own_axis_and_records_value_age(tmp_path):
     assert report['findings'][0]['last_available_observation']=={'snapshot_axis':'202641','value':2.0}
 
 
-def test_concurrent_jsonl_events_are_complete_and_never_create_directions(tmp_path,monkeypatch):
+def test_concurrent_jsonl_events_are_complete_and_never_create_directions(tmp_path,monkeypatch,capsys):
     monkeypatch.setenv('BFL_RUNTIME_ROOT',str(tmp_path))
     def write(n):
         with audit_run_context(n):
             return emit_prediction_audit('prediction_result',scheme_id='m',predict_date='2026-10-29',
                                          status='failed',outcome='not_computable',predicted_direction=None)
     with ThreadPoolExecutor(max_workers=6) as pool:refs=list(pool.map(write,range(20)))
-    rows=[json.loads(line) for line in (tmp_path/'logs'/refs[0]['audit_log']).read_text().splitlines()]
+    paths = {ref['audit_log'] for ref in refs if ref['audit_log'] != 'stderr'}
+    rows = [json.loads(line) for path in paths
+            for line in (tmp_path/'logs'/path).read_text().splitlines()]
+    rows.extend(row for line in capsys.readouterr().err.splitlines()
+                if (row := json.loads(line)).get('event') == 'prediction_result'
+                and 'outcome' in row)
     assert {r['run_id'] for r in rows}==set(range(20))
     assert len({r['audit_id'] for r in rows})==20
     assert all(r['predicted_direction'] is None for r in rows)
+
+
+def test_audit_lock_contention_preserves_full_evidence_without_waiting(tmp_path, monkeypatch):
+    """独立进程持锁时，审计调用及时返回完整降级证据。"""
+    import fcntl
+    import os
+    import subprocess
+    import sys
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    monkeypatch.setenv('BFL_RUNTIME_ROOT', str(tmp_path))
+    log = tmp_path/'logs/prediction-input-quality'/f'{datetime.now(ZoneInfo("Asia/Shanghai")).date()}.jsonl'
+    log.parent.mkdir(parents=True)
+    command = (
+        'import json; from shared.prediction_audit import emit_prediction_audit; '
+        'print(json.dumps(emit_prediction_audit("prediction_result", '
+        'scheme_id="fixture", predict_date="2026-11-08", '
+        'status="failed", outcome="not_computable", predicted_direction=None)))'
+    )
+    with log.open('a') as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX)
+        completed = subprocess.run(
+            [sys.executable, '-B', '-c', command],
+            env=dict(os.environ), capture_output=True, text=True, timeout=3,
+            check=True,
+        )
+    reference = json.loads(completed.stdout)
+    events = [json.loads(line) for line in completed.stderr.splitlines()]
+    event = next(row for row in events if row['event'] == 'prediction_result')
+    assert reference['audit_log'] == 'stderr'
+    assert event['audit_id'] == reference['audit_id']
+    assert event['outcome'] == 'not_computable'
+    assert event['predicted_direction'] is None
+    assert log.read_text() == ''
 
 
 def test_native_fallback_stderr_relay_is_scoped_and_redacted(capsys):
