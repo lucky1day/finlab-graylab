@@ -12,30 +12,28 @@ import pytest
 
 
 def _frames(*, include_v2: bool) -> dict[str, pd.DataFrame]:
-    daily = {
-        "date": ["2026-08-27"],
-        "D1": [1.0],
-    }
-    catalog = [
-        {"indicators_code": "D1", "frequency": "daily", "factor_version": "V1.0"},
-        {"indicators_code": "W1", "frequency": "weekly", "factor_version": "V1.0"},
-        {"indicators_code": "M1", "frequency": "monthly", "factor_version": "V1.0"},
-    ]
-    if include_v2:
-        daily["D2"] = [2.0]
-        catalog.insert(
-            1,
-            {"indicators_code": "D2", "frequency": "daily", "factor_version": "V2.0"},
-        )
-    return {
-        "daily_output.csv": pd.DataFrame(daily),
-        "weekly_output.csv": pd.DataFrame({"week_id": ["202635"], "W1": [1.0]}),
-        "monthly_output.csv": pd.DataFrame({"month_id": ["202608"], "M1": [1.0]}),
-        "api_wind_date.csv": pd.DataFrame(
-            {"rdate": ["2026-08-27"], "week_id": ["202635"]}
-        ),
-        "factor_catalog.csv": pd.DataFrame(catalog),
-    }
+    # 使用真正的冻结字段合同，只缩小行数；不替换生产 schema 校验。
+    schema = json.loads(
+        (Path(__file__).resolve().parents[1] / "shared/blackbox_v2/data_bridge_v1_schema.json").read_text()
+    )["files"]
+    frames = {}
+    catalog = []
+    for filename, frequency, key in (
+        ("daily_output.csv", "daily", "2026-08-27"),
+        ("weekly_output.csv", "weekly", "202635"),
+        ("monthly_output.csv", "monthly", "202608"),
+    ):
+        columns = schema[filename]["columns"]
+        frames[filename] = pd.DataFrame([{column: key if index == 0 else 1.0
+            for index, column in enumerate(columns)}])
+        catalog.extend({"indicators_code": column, "frequency": frequency, "factor_version": "V1.0"}
+                       for column in columns[1:])
+        if frequency == "daily" and include_v2:
+            frames[filename]["D2"] = 2.0
+            catalog.append({"indicators_code": "D2", "frequency": "daily", "factor_version": "V2.0"})
+    frames["api_wind_date.csv"] = pd.DataFrame({"rdate": ["2026-08-27"], "week_id": ["202635"]})
+    frames["factor_catalog.csv"] = pd.DataFrame(catalog)
+    return frames
 
 
 def _dataset_and_state(frames: dict[str, pd.DataFrame]):
@@ -79,20 +77,6 @@ def _dataset_and_state(frames: dict[str, pd.DataFrame]):
     )
 
 
-def _small_schema(frames: dict[str, pd.DataFrame]) -> dict[str, list[str]]:
-    return {
-        "daily_output.csv": ["date", "D1"],
-        "weekly_output.csv": ["week_id", "W1"],
-        "monthly_output.csv": ["month_id", "M1"],
-        "api_wind_date.csv": list(frames["api_wind_date.csv"].columns),
-        "factor_catalog.csv": [
-            "indicators_code",
-            "frequency",
-            "factor_version",
-        ],
-    }
-
-
 def test_generation_builds_one_shared_legacy_view_only_when_needed() -> None:
     from shared.input_artifacts import (
         get_ready_blackbox_snapshot,
@@ -101,12 +85,7 @@ def test_generation_builds_one_shared_legacy_view_only_when_needed() -> None:
 
     frames = _frames(include_v2=True)
     dataset, state = _dataset_and_state(frames)
-    with tempfile.TemporaryDirectory() as tmpdir, patch(
-        "shared.input_artifacts._load_blackbox_schema",
-        return_value=("data-bridge-v1", _small_schema(frames)),
-    ), patch(
-        "shared.input_artifacts._require_blackbox_databridge_monthly_additions"
-    ):
+    with tempfile.TemporaryDirectory() as tmpdir:
         cache_root = Path(tmpdir)
         prepare_blackbox_generation_snapshot(
             state=state,
@@ -125,15 +104,8 @@ def test_generation_builds_one_shared_legacy_view_only_when_needed() -> None:
         )
 
         assert full.snapshot_id != legacy.snapshot_id
-        assert list(pd.read_csv(full.data_dir / "daily_output.csv").columns) == [
-            "date",
-            "D1",
-            "D2",
-        ]
-        assert list(pd.read_csv(legacy.data_dir / "daily_output.csv").columns) == [
-            "date",
-            "D1",
-        ]
+        assert list(pd.read_csv(full.data_dir / "daily_output.csv").columns) == list(frames["daily_output.csv"].columns)
+        assert list(pd.read_csv(legacy.data_dir / "daily_output.csv").columns) == list(frames["daily_output.csv"].columns[:-1])
         assert (full.data_dir / "factor_catalog.csv").is_file()
         assert not (legacy.data_dir / "factor_catalog.csv").exists()
 
@@ -194,12 +166,7 @@ def test_cached_generation_requires_intact_legacy_snapshot_before_ready() -> Non
 
     frames = _frames(include_v2=True)
     dataset, state = _dataset_and_state(frames)
-    with tempfile.TemporaryDirectory() as tmpdir, patch(
-        "shared.input_artifacts._load_blackbox_schema",
-        return_value=("data-bridge-v1", _small_schema(frames)),
-    ), patch(
-        "shared.input_artifacts._require_blackbox_databridge_monthly_additions"
-    ):
+    with tempfile.TemporaryDirectory() as tmpdir:
         cache_root = Path(tmpdir)
         prepare_blackbox_generation_snapshot(
             state=state,
@@ -337,28 +304,18 @@ def test_legacy_four_file_receipt_is_readable_only_by_legacy_mode() -> None:
             canonical(identity), encoding="utf-8"
         )
 
-        with patch(
-            "shared.input_artifacts._load_blackbox_schema",
-            return_value=(
-                "data-bridge-v1",
-                {
-                    name: list(frame.columns)
-                    for name, frame in frames.items()
-                },
-            ),
-        ):
-            legacy = get_ready_blackbox_snapshot(
+        legacy = get_ready_blackbox_snapshot(
+            snapshot_date="2026-08-28",
+            cache_root=cache_root,
+            factor_input_mode="legacy_v1",
+        )
+        assert legacy.snapshot_id == snapshot.snapshot_id
+        with pytest.raises(ValueError, match="five-file generation"):
+            get_ready_blackbox_snapshot(
                 snapshot_date="2026-08-28",
                 cache_root=cache_root,
-                factor_input_mode="legacy_v1",
+                factor_input_mode="algorithm_managed",
             )
-            assert legacy.snapshot_id == snapshot.snapshot_id
-            with pytest.raises(ValueError, match="five-file generation"):
-                get_ready_blackbox_snapshot(
-                    snapshot_date="2026-08-28",
-                    cache_root=cache_root,
-                    factor_input_mode="algorithm_managed",
-                )
 
 
 def test_factor_catalog_must_match_wide_columns_and_order() -> None:

@@ -130,8 +130,6 @@ def _current_dataset(
 
 
 def _v3_period_bootstrap_inputs():
-    from shared import input_artifacts
-    from shared.blackbox_v2.snapshot import CutoffKeys
     from shared.data_bridge.refresh import DataBridgeRefreshConfig
 
     current = _current_dataset()
@@ -142,21 +140,12 @@ def _v3_period_bootstrap_inputs():
         state=MappingProxyType(state),
         publication_manifest={"manifest_version": "data-bridge-current-v3"},
     )
-    resolved = input_artifacts._ResolvedBlackboxInputCutoffs(
-        cutoff_keys=CutoffKeys(
-            daily_cutoff_key="2026-08-07",
-            weekly_cutoff_key="202630",
-            monthly_cutoff_key="202608",
-        ),
-        source_weekly_cutoff_key="202631",
-        source_monthly_cutoff_key="202608",
-    )
     config = DataBridgeRefreshConfig(
         data_root=Path("/tmp/data"),
         runtime_root=Path("/tmp/runtime"),
         schema_path=SCHEMA_PATH,
     )
-    return current, resolved, config
+    return current, config
 
 
 class _StaticDataBridgeRoundBuilder:
@@ -523,46 +512,49 @@ class DataBridgeCurrentTests(unittest.TestCase):
                     self.assertFalse(store.previous_dir.exists())
 
     def test_only_v3_producer_enables_period_bootstrap(self) -> None:
-        from shared import input_artifacts
+        from shared import data_service
         from shared.data_bridge import authority
+        from shared.data_bridge.refresh import DataBridgeCurrentInvalidError
 
-        current, resolved, config = _v3_period_bootstrap_inputs()
-
+        current, config = _v3_period_bootstrap_inputs()
+        schema = json.loads(SCHEMA_PATH.read_text())["files"]
+        monthly_codes = schema["monthly_output.csv"]["columns"][1:]
+        metadata = pd.DataFrame([
+            {"indicators_code": code, "frequency": "monthly", "status": 1,
+             "pre_forecast_flag": 1, "indicators_source": "raw", "lag_length": 0}
+            for code in monthly_codes
+        ])
+        # 源表出现下一周，而已发布 current 仍停在旧周；生产者可以衔接，消费者必须拒绝。
+        weekly_source = pd.DataFrame([{
+            "rdate": "2026-07-24", "week_id": "202631",
+            "indicators_code": schema["weekly_output.csv"]["columns"][1],
+            "indicators_value": 1.0,
+        }])
+        monthly_source = pd.DataFrame([{
+            "rdate": "2026-07-24", "month_id": "202608",
+            "indicators_code": monthly_codes[0], "indicators_value": 1.0,
+        }])
         with (
-            patch.object(
-                authority,
-                "check_current_dataset",
-                return_value=current,
-            ),
-            patch.object(
-                input_artifacts,
-                "_resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys",
-                return_value={"2026-08-10": resolved},
-            ) as resolve_cutoffs,
+            patch.object(authority, "check_current_dataset", return_value=current),
+            patch.object(data_service, "read_factor_metadata_from_db", return_value=metadata),
+            patch.object(data_service, "read_weekly_long_from_db", side_effect=lambda codes, table, conn:
+                         weekly_source if table == "api_wind_weekly" else pd.DataFrame()),
+            patch.object(data_service, "read_monthly_long_from_db", side_effect=lambda codes, table, conn, **kwargs:
+                         monthly_source if table == "api_wind_monthly" else pd.DataFrame()),
         ):
             result = authority.resolve_databridge_continuity_authority(
-                config,
-                feature_date="2026-08-10",
-                connection=object(),
+                config, feature_date="2026-08-10", connection=object(),
                 allow_producer_period_bootstrap=True,
             )
-            authority.resolve_stable_databridge_current_authority(
-                config,
-                feature_dates=("2026-08-10",),
-                connection=object(),
-            )
+            with self.assertRaises(DataBridgeCurrentInvalidError):
+                authority.resolve_stable_databridge_current_authority(
+                    config, feature_dates=("2026-08-10",), connection=object(),
+                )
 
         self.assertIsNotNone(result)
         assert result is not None
         self.assertEqual(result.weekly_cutoff_key, "202630")
         self.assertEqual(result.required_weekly_key, "202631")
-        self.assertEqual(
-            [
-                call.kwargs["allow_legacy_v1_period_fallback"]
-                for call in resolve_cutoffs.call_args_list
-            ],
-            [True, False],
-        )
 
 
 class OrderMetadataBySchemaTest(unittest.TestCase):

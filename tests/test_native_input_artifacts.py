@@ -7,6 +7,8 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
+from shared import data_service
+
 
 def test_ephemeral_input_root_is_private_and_must_be_absolute(
     tmp_path: Path,
@@ -63,12 +65,12 @@ def test_atomic_artifact_failure_preserves_previous_file(
 
     with (
         patch.object(
-            input_artifacts._data_service,
+            data_service,
             "build_daily_output_from_db",
             return_value=frame,
         ),
         patch.object(
-            input_artifacts._data_service,
+            data_service,
             "save_daily_output",
             side_effect=fail_after_partial_write,
         ),
@@ -98,17 +100,17 @@ def test_all_native_builders_use_current_database(
     monthly = pd.DataFrame([{"month_id": "202607", "M": 3.0}])
     with (
         patch.object(
-            input_artifacts._data_service,
+            data_service,
             "build_daily_output_from_db",
             return_value=daily,
         ) as daily_builder,
         patch.object(
-            input_artifacts._data_service,
+            data_service,
             "build_weekly_output_from_db",
             return_value=weekly,
         ) as weekly_builder,
         patch.object(
-            input_artifacts._data_service,
+            data_service,
             "build_monthly_output_from_db",
             return_value=monthly,
         ) as monthly_builder,
@@ -171,7 +173,7 @@ def test_ephemeral_native_input_concurrent_call_builds_once(
         )
 
     with patch.object(
-        input_artifacts._data_service,
+        data_service,
         "build_daily_output_from_db",
         return_value=frame,
     ) as builder:
@@ -193,7 +195,7 @@ def test_ephemeral_input_keeps_distinct_sources_separate(tmp_path, monkeypatch, 
     if boundary == "source_database":
         monkeypatch.setenv("BFL_SOURCE_DB_CONFIG_PATH", "/private/source.json")
     frames = [pd.DataFrame([{"date": "2026-07-23", "D": value}]) for value in (1.0, 2.0)]
-    with patch.object(input_artifacts._data_service, "build_daily_output_from_db", side_effect=frames):
+    with patch.object(data_service, "build_daily_output_from_db", side_effect=frames):
         artifacts = [
             input_artifacts.build_daily_input_artifact(
                 scheme_id=scheme_id, predict_date="2026-07-24",

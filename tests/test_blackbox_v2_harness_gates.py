@@ -29,13 +29,26 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         )
 
         frames = _snapshot_frames()
-        for code in ("M0041340", "M0041341", "M0041342"):
-            frames["monthly_output.csv"][code] = 0.0
-            frames["factor_catalog.csv"].loc[len(frames["factor_catalog.csv"])] = {
-                "indicators_code": code,
-                "frequency": "monthly",
-                "factor_version": "V1.0",
-            }
+        schema = json.loads(
+            (Path(__file__).resolve().parents[1] / "shared/blackbox_v2/data_bridge_v1_schema.json").read_text()
+        )["files"]
+        catalog = []
+        for filename, frequency in (
+            ("daily_output.csv", "daily"), ("weekly_output.csv", "weekly"),
+            ("monthly_output.csv", "monthly"),
+        ):
+            original = frames[filename]
+            columns = schema[filename]["columns"]
+            frames[filename] = pd.DataFrame([
+                {column: row[original.columns[0]] if index == 0 else 0.0
+                 for index, column in enumerate(columns)}
+                for row in original.to_dict("records")
+            ])
+            catalog.extend(
+                {"indicators_code": column, "frequency": frequency, "factor_version": "V1.0"}
+                for column in columns[1:]
+            )
+        frames["factor_catalog.csv"] = pd.DataFrame(catalog)
         profiles = {
             name: SimpleNamespace(
                 sha256=hashlib.sha256(
@@ -79,115 +92,106 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             root = Path(tmpdir)
             cache_root = root / "generation-cache"
             cache_root.mkdir()
-            with (
-                patch(
-                    "shared.input_artifacts._load_blackbox_schema",
-                    return_value=(
-                        "data-bridge-v1",
-                        {name: list(frame.columns) for name, frame in frames.items()},
-                    ),
-                ),
+            with self.assertRaisesRegex(
+                ValueError,
+                "ready generation receipt is unavailable or invalid",
             ):
-                with self.assertRaisesRegex(
-                    ValueError,
-                    "ready generation receipt is unavailable or invalid",
-                ):
-                    get_ready_blackbox_snapshot(
-                        snapshot_date="2026-07-15",
-                        cache_root=cache_root,
-                    )
-                prepared = prepare_blackbox_generation_snapshot(
-                    state=state,
-                    dataset=dataset,
-                    cache_root=cache_root,
-                )
-                ready = get_ready_blackbox_snapshot(
+                get_ready_blackbox_snapshot(
                     snapshot_date="2026-07-15",
                     cache_root=cache_root,
                 )
-                expected_source_identity = {
-                    "generation_id": state["generation_id"],
-                    "refresh_date": state["refresh_date"],
-                    "schema_version": state["schema_version"],
-                    "business_digest": state["business_digest"],
-                    "stable_identity_sha256": "a" * 64,
-                    "files": [
-                        {"filename": name, **state["files"][name]}
-                        for name in sorted(SNAPSHOT_FILENAMES)
-                    ],
-                }
-                matched = get_ready_blackbox_snapshot(
+            prepared = prepare_blackbox_generation_snapshot(
+                state=state,
+                dataset=dataset,
+                cache_root=cache_root,
+            )
+            ready = get_ready_blackbox_snapshot(
+                snapshot_date="2026-07-15",
+                cache_root=cache_root,
+            )
+            expected_source_identity = {
+                "generation_id": state["generation_id"],
+                "refresh_date": state["refresh_date"],
+                "schema_version": state["schema_version"],
+                "business_digest": state["business_digest"],
+                "stable_identity_sha256": "a" * 64,
+                "files": [
+                    {"filename": name, **state["files"][name]}
+                    for name in sorted(SNAPSHOT_FILENAMES)
+                ],
+            }
+            matched = get_ready_blackbox_snapshot(
+                snapshot_date="2026-07-15",
+                cache_root=cache_root,
+                expected_source_identity=expected_source_identity,
+            )
+            self.assertEqual(matched.snapshot_id, ready.snapshot_id)
+            with self.assertRaisesRegex(
+                ValueError,
+                "does not match planned authority",
+            ):
+                get_ready_blackbox_snapshot(
                     snapshot_date="2026-07-15",
                     cache_root=cache_root,
-                    expected_source_identity=expected_source_identity,
+                    expected_source_identity={
+                        **expected_source_identity,
+                        "generation_id": "different-generation",
+                    },
                 )
-                self.assertEqual(matched.snapshot_id, ready.snapshot_id)
-                with self.assertRaisesRegex(
-                    ValueError,
-                    "does not match planned authority",
-                ):
-                    get_ready_blackbox_snapshot(
-                        snapshot_date="2026-07-15",
-                        cache_root=cache_root,
-                        expected_source_identity={
-                            **expected_source_identity,
-                            "generation_id": "different-generation",
-                        },
-                    )
-                invalidate_ready_blackbox_snapshot(cache_root=cache_root)
-                with self.assertRaisesRegex(
-                    ValueError,
-                    "ready generation receipt is unavailable or invalid",
-                ):
-                    get_ready_blackbox_snapshot(
-                        snapshot_date="2026-07-15",
-                        cache_root=cache_root,
-                    )
-                restored = prepare_blackbox_generation_snapshot(
-                    state=state,
-                    dataset=dataset,
+            invalidate_ready_blackbox_snapshot(cache_root=cache_root)
+            with self.assertRaisesRegex(
+                ValueError,
+                "ready generation receipt is unavailable or invalid",
+            ):
+                get_ready_blackbox_snapshot(
+                    snapshot_date="2026-07-15",
                     cache_root=cache_root,
                 )
-                self.assertEqual(restored.snapshot_id, prepared.snapshot_id)
+            restored = prepare_blackbox_generation_snapshot(
+                state=state,
+                dataset=dataset,
+                cache_root=cache_root,
+            )
+            self.assertEqual(restored.snapshot_id, prepared.snapshot_id)
 
-                ready_path = cache_root / "ready-generation.json"
-                ready_identity = json.loads(ready_path.read_text(encoding="utf-8"))
-                ready_identity["cache_schema_version"] = "retired-cache-version"
-                ready_path.chmod(0o644)
-                ready_path.write_text(
-                    json.dumps(
-                        ready_identity,
-                        ensure_ascii=True,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    )
-                    + "\n",
-                    encoding="utf-8",
+            ready_path = cache_root / "ready-generation.json"
+            ready_identity = json.loads(ready_path.read_text(encoding="utf-8"))
+            ready_identity["cache_schema_version"] = "retired-cache-version"
+            ready_path.chmod(0o644)
+            ready_path.write_text(
+                json.dumps(
+                    ready_identity,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
                 )
-                ready_path.chmod(0o444)
-                with self.assertRaisesRegex(ValueError, "contract mismatch"):
-                    get_ready_blackbox_snapshot(
-                        snapshot_date="2026-07-15",
-                        cache_root=cache_root,
-                    )
-                prepare_blackbox_generation_snapshot(
-                    state=state,
-                    dataset=dataset,
+                + "\n",
+                encoding="utf-8",
+            )
+            ready_path.chmod(0o444)
+            with self.assertRaisesRegex(ValueError, "contract mismatch"):
+                get_ready_blackbox_snapshot(
+                    snapshot_date="2026-07-15",
                     cache_root=cache_root,
                 )
+            prepare_blackbox_generation_snapshot(
+                state=state,
+                dataset=dataset,
+                cache_root=cache_root,
+            )
 
-                damaged = prepared.data_dir / "daily_output.csv"
-                damaged.chmod(0o644)
-                damaged.write_bytes(damaged.read_bytes() + b"\n")
-                damaged.chmod(0o444)
-                with self.assertRaisesRegex(
-                    ValueError,
-                    "no longer matches producer seal",
-                ):
-                    get_ready_blackbox_snapshot(
-                        snapshot_date="2026-07-15",
-                        cache_root=cache_root,
-                    )
+            damaged = prepared.data_dir / "daily_output.csv"
+            damaged.chmod(0o644)
+            damaged.write_bytes(damaged.read_bytes() + b"\n")
+            damaged.chmod(0o444)
+            with self.assertRaisesRegex(
+                ValueError,
+                "no longer matches producer seal",
+            ):
+                get_ready_blackbox_snapshot(
+                    snapshot_date="2026-07-15",
+                    cache_root=cache_root,
+                )
 
         self.assertEqual(prepared.snapshot_id, ready.snapshot_id)
         self.assertEqual(ready.generation_id, "generation-shared")

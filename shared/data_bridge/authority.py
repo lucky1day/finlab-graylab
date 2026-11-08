@@ -395,7 +395,7 @@ def resolve_stable_databridge_current_authority(
     allow_producer_period_bootstrap: bool = False,
 ) -> StableDataBridgeCurrentAuthority:
     """校验 current，并用 caller Connection 冻结稳定发布与截止身份。"""
-    from shared.input_artifacts import (
+    from shared._input_artifacts.cutoffs import (
         _resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys,
     )
 
