@@ -15,9 +15,7 @@ from shared.blackbox_v2.contracts import REQUEST_FIELDS, request_from_mapping
 
 _PredictionBusinessKey = tuple[str, str, int, str]
 
-
 _BLACKBOX_BACKTEST_START_DATE = "2025-01-01"
-
 
 _BLACKBOX_LIVE_TARGET_START_DATE = "2026-06-01"
 

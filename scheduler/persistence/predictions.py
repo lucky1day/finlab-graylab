@@ -35,7 +35,6 @@ from scheduler.persistence.lifecycle import (
 
 PREDICTION_KEYS_ALREADY_EXIST = "prediction_keys_already_exist"
 
-
 PARTIAL_PREDICTION_KEY_CONFLICT = "partial_prediction_key_conflict"
 
 
@@ -1017,7 +1016,6 @@ _GRAY_GAP_TARGET_FIELDS = frozenset(
     }
 )
 
-
 _GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS = frozenset(
     {
         "authority_type",
@@ -1030,11 +1028,9 @@ _GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS = frozenset(
     }
 )
 
-
 _GRAY_GAP_VINTAGE_DISCLAIMER = (
     "current_snapshot_as_of_not_historical_vintage"
 )
-
 
 _RETIRED_GRAY_GAP_EXTRA_FIELDS = frozenset(
     {
@@ -1045,7 +1041,6 @@ _RETIRED_GRAY_GAP_EXTRA_FIELDS = frozenset(
         "backfilled_by",
     }
 )
-
 
 _GRAY_GAP_FIXED_ATOMIC_TARGETS = {
     "t1_daily": frozenset({"5Y", "10Y"}),

@@ -14,7 +14,11 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 from scheduler.discovery import SchemeConfig, blackbox_deliveries
 from scheduler.persistence.connections import dialect_name as _dialect_name
-from shared.scheme_config_schema import ALLOWED_RUNTIME_TYPES, ALLOWED_VERSION_STATUS, normalize_scheme_owner
+from shared.scheme_config_schema import (
+    ALLOWED_RUNTIME_TYPES,
+    ALLOWED_VERSION_STATUS,
+    normalize_scheme_owner,
+)
 from scheduler.persistence.prediction_rows import (
     _insert_run_predictions_conn,
     _mysql_utc_datetime,
@@ -24,9 +28,7 @@ from scheduler.persistence.prediction_rows import (
 
 BLACKBOX_REGISTRY_STATUSES = {"active", "paused", "archived"}
 
-
 _BLACKBOX_LIFECYCLE_LOCK_TIMEOUT_SEC = 5.0
-
 
 _LOGGER = logging.getLogger(__name__)
 
