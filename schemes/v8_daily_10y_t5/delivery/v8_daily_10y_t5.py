@@ -401,6 +401,92 @@ def register_operator(
     return decorator
 
 
+def _stable_rolling_variance(
+    series: pd.Series,
+    window: int,
+    *,
+    min_periods: int | None = None,
+    ddof: int = 1,
+) -> pd.Series:
+    """按每窗首个有限值平移，两遍固定顺序独立 ufunc 计算方差。"""
+    if not isinstance(series, pd.Series):
+        raise TypeError('series must be a pandas Series')
+    if isinstance(window, bool) or not isinstance(window, int) or window < 1:
+        raise ValueError('window must be a positive integer')
+    minimum = window if min_periods is None else min_periods
+    if isinstance(minimum, bool) or not isinstance(minimum, int) or not 0 <= minimum <= window:
+        raise ValueError('min_periods must be an integer between zero and window')
+    if type(ddof) is not int or ddof not in (0, 1):
+        raise ValueError('prototype supports only ddof zero or one')
+    values = series.to_numpy(dtype=np.float64, na_value=np.nan)
+    size = len(values)
+    if not size:
+        return pd.Series([], index=series.index, name=series.name, dtype=np.float64)
+    padded = np.empty(size + window - 1, dtype=np.float64)
+    padded[:window - 1] = np.nan
+    padded[window - 1:] = values
+    windows = np.lib.stride_tricks.sliding_window_view(padded, window)
+    count = np.zeros(size, dtype=np.int64)
+    reference = np.zeros(size, dtype=np.float64)
+    total_offset = np.zeros(size, dtype=np.float64)
+    offset = np.zeros(size, dtype=np.float64)
+    # 窗口轴从最旧到最新，跨窗口矢量化但不改变任何单窗累加顺序。
+    for position in range(window):
+        column = windows[:, position]
+        valid = np.isfinite(column)
+        np.copyto(reference, column, where=valid & (count == 0))
+        offset.fill(0.)
+        np.subtract(column, reference, out=offset, where=valid)
+        np.add(total_offset, offset, out=total_offset)
+        np.add(count, valid, out=count)
+    mean_offset = np.zeros(size, dtype=np.float64)
+    np.divide(total_offset, count, out=mean_offset, where=count > 0)
+    squared_total = np.zeros(size, dtype=np.float64)
+    squared = np.zeros(size, dtype=np.float64)
+    for position in range(window):
+        column = windows[:, position]
+        valid = np.isfinite(column)
+        offset.fill(0.)
+        np.subtract(column, reference, out=offset, where=valid)
+        np.subtract(offset, mean_offset, out=offset, where=valid)
+        squared.fill(0.)
+        # 乘法和加法是不同 ufunc 调用，不给编译器一次融合表达式。
+        np.multiply(offset, offset, out=squared, where=valid)
+        np.add(squared_total, squared, out=squared_total)
+    result = np.full(size, np.nan, dtype=np.float64)
+    usable = (count >= minimum) & (count > ddof)
+    np.divide(squared_total, count - ddof, out=result, where=usable)
+    return pd.Series(result, index=series.index, name=series.name, dtype=np.float64)
+
+def _stable_rolling_std(series, window, *, min_periods=None, ddof=1):
+    """保持原窗口/ddof，只由固定顺序方差计算标准差。"""
+    return np.sqrt(_stable_rolling_variance(
+        series, window, min_periods=min_periods, ddof=ddof))
+
+
+def _stable_rolling_corr(left, right, window, *, min_periods=None, ddof=1):
+    """保持原配对协方差公式，分母改用每窗独立固定顺序方差。"""
+    result_name = left.name if left.name == right.name else None
+    left, right = left.align(right, join="outer")
+    left = left.astype(float)
+    right = right.astype(float)
+    valid = np.isfinite(left.to_numpy()) & np.isfinite(right.to_numpy())
+    left_pair = left.where(valid)
+    right_pair = right.where(valid)
+    # Pandas公开cov与原corr使用相同mean_xy/mean_x/mean_y/count分子公式。
+    covariance = left_pair.rolling(window, min_periods=min_periods).cov(
+        right_pair, ddof=ddof)
+    left_var = _stable_rolling_variance(
+        left_pair, window, min_periods=min_periods, ddof=ddof)
+    right_var = _stable_rolling_variance(
+        right_pair, window, min_periods=min_periods, ddof=ddof)
+    with np.errstate(all="ignore"):
+        # 与原corr保持乘法、**0.5、除法的顺序；不加epsilon或clip。
+        denominator = (left_var.to_numpy() * right_var.to_numpy()) ** 0.5
+        result = covariance.to_numpy() / denominator
+    return pd.Series(result, index=left.index, name=result_name)
+
+
 def _required_window(window: int | None) -> int:
     if window is None or int(window) < 1:
         raise ValueError("This operator requires a positive window")
@@ -603,7 +689,7 @@ def _median(left: pd.Series, right: pd.Series | None, window: int | None) -> pd.
 @register_operator("std", "rolling", 1, uses_window=True)
 def _std(left: pd.Series, right: pd.Series | None, window: int | None) -> pd.Series:
     value = _required_window(window)
-    return left.rolling(value, min_periods=_min_periods(value)).std(ddof=0)
+    return _stable_rolling_std(left, value, min_periods=_min_periods(value), ddof=0)
 
 
 @register_operator("rolling_var", "rolling", 1, uses_window=True)
@@ -613,7 +699,7 @@ def _rolling_var(
     window: int | None,
 ) -> pd.Series:
     value = _required_window(window)
-    return left.rolling(value, min_periods=_min_periods(value)).var(ddof=0)
+    return _stable_rolling_variance(left, value, min_periods=_min_periods(value), ddof=0)
 
 
 @register_operator("rolling_sum", "rolling", 1, uses_window=True)
@@ -746,7 +832,7 @@ def _volatility_change(
     window: int | None,
 ) -> pd.Series:
     value = _required_window(window)
-    volatility = left.rolling(value, min_periods=_min_periods(value)).std(ddof=0)
+    volatility = _stable_rolling_std(left, value, min_periods=_min_periods(value), ddof=0)
     return volatility.diff(value)
 
 
@@ -758,10 +844,7 @@ def _change_volatility(
 ) -> pd.Series:
     """Realized volatility of one-step changes rather than levels."""
     value = max(2, _required_window(window))
-    return left.diff().rolling(
-        value,
-        min_periods=_min_periods(value),
-    ).std(ddof=0)
+    return _stable_rolling_std(left.diff(), value, min_periods=_min_periods(value), ddof=0)
 
 
 @register_operator("change_asymmetry", "rolling", 1, uses_window=True)
@@ -809,7 +892,7 @@ def _zscore(left: pd.Series, right: pd.Series | None, window: int | None) -> pd.
     value = _required_window(window)
     rolling = left.rolling(value, min_periods=_min_periods(value))
     mean = rolling.mean()
-    std = rolling.std(ddof=0)
+    std = _stable_rolling_std(left, value, min_periods=_min_periods(value), ddof=0)
     return (left - mean) / std.where(std > 1e-12)
 
 
@@ -893,7 +976,7 @@ def _trend_strength(
         _linear_slope,
         raw=True,
     )
-    noise = left.diff().rolling(value, min_periods=min_periods).std(ddof=0)
+    noise = _stable_rolling_std(left.diff(), value, min_periods=min_periods, ddof=0)
     strength = slope / noise.where(noise > 1e-12)
     return strength.mask((noise <= 1e-12) & (slope.abs() <= 1e-12), 0.0)
 
@@ -1016,15 +1099,9 @@ def _volatility_ratio(
 ) -> pd.Series:
     value = max(3, _required_window(window))
     changes = left.diff()
-    short_volatility = changes.rolling(
-        value,
-        min_periods=_min_periods(value),
-    ).std(ddof=0)
+    short_volatility = _stable_rolling_std(changes, value, min_periods=_min_periods(value), ddof=0)
     long_window = 2 * value
-    long_volatility = changes.rolling(
-        long_window,
-        min_periods=_min_periods(long_window),
-    ).std(ddof=0)
+    long_volatility = _stable_rolling_std(changes, long_window, min_periods=_min_periods(long_window), ddof=0)
     return short_volatility / long_volatility.where(long_volatility > 1e-12)
 
 
@@ -1035,7 +1112,7 @@ def _autocorr(
     window: int | None,
 ) -> pd.Series:
     value = max(3, _required_window(window))
-    return left.rolling(value, min_periods=_min_periods(value)).corr(left.shift(1))
+    return _stable_rolling_corr(left, left.shift(1), value, min_periods=_min_periods(value))
 
 
 @register_operator("variance_ratio", "rolling", 1, uses_window=True)
@@ -1048,14 +1125,8 @@ def _variance_ratio(
     horizon = max(2, _required_window(window))
     estimation_window = 2 * horizon
     min_periods = horizon
-    one_step_variance = left.diff().rolling(
-        estimation_window,
-        min_periods=min_periods,
-    ).var(ddof=0)
-    horizon_variance = left.diff(horizon).rolling(
-        estimation_window,
-        min_periods=min_periods,
-    ).var(ddof=0)
+    one_step_variance = _stable_rolling_variance(left.diff(), estimation_window, min_periods=min_periods, ddof=0)
+    horizon_variance = _stable_rolling_variance(left.diff(horizon), estimation_window, min_periods=min_periods, ddof=0)
     denominator = horizon * one_step_variance
     return horizon_variance / denominator.where(denominator > 1e-12)
 
@@ -1120,7 +1191,7 @@ def _normalized_spread(
 ) -> pd.Series:
     value = max(3, _required_window(window))
     spread = left - right
-    scale = spread.rolling(value, min_periods=_min_periods(value)).std(ddof=0)
+    scale = _stable_rolling_std(spread, value, min_periods=_min_periods(value), ddof=0)
     return spread / scale.where(scale > 1e-12)
 
 
@@ -1259,10 +1330,10 @@ def _rolling_corr(
     left_pair = left.where(valid)
     right_pair = right.where(valid)
     rolling = left_pair.rolling(value, min_periods=_min_periods(value))
-    correlation = rolling.corr(right_pair)
+    correlation = _stable_rolling_corr(left_pair, right_pair, value, min_periods=_min_periods(value))
     enough = valid.rolling(value, min_periods=_min_periods(value)).sum() >= _min_periods(value)
-    flat = (rolling.std(ddof=0) <= 1e-12) | (
-        right_pair.rolling(value, min_periods=_min_periods(value)).std(ddof=0) <= 1e-12
+    flat = (_stable_rolling_std(left_pair, value, min_periods=_min_periods(value), ddof=0) <= 1e-12) | (
+        _stable_rolling_std(right_pair, value, min_periods=_min_periods(value), ddof=0) <= 1e-12
     )
     return correlation.mask(enough & flat, 0.0)
 
@@ -1281,10 +1352,7 @@ def _rolling_change_corr(
 ) -> pd.Series:
     """Rolling Pearson correlation of one-step changes, not levels."""
     value = max(3, _required_window(window))
-    return left.diff().rolling(
-        value,
-        min_periods=_min_periods(value),
-    ).corr(right.diff())
+    return _stable_rolling_corr(left.diff(), right.diff(), value, min_periods=_min_periods(value))
 
 
 @register_operator("rolling_spearman", "binary", 2, uses_window=True, family="regression")
@@ -1323,10 +1391,7 @@ def _rolling_lagged_change_corr(
 ) -> pd.Series:
     """Correlation of left changes with one-day-lagged right changes."""
     value = max(3, _required_window(window))
-    return left.diff().rolling(
-        value,
-        min_periods=_min_periods(value),
-    ).corr(right.diff().shift(1))
+    return _stable_rolling_corr(left.diff(), right.diff().shift(1), value, min_periods=_min_periods(value))
 
 
 @register_operator(
@@ -1387,7 +1452,7 @@ def _rolling_change_beta(
     left_change = left.diff()
     right_change = right.diff()
     covariance = left_change.rolling(value, min_periods=min_periods).cov(right_change)
-    variance = right_change.rolling(value, min_periods=min_periods).var(ddof=1)
+    variance = _stable_rolling_variance(right_change, value, min_periods=min_periods, ddof=1)
     return covariance / variance.where(variance > 1e-12)
 
 
@@ -1406,10 +1471,7 @@ def _rolling_tracking_error(
     """Volatility of the difference between paired one-step changes."""
     value = max(2, _required_window(window))
     active_change = left.diff() - right.diff()
-    return active_change.rolling(
-        value,
-        min_periods=_min_periods(value),
-    ).std(ddof=0)
+    return _stable_rolling_std(active_change, value, min_periods=_min_periods(value), ddof=0)
 
 
 @register_operator(
@@ -1427,7 +1489,7 @@ def _rolling_residual(
     value = max(5, _required_window(window))
     min_periods = max(5, value // 2)
     covariance = left.rolling(value, min_periods=min_periods).cov(right)
-    variance = right.rolling(value, min_periods=min_periods).var(ddof=0)
+    variance = _stable_rolling_variance(right, value, min_periods=min_periods, ddof=0)
     beta = covariance / variance.where(variance > 1e-12)
     return left - beta * right
 
@@ -1442,10 +1504,10 @@ def _rolling_ols_terms(
     rolling_left = left.rolling(value, min_periods=min_periods)
     rolling_right = right.rolling(value, min_periods=min_periods)
     covariance = rolling_left.cov(right)
-    variance = rolling_right.var(ddof=1)
+    variance = _stable_rolling_variance(right, value, min_periods=min_periods, ddof=1)
     beta = covariance / variance.where(variance > 1e-12)
     alpha = rolling_left.mean() - beta * rolling_right.mean()
-    correlation = rolling_left.corr(right)
+    correlation = _stable_rolling_corr(left, right, value, min_periods=min_periods)
     return alpha, beta, correlation
 
 
