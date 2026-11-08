@@ -66,6 +66,16 @@ _CURRENT_HTTP_REQUEST_CONTEXT: ContextVar[HttpRequestContext | None] = (
 )
 
 
+def normalize_http_request_id(candidate_request_id: str | None) -> str:
+    """保留安全的 edge ID，否则生成本地 UUID；不选择请求上下文。"""
+    if (
+        candidate_request_id is not None
+        and _REQUEST_ID_PATTERN.fullmatch(candidate_request_id)
+    ):
+        return candidate_request_id
+    return uuid4().hex
+
+
 def create_http_request_context(
     candidate_request_id: str | None,
     *,
@@ -73,12 +83,7 @@ def create_http_request_context(
     budget_seconds: float = HTTP_REQUEST_BUDGET_SECONDS,
 ) -> HttpRequestContext:
     """创建一次请求唯一的 ID、起点与后端截止时刻。"""
-    request_id = (
-        candidate_request_id
-        if candidate_request_id is not None
-        and _REQUEST_ID_PATTERN.fullmatch(candidate_request_id)
-        else uuid4().hex
-    )
+    request_id = normalize_http_request_id(candidate_request_id)
     started_at = clock()
     return HttpRequestContext(
         request_id=request_id,

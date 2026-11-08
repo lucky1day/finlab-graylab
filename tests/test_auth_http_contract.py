@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import replace
 from datetime import datetime
 from types import SimpleNamespace
@@ -683,3 +684,22 @@ def test_auth_http_dates_are_explicit_utc(monkeypatch):
         assert response.status_code == 200
         assert response.json()["user"]["created_at"] == "2026-12-31T20:30:00.000000+00:00"
         assert response.json()["expires_at"] == "2027-01-01T08:30:00.000000+00:00"
+
+
+@pytest.mark.parametrize("candidate", [None, "", "edge-request-1", "x" * 128, "x" * 129, "space id", "\xff"])
+def test_auth_audit_reuses_the_response_request_id(monkeypatch, candidate):
+    service = Mock()
+    service.update_own_profile.return_value = _user()
+    monkeypatch.setattr(routes, "_service", lambda: service)
+    headers = _safe_json_headers()
+    if candidate is not None:
+        headers.append((b"x-request-id", candidate.encode("latin-1")))
+    response = _request("POST", "/api/auth/update-profile", headers=headers,
+                        json={"full_name": "Name", "organization_name": None})
+    assert response.status_code == 200
+    request_id = response.headers["x-request-id"]
+    assert service.update_own_profile.call_args.kwargs["request_id"] == request_id
+    if candidate and re.fullmatch(r"[!-~]{1,128}", candidate, re.ASCII):
+        assert request_id == candidate
+    else:
+        assert re.fullmatch(r"[0-9a-f]{32}", request_id)

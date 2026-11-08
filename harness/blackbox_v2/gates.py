@@ -142,7 +142,10 @@ class BlackboxBacktestGate(Gate):
                     getattr(cfg, "factor_input_mode", None) or "legacy_v1"
                 ),
             )
-            environment_fingerprint = _environment_fingerprint(ctx.project_root)
+            environment_fingerprint = load_environment_fingerprint(
+                ctx.project_root,
+                expected_runtime_profile=DEFAULT_RUNTIME_PROFILE.name,
+            )
             state = state_binding_for_scheme(cfg, generation_id=generation_id)
             run_delivery = (partial(run_blackbox_backtest, state=state)
                             if state is not None else run_blackbox_backtest)
@@ -382,13 +385,6 @@ def _decode_json_object(value: object, label: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError(f"{label} is malformed")
     return value
-
-
-def _environment_fingerprint(project_root: Path) -> str:
-    return load_environment_fingerprint(
-        project_root,
-        expected_runtime_profile=DEFAULT_RUNTIME_PROFILE.name,
-    )
 
 
 def _blocked(gate_name: str, started_at: str, errors: list[str]) -> GateResult:

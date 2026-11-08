@@ -2,15 +2,16 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
-from pathlib import Path
 
+from harness.blackbox_v2.gates import verify_passed_blackbox_backtest
+from harness.context import GateContext
+from harness.gates.base import create_default_engine, guarded_result, utc_now
 from harness.operation import (
     operation_scope_sha256,
     verify_direct_operation,
 )
-from harness.context import GateContext
-from harness.gates.base import create_default_engine, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus
+from scheduler.blackbox_v2_runner import DEFAULT_RUNTIME_PROFILE
 from scheduler.discovery import SchemeConfig, load_scheme_config
 from scheduler.repository import (
     BlackboxLifecycleIdentityAbsent,
@@ -19,6 +20,7 @@ from scheduler.repository import (
     read_blackbox_lifecycle_state,
     read_blackbox_revision_activation_preflight,
 )
+from shared.blackbox_v2.environment_manifest import load_environment_fingerprint
 
 
 def activate_blackbox(ctx: GateContext) -> GateResult:
@@ -33,7 +35,7 @@ def _activate(ctx: GateContext, started_at: str) -> GateResult:
     preflight = None
     activation_mode = "initial"
     try:
-        passed_backtest = _verify_passed_backtest(engine, cfg)
+        passed_backtest = verify_passed_blackbox_backtest(engine, cfg)
         operation, errors = verify_direct_operation(
             ctx.operation,
             scheme_id=ctx.scheme_id,
@@ -176,7 +178,9 @@ def _validate_execution_evidence(
             "backtest runtime_profile mismatch: "
             f"{passed_backtest.runtime_profile} != {cfg.runtime_profile}"
         )
-    if passed_backtest.environment_fingerprint != _environment_fingerprint(ctx.project_root):
+    if passed_backtest.environment_fingerprint != load_environment_fingerprint(
+        ctx.project_root, expected_runtime_profile=DEFAULT_RUNTIME_PROFILE.name,
+    ):
         errors.append("backtest environment does not match frozen environment manifest")
     if not passed_backtest.generation_id.strip():
         errors.append("backtest DataBridge generation_id evidence is missing")
@@ -225,18 +229,6 @@ def _config(ctx: GateContext) -> SchemeConfig:
     if cfg.runtime_type != "blackbox_v2":
         raise ValueError(f"Blackbox activation requires runtime_type=blackbox_v2, got {cfg.runtime_type}")
     return cfg
-
-
-def _verify_passed_backtest(engine, cfg):
-    from harness.blackbox_v2.gates import verify_passed_blackbox_backtest as verify
-
-    return verify(engine, cfg)
-
-
-def _environment_fingerprint(project_root: Path) -> str:
-    from harness.blackbox_v2.gates import _environment_fingerprint as fingerprint
-
-    return fingerprint(project_root)
 
 
 def _blocked(started_at: str, errors: list[str]) -> GateResult:

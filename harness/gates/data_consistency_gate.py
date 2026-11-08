@@ -21,7 +21,7 @@ from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.gates.dashboard_gate import ApiProbeError, fetch_json
 from harness.http_target import validate_api_target
-from harness.result import Evidence, GateResult, GateStatus
+from harness.result import Evidence, GateResult, GateStatus, redact_gate_result
 from harness.signal_gap_plan import (
     RegistryTarget,
     SignalGapPlanError,
@@ -315,7 +315,7 @@ class DataConsistencyGate(Gate):
             self.name,
             lambda started_at: self._run(ctx, started_at),
         )
-        return _redact_gate_result(result, ctx.dashboard_session_token)
+        return redact_gate_result(result, ctx.dashboard_session_token)
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
         deadline = self._monotonic() + ctx.timeout_sec
@@ -3584,27 +3584,3 @@ def _direction(
     if isinstance(value, bool) or not isinstance(value, int) or value not in {-1, 0, 1}:
         raise DataConsistencyError(f"{field} must be one of -1, 0, 1")
     return value
-
-
-def _redact_gate_result(result: GateResult, secret: str | None) -> GateResult:
-    def redact(value: Any) -> Any:
-        if not secret:
-            return value
-        if isinstance(value, str):
-            return value.replace(secret, "[redacted-session]")
-        if isinstance(value, Mapping):
-            return {redact(key): redact(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [redact(item) for item in value]
-        if isinstance(value, tuple):
-            return tuple(redact(item) for item in value)
-        return value
-
-    return GateResult(
-        gate_name=result.gate_name,
-        status=result.status,
-        evidence=[Evidence(item.key, redact(item.value)) for item in result.evidence],
-        errors=[str(redact(error)) for error in result.errors],
-        started_at=result.started_at,
-        finished_at=result.finished_at,
-    )

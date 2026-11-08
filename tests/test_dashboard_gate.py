@@ -806,6 +806,53 @@ def test_dashboard_gate_redacts_session_from_unexpected_fetcher_error(
     assert "[redacted-session]" in serialized
 
 
+@pytest.mark.parametrize("gate_type", ["dashboard", "consistency"])
+@pytest.mark.parametrize("secret", [None, "", "session-secret"])
+def test_gate_return_boundary_redacts_nested_values_without_mutating_input(monkeypatch, gate_type, secret):
+    from types import MappingProxyType
+    from harness.gates.dashboard_gate import DashboardGate
+    from harness.gates.data_consistency_gate import DataConsistencyGate
+    from harness.result import Evidence, GateResult, GateStatus
+
+    gate = DashboardGate() if gate_type == "dashboard" else DataConsistencyGate()
+    nested = {"session-secret": ("prefix-session-secret", [9, None, MappingProxyType({"key": "session-secret"})])}
+    original = GateResult(gate.name, GateStatus.BLOCKED, [Evidence("nested", nested)],
+                          ["error-session-secret"], "start", "finish")
+    before = repr(original)
+    monkeypatch.setattr(gate, "_run", lambda _ctx, _started: original)
+    ctx = GateContext("example", "2026-11-08", Path("/unused"), dashboard_session_token=secret)
+    result = gate.run(ctx)
+    if secret:
+        assert result.evidence[0].value == {
+            "[redacted-session]": ("prefix-[redacted-session]", [9, None, {"key": "[redacted-session]"}])
+        }
+        assert result.errors == ["error-[redacted-session]"]
+    else:
+        assert result.evidence[0].value == nested
+        assert result.errors == original.errors
+    assert result.status == original.status
+    assert (result.started_at, result.finished_at) == ("start", "finish")
+    assert isinstance(next(iter(result.evidence[0].value.values())), tuple)
+    assert repr(original) == before
+
+
+@pytest.mark.parametrize("gate_type", ["dashboard", "consistency"])
+def test_gate_return_boundary_redacts_unexpected_exception(monkeypatch, gate_type):
+    from harness.gates.dashboard_gate import DashboardGate
+    from harness.gates.data_consistency_gate import DataConsistencyGate
+    from harness.result import GateStatus
+
+    gate = DashboardGate() if gate_type == "dashboard" else DataConsistencyGate()
+    def fail(_ctx, _started):
+        raise RuntimeError("unsafe-session-secret")
+    monkeypatch.setattr(gate, "_run", fail)
+    ctx = GateContext("example", "2026-11-08", Path("/unused"), dashboard_session_token="session-secret")
+    result = gate.run(ctx)
+    assert result.status == GateStatus.FAILED
+    assert result.errors == ["unsafe-[redacted-session]"]
+    assert result.evidence[0].value == "RuntimeError"
+
+
 def test_dashboard_cli_requires_secret_input_and_accepts_repeated_schemes() -> None:
     from harness.cli import _build_parser
 

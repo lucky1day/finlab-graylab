@@ -10,7 +10,6 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
-from uuid import uuid4
 
 from fastapi import (
     Depends,
@@ -29,6 +28,7 @@ from backend.db import (
     current_http_request_context,
     get_dashboard_engine,
     get_engine,
+    normalize_http_request_id,
 )
 from backend.auth.routes import (
     auth_error_response,
@@ -64,7 +64,6 @@ INDEX_CACHE_CONTROL = "no-cache, must-revalidate"
 VERSIONED_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
 UNVERSIONED_ASSET_CACHE_CONTROL = "no-cache, must-revalidate"
 logger = logging.getLogger("uvicorn.error")
-_REQUEST_ID_PATTERN = re.compile(r"[!-~]{1,128}\Z", flags=re.ASCII)
 _EXCEPTION_CLASS_PATTERN = re.compile(
     r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z",
     flags=re.ASCII,
@@ -277,10 +276,7 @@ def _request_id(request: Request) -> str:
     )
     if request_context is not None:
         return str(request_context.request_id)
-    candidate = request.headers.get("x-request-id")
-    if candidate is not None and _REQUEST_ID_PATTERN.fullmatch(candidate):
-        return candidate
-    return uuid4().hex
+    return normalize_http_request_id(request.headers.get("x-request-id"))
 
 
 def _safe_exception_class(exc: BaseException) -> str:

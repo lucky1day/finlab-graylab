@@ -3,9 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from typing import Annotated, Literal
-from uuid import uuid4
 
 from fastapi import APIRouter, Cookie, Depends, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -20,12 +18,12 @@ from backend.db import (
     RequestBudgetExceeded,
     current_http_request_context,
     get_engine,
+    normalize_http_request_id,
 )
 
 
 COOKIE_NAME = "__Host-bfl-session"
 SESSION_MAX_AGE_SECONDS = 43_200
-_REQUEST_ID_PATTERN = re.compile(r"[!-~]{1,128}\Z", re.ASCII)
 _TRUSTED_ORIGINS = {
     "aliyun-gray": "http://localhost:18110",
     "mac3-production": "https://bond.finailab.cn",
@@ -101,10 +99,7 @@ def _request_id(request: Request) -> str:
     context = current_http_request_context()
     if context is not None:
         return context.request_id
-    candidate = request.headers.get("x-request-id")
-    if candidate is not None and _REQUEST_ID_PATTERN.fullmatch(candidate):
-        return candidate
-    return uuid4().hex
+    return normalize_http_request_id(request.headers.get("x-request-id"))
 
 
 def _service() -> AuthService:

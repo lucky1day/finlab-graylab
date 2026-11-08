@@ -263,7 +263,8 @@ def test_dashboard_gzip_and_identity_are_one_representation(monkeypatch) -> None
     assert json.loads(decoded_gzip) == json.loads(identity_body)
 
 
-def test_dashboard_replaces_untrusted_request_id_before_logging(monkeypatch, caplog) -> None:
+@pytest.mark.parametrize("injected", [None, "", "bad-request-id\nforged-log-line", "space id", "x" * 129, "\xff"])
+def test_dashboard_replaces_untrusted_request_id_before_logging(monkeypatch, caplog, injected) -> None:
     from backend import main
 
     monkeypatch.setattr(main, "get_dashboard_engine", object)
@@ -272,18 +273,33 @@ def test_dashboard_replaces_untrusted_request_id_before_logging(monkeypatch, cap
         "build_factor_lab_dashboard",
         lambda _engine: _payload("fresh-request-id"),
     )
-    injected = "bad-request-id\nforged-log-line"
-
     with caplog.at_level("INFO", logger="uvicorn.error"):
         status, headers, _, _ = _request(
             main.app,
-            headers=[(b"x-request-id", injected.encode("latin-1"))],
+            headers=[] if injected is None else [(b"x-request-id", injected.encode("latin-1"))],
         )
 
     assert status == 200
     assert re.fullmatch(r"[0-9a-f]{32}", headers["x-request-id"])
-    assert injected not in caplog.text
+    if injected:
+        assert injected not in caplog.text
     assert "forged-log-line" not in caplog.text
+    events = [record.dashboard_event for record in caplog.records if hasattr(record, "dashboard_event")]
+    assert events and all(event["request_id"] == headers["x-request-id"] for event in events)
+
+
+@pytest.mark.parametrize("request_id", ["edge-request-1", "x" * 128, "!~"])
+def test_dashboard_preserves_safe_edge_request_id(monkeypatch, caplog, request_id):
+    from backend import main
+
+    monkeypatch.setattr(main, "get_dashboard_engine", object)
+    monkeypatch.setattr(main, "build_factor_lab_dashboard", lambda _engine: _payload("request-id"))
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        status, headers, _, _ = _request(main.app, headers=[(b"x-request-id", request_id.encode("ascii"))])
+    assert status == 200
+    assert headers["x-request-id"] == request_id
+    events = [record.dashboard_event for record in caplog.records if hasattr(record, "dashboard_event")]
+    assert events and all(event["request_id"] == request_id for event in events)
 
 
 def test_dashboard_total_timing_includes_slow_authentication(

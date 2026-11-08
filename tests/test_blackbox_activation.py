@@ -356,11 +356,11 @@ def test_existing_non_active_identity_is_not_promoted(tmp_path) -> None:
         ),
         patch("harness.blackbox_v2.activation._reload_pinned_canonical", return_value=cfg),
         patch(
-            "harness.blackbox_v2.activation._verify_passed_backtest",
+            "harness.blackbox_v2.activation.verify_passed_blackbox_backtest",
             return_value=passed_backtest,
         ),
         patch(
-            "harness.blackbox_v2.activation._environment_fingerprint",
+            "harness.blackbox_v2.activation.load_environment_fingerprint",
             return_value="e" * 64,
         ),
         patch(

@@ -209,7 +209,7 @@ def test_backtest_validates_all_targets_before_one_atomic_persist(tmp_path, fail
         patch("harness.blackbox_v2.gates.operation_scope_sha256", return_value="scope"),
         patch("harness.blackbox_v2.gates.get_ready_blackbox_snapshot", return_value=_snapshot()),
         patch("harness.blackbox_v2.gates.build_historical_cases", side_effect=lambda metadata, *a, **kw: [HistoricalCase(_request(metadata), -1, {})]),
-        patch("harness.blackbox_v2.gates._environment_fingerprint", return_value="environment"),
+        patch("harness.blackbox_v2.gates.load_environment_fingerprint", return_value="environment"),
         patch("harness.blackbox_v2.gates._open_runtime_input", side_effect=_runtime_view) as view,
         patch("harness.blackbox_v2.gates.run_blackbox_backtest", side_effect=run_delivery),
         patch("harness.blackbox_v2.gates.persist_backtest_output_atomic", return_value=10) as persist,

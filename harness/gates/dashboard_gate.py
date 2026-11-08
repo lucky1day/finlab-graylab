@@ -13,7 +13,7 @@ from backend.factor_lab_dashboard_semantics import validate_dashboard_payload
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.http_target import url_origin, validate_api_target
-from harness.result import Evidence, GateResult, GateStatus
+from harness.result import Evidence, GateResult, GateStatus, redact_gate_result
 from scheduler.discovery import SchemeConfig, load_scheme_config
 from scheduler.repository import registry_scheme_id
 from shared.legacy_prediction_migration import load_legacy_prediction_migrations
@@ -162,7 +162,7 @@ class DashboardGate(Gate):
             self.name,
             lambda started_at: self._run(ctx, started_at),
         )
-        return _redact_gate_result(result, ctx.dashboard_session_token)
+        return redact_gate_result(result, ctx.dashboard_session_token)
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
         selected_ids = ctx.dashboard_scheme_ids or (ctx.scheme_id,)
@@ -493,36 +493,3 @@ def _result(
         started_at=started_at,
         finished_at=utc_now(),
     )
-
-
-def _redact_gate_result(result: GateResult, secret: str | None) -> GateResult:
-    """在 Gate 的唯一返回边界清除所有路径可能携带的会话值。"""
-    return GateResult(
-        gate_name=result.gate_name,
-        status=result.status,
-        evidence=[
-            Evidence(item.key, _redact_secret(item.value, secret))
-            for item in result.evidence
-        ],
-        errors=[str(_redact_secret(error, secret)) for error in result.errors],
-        started_at=result.started_at,
-        finished_at=result.finished_at,
-    )
-
-
-def _redact_secret(value: Any, secret: str | None) -> Any:
-    """递归移除服务端响应或注入 fetcher 可能回显的会话值。"""
-    if not secret:
-        return value
-    if isinstance(value, str):
-        return value.replace(secret, "[redacted-session]")
-    if isinstance(value, Mapping):
-        return {
-            _redact_secret(key, secret): _redact_secret(item, secret)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_redact_secret(item, secret) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_redact_secret(item, secret) for item in value)
-    return value
