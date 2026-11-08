@@ -87,3 +87,34 @@ W4 固定版本的运行检查与故障恢复见[W4 运行手册](../sop/NATIVE_
 - 需要 fallback、未授权切旧版本、覆盖、自动重试或恢复已退役控制面才能继续。
 
 恢复源码、schema 和外置状态前执行[部署恢复](../../deploy/README.md#回滚与认证部署)的兼容性与备份检查。
+
+## 方案输入质量审计与每日结果
+
+数据质量检查采用**只记录、继续计算**。输入存在缺值、错期、窗口不足或审计声明未核验时，平台记录详细问题后执行原模型，不在平台填0、沿用旧方向或替换输入。模型能计算时正常发布其原始方向；模型自身无法计算时，保留当日failed run及运行日志，并记录`prediction_result.outcome=not_computable`、`predicted_direction=null`。不向预测事实表插入虚构的0或旧预测。真实休市/非到期任务仍按原日历no-op；不能确定日历或无法取得可信输入时，按已知active候选逐模型记录无法计算，不能假装成功或猜测业务日期。
+
+`deploy/prediction_input_quality_v1.json`是静态审计目录，覆盖部署矩阵中的全部执行文件，绑定base、exact和脚本SHA；profiles维护检查窗口与输入角色，运行方式统一为audit。绑定漂移明确记`policy_mismatch`，未声明记`not_declared`，检查器异常记`check_error`，均不能声称输入完整。它不取代原有执行身份、Registry、ready快照或生命周期校验，也不成为第二份启用名单。
+
+Blackbox在已取得可信runtime view和Request后审计封存文件，再启动原交付。日、周、月使用各自的精确cutoff；只在cutoff及以前统计窗口，未来行不能补足历史。所需列、窗口、缺失日期、有效值/有效差分数量及最近可用观测逐项留证，合法0不会被当成空值。多目标按执行文件分别记录；原算法和exact不变。
+
+Mac3 W4九套固定版本通过独立审计子进程从原legacy DB经`shared.input_artifacts`导出核查，不改接DataBridge、不改adapter/core或源包。审计最多30秒，之后原模型拥有原有完整计算预算；审计失败或超时只记录，不吞取消/进程组清理异常。Native源包未完整公开逐因子依赖时，审计明确标为“导出输入集上界”，不能把所有导出列说成模型必需因子。审计期间源水位变化单列；水位不是全值digest，也不证明二进制算法最终使用的每个值。
+
+### 日志与结果关联
+
+完整结构化日志追加到`BFL_RUNTIME_ROOT/logs/prediction-input-quality/YYYY-MM-DD.jsonl`（Asia/Shanghai记录日），以run_id、audit_id、scheme、执行文件、预测日和snapshot关联。文件追加使用线程锁和flock并fsync；不可写时转存完整stderr，Native父进程仅转发本审计协议行，不转发未识别的算法stderr或连接信息。日志sink异常不把预测成功反转为失败。
+
+- `prediction_input_quality`：状态、输入覆盖范围、规则/版本身份、各窗口边界、缺列/缺值日期及最近可用值；明确平台未填数。
+- `prediction_result`：发布状态、原始模型方向和审计引用；无法计算时方向null及失败原因，同时保留既有run/run_log。
+- `prediction_input_unavailable`：原ready gate错误分类；无法取得可信快照时不制造方向，逐模型留下当日无法计算记录。
+- `native_input_audit_source_observation`：审计期间的源水位观察，不能标成算法消费的精确快照。
+
+`last_available_observation`只表示窗口之前最近可用观测，**不能写成模型实际使用值**。交付未暴露内部填补行为时，记录`actual_value_treatment=not_exposed_by_delivery`及“原模型原生处理”，不猜测它填了0、使用旧值或跳过因子。未来如需精确到内部选值，应由交付提供可核验的审计接口；平台不篡改冻结算法追踪结果。
+
+所有人工核查保留其人工来源，不冒称自然运行。已发布事实仍遵守insert-only；新增日志不会触发旧预测重算。
+
+## 明确授权的当日预测重算
+
+默认已发布事实仍insert-only。用户明确授权替换当日预测时，操作员先保存该日全部原记录与摘要，使用既有运行器在隔离状态下暂存全部新结果；核验输入快照、完整业务键、exact和业务输出后，再持Writer互斥锁发布。暂存文件不可仅凭存在而复用，必须重新核验来源和身份。
+
+仅`scheduler.repository.replace_authorized_prediction_day`可按当前Asia/Shanghai日期、全量备份摘要、精确行数与完整键集替换该日live记录。生命周期审批、删除旧事实、新run、新事实和运行日志在同一事务完成；任一步失败整体回滚，保留全部原记录。并发变化、历史日期、回测发布记录、无效方向和旧run复用均拒绝；原run与其他日期事实保留。
+
+人工重算来源记gray_live，不能冒称原自然运行。备份、暂存结果、核对与替换回执必须保留；最终逐业务键读回目标行数、日期、exact和业务输出。此操作不是自然任务的自动恢复策略，不允许未获明确授权时调用。

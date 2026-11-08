@@ -412,10 +412,11 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
             patch.object(
                 runner,
                 "execute_scheme",
-                return_value=SimpleNamespace(
-                    scheme_id="monthly_average",
-                    status="success",
-                    records_written=1,
+                side_effect=lambda cfg, *args, **kwargs: SimpleNamespace(
+                    scheme_id=cfg.scheme_id,
+                    status="failed" if kwargs.get("scheduled_preflight_failure") else "success",
+                    error_msg=kwargs.get("scheduled_preflight_failure"),
+                    records_written=0 if kwargs.get("scheduled_preflight_failure") else 1,
                     run_id=101,
                 ),
             ),

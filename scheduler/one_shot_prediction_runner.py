@@ -31,6 +31,8 @@ from scheduler.deployment_scope import (
 from scheduler.discovery import discover_schemes
 from scheduler.executor import (
     SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT,
+    SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_UNAVAILABLE,
+    SCHEDULED_PREFLIGHT_FAILURE_CALENDAR_UNAVAILABLE,
     execute_scheme,
     _scheduled_scheme_identity_error,
 )
@@ -852,8 +854,12 @@ def _execute_data_bridge_wave(
         )
     except Exception:  # noqa: BLE001 - preserve calendar isolation
         for cfg in candidates:
-            summary.blocked.append(
-                _candidate_item(cfg, "calendar_unavailable")
+            _execute_candidate(
+                summary, cfg, predict_date=predict_date, algo_env=algo_env,
+                scheduled_control_plane=scheduled_control_plane,
+                scheduled_execution_context=scheduled_execution_context,
+                scheduled_preflight_failure=SCHEDULED_PREFLIGHT_FAILURE_CALENDAR_UNAVAILABLE,
+                engine=engine, canonical_config_trusted=True,
             )
     if expected_daily_date is None:
         return
@@ -878,8 +884,20 @@ def _execute_data_bridge_wave(
                 canonical_config_trusted=True,
             )
     elif gate_code is not None:
+        from shared.prediction_audit import emit_prediction_audit
         for cfg in candidates:
-            summary.blocked.append(_candidate_item(cfg, gate_code))
+            emit_prediction_audit(
+                'prediction_input_unavailable', scheme_id=cfg.scheme_id,
+                predict_date=predict_date, status='unavailable', gate_code=gate_code,
+                predicted_direction=None,
+            )
+            _execute_candidate(
+                summary, cfg, predict_date=predict_date, algo_env=algo_env,
+                scheduled_control_plane=scheduled_control_plane,
+                scheduled_execution_context=scheduled_execution_context,
+                scheduled_preflight_failure=SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_UNAVAILABLE,
+                engine=engine, canonical_config_trusted=True,
+            )
     else:
         for cfg in candidates:
             _execute_candidate(
@@ -961,15 +979,32 @@ def run_one_shot(
                 _finalize(summary)
                 return summary
 
-            calendar = get_calendar(engine)
-            candidates, terminal = _filter_due_candidates(
-                summary,
-                candidates,
-                cadence=normalized_cadence,
-                predict_date=normalized_date,
-                calendar=calendar,
-            )
+            active_before_calendar = list(candidates)
+            def record_calendar_unavailable(items):
+                for item in items:
+                    _execute_candidate(
+                        summary, item, predict_date=normalized_date, algo_env=algo_env,
+                        scheduled_control_plane=scheduled_control_plane,
+                        scheduled_execution_context=scheduled_execution_context,
+                        scheduled_preflight_failure=SCHEDULED_PREFLIGHT_FAILURE_CALENDAR_UNAVAILABLE,
+                        engine=engine, canonical_config_trusted=True,
+                    )
+            try:
+                calendar = get_calendar(engine)
+                candidates, terminal = _filter_due_candidates(
+                    summary, candidates, cadence=normalized_cadence,
+                    predict_date=normalized_date, calendar=calendar,
+                )
+            except Exception:
+                record_calendar_unavailable(active_before_calendar)
+                raise
+            invalid_calendar_ids = {str(item['scheme_id']) for item in summary.blocked
+                                    if item.get('code') == 'period_calendar_invalid'}
+            record_calendar_unavailable([item for item in active_before_calendar
+                                         if item.scheme_id in invalid_calendar_ids])
             if terminal:
+                if invalid_calendar_ids:
+                    _finalize(summary)
                 return summary
 
             partitions = _partition_candidates(
@@ -1093,7 +1128,11 @@ def run_one_shot_with_retries(
     run = run or run_one_shot
     summary = run(cadence, **kwargs)
     for attempt in range(1, retry_attempts + 1):
-        failed_ids = sorted({str(item["scheme_id"]) for item in summary.failed if item.get("scheme_id")})
+        failed_ids = sorted({str(item["scheme_id"]) for item in summary.failed
+                             if item.get("scheme_id") and item.get("code") not in {
+                                 SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_UNAVAILABLE,
+                                 SCHEDULED_PREFLIGHT_FAILURE_CALENDAR_UNAVAILABLE,
+                             }})
         if not failed_ids:
             break
         sleep(retry_delay_sec)

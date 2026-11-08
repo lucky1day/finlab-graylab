@@ -42,6 +42,7 @@ from scheduler.repository import (
     write_run_log,
 )
 from shared.calendar_service import get_calendar
+from shared.prediction_audit import audit_run_context, current_run_id, emit_prediction_audit, relay_native_audit_stderr
 from shared.blackbox_v2.contracts import (
     BlackboxMetadata,
     BlackboxRequest,
@@ -98,6 +99,8 @@ _SCHEDULED_EXECUTION_CONTEXTS = {
 SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT = (
     "data_bridge_ready_timeout"
 )
+SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_UNAVAILABLE = "data_bridge_unavailable"
+SCHEDULED_PREFLIGHT_FAILURE_CALENDAR_UNAVAILABLE = "calendar_unavailable"
 
 _ALGORITHM_ENVIRONMENT_ALLOWLIST = frozenset(
     {
@@ -212,6 +215,9 @@ def run_scheme_subprocess(
         ephemeral_native_runtime_root
     )
     env = _build_algorithm_environment()
+    audit_run_id = current_run_id()
+    if audit_run_id is not None:
+        env['BFL_PREDICTION_RUN_ID'] = str(audit_run_id)
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV, None)
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_ROOT_ENV, None)
     if scheme_id in SOURCE_RUNTIME_SCHEME_IDS:
@@ -283,14 +289,44 @@ def run_scheme_subprocess(
                 env[SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV] = str(
                     source_database_path
                 )
-            completed = _run_process_group(
-                cmd,
-                **process_kwargs,
-            )
+            native_audit = None
+            if scheme_id in SOURCE_RUNTIME_SCHEME_IDS:
+                # 审计有独立30秒上限；随后模型仍拥有原有完整计算预算。
+                audit_cmd = ["scheduler.native_input_audit_runner" if part == "scheduler.scheme_runner" else part for part in cmd]
+                audit_kwargs = {**process_kwargs, "timeout": 30}
+                try:
+                    audit_completed = _run_process_group(audit_cmd, **audit_kwargs)
+                    relay_native_audit_stderr(audit_completed.stderr, scheme_id=scheme_id, predict_date=predict_date)
+                    audit_payload = json.loads(audit_completed.stdout)
+                    if audit_payload.get("kind") != "native_input_audit_result":
+                        raise ValueError("invalid audit envelope")
+                    native_audit = audit_payload["summary"]
+                except Exception as audit_error:
+                    if isinstance(audit_error, (ProcessGroupTerminationError, ProcessRegistrationCleanupError)):
+                        raise
+                    if cancellation_event is not None and cancellation_event.is_set():
+                        raise
+                    relay_native_audit_stderr(getattr(audit_error, "stderr", None), scheme_id=scheme_id, predict_date=predict_date)
+                    audit_ref = emit_prediction_audit(
+                        "prediction_input_quality", scheme_id=scheme_id, predict_date=predict_date,
+                        status="check_timeout" if isinstance(audit_error, subprocess.TimeoutExpired) else "check_error",
+                        audit_budget_seconds=30, error_type=type(audit_error).__name__, enforcement="log_only",
+                    )
+                    native_audit = {**audit_ref, "status": "check_unavailable", "enforcement": "log_only"}
+            try:
+                completed = _run_process_group(cmd, **process_kwargs)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                relay_native_audit_stderr(getattr(exc, 'stderr', None),
+                                          scheme_id=scheme_id, predict_date=predict_date)
+                raise
+            relay_native_audit_stderr(completed.stderr, scheme_id=scheme_id, predict_date=predict_date)
     payload = json.loads(completed.stdout)
     if not isinstance(payload, list):
         raise ValueError(f"scheme runner returned non-list payload for {scheme_id}")
-    return [_record_from_payload(item) for item in payload]
+    records = [_record_from_payload(item) for item in payload]
+    if native_audit is not None:
+        records = [replace(r, extra={**(r.extra or {}), "input_quality": native_audit}) for r in records]
+    return records
 
 
 def _normalize_ephemeral_native_runtime_root(
@@ -499,6 +535,19 @@ def run_blackbox_scheme_subprocess(
     deadline = time.monotonic() + (timeout_sec or profile.predict_timeout_sec)
     with open_blackbox_runtime_view(input_bundle) as runtime_view:
         trusted_bundle = runtime_view.bundle
+        from shared.prediction_input_quality import audit_prediction_input_quality
+
+        # 所有目标先审计；缺值照常执行原算法，不以平台填数替代。
+        quality_reports = {}
+        for delivery in deliveries:
+            quality_request = request if len(deliveries) == 1 else build_live_request(
+                delivery.metadata, predict_date=predict_date, calendar=calendar, cutoffs=cutoffs,
+            )
+            quality_reports[delivery.script_path.name] = audit_prediction_input_quality(
+                cfg, delivery.script_path, runtime_view.data_dir, quality_request,
+                snapshot_id=trusted_bundle.combined_snapshot_id, calendar=calendar,
+                target_tenor=delivery.metadata.target_tenor,
+            )
         predict_kwargs = {
             "metadata": metadata,
             "script_path": deliveries[0].script_path,
@@ -556,6 +605,8 @@ def run_blackbox_scheme_subprocess(
                     }
                 )
                 record = replace(record, extra=extra)
+            record = replace(record, extra={**(record.extra or {}),
+                             'input_quality': quality_reports[delivery.script_path.name]})
             records.append(_project_blackbox_fact_horizon(record, cfg=cfg, metadata=metadata))
     return records
 
@@ -694,6 +745,14 @@ def run_blackbox_gray_replay_batch(
             "data_snapshot_id": trusted_bundle.combined_snapshot_id,
             "profile": effective_profile,
         }
+        from shared.prediction_input_quality import audit_prediction_input_quality
+
+        quality_reports = {}
+        for target_request in batch_requests:
+            quality_reports[target_request.request_id] = audit_prediction_input_quality(
+                cfg, cfg.delivery_script, runtime_view.data_dir, target_request,
+                snapshot_id=trusted_bundle.combined_snapshot_id,
+            )
         from scheduler.blackbox_v2_runner import state_binding_for_scheme
         seed_state = None
         state = state_binding_for_scheme(cfg, generation_id=snapshot.generation_id)
@@ -737,6 +796,8 @@ def run_blackbox_gray_replay_batch(
             )
             backtest_kwargs["state"] = replace(state, seed_state=None)
             records = run_blackbox_backtest(**backtest_kwargs)
+    records = [replace(r, extra={**(r.extra or {}),
+               'input_quality': quality_reports.get((r.extra or {}).get('request_id'), {})}) for r in records]
     records_by_request = _index_gray_replay_records(records, batch_requests)
     return [
         _with_gray_request_identity(
@@ -1084,8 +1145,11 @@ def execute_scheme(
                 "execution context"
             )
         if (
-            scheduled_preflight_failure
-            != SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT
+            scheduled_preflight_failure not in {
+                SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT,
+                SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_UNAVAILABLE,
+                SCHEDULED_PREFLIGHT_FAILURE_CALENDAR_UNAVAILABLE,
+            }
         ):
             raise ValueError("unsupported scheduled_preflight_failure")
     owns_engine = engine is None
@@ -1170,7 +1234,8 @@ def execute_scheme(
             run_kwargs["blackbox_snapshot_mode"] = blackbox_snapshot_mode
             run_kwargs["expected_generation_id"] = blackbox_expected_generation_id
             run_kwargs["expected_refresh_date"] = blackbox_expected_refresh_date
-        records = run_configured_scheme(cfg, predict_date, **run_kwargs)
+        with audit_run_context(run_id):
+            records = run_configured_scheme(cfg, predict_date, **run_kwargs)
         records_returned = len(records)
         if getattr(cfg, "runtime_type", "native_adapter") == "blackbox_v2":
             snapshot_ids = {
@@ -1219,13 +1284,20 @@ def execute_scheme(
                     duration_sec=duration,
                 )
             )
+            emit_prediction_audit(
+                'prediction_result', scheme_id=cfg.scheme_id, predict_date=predict_date,
+                run_id=run_id, status=status,
+                outcome='calculated' if status == 'success' else 'already_present' if status == 'skipped' else 'publication_failed',
+                reason=error_msg,
+                scheme_version=scheme_version, records_written=records_written,
+                directions=[{'target_tenor': r.target_tenor, 'horizon': r.horizon,
+                             'feature_date': r.feature_date, 'target_date': r.target_date,
+                             'predicted_direction': r.predicted_direction,
+                             'input_quality': (r.extra or {}).get('input_quality')} for r in records],
+                platform_fallback='none',
+            )
             return SchemeRunResult(
-                cfg.scheme_id,
-                status,
-                records_written,
-                duration,
-                error_msg,
-                run_id,
+                cfg.scheme_id, status, records_written, duration, error_msg, run_id,
             )
         else:
             current_active_targets = _active_registry_targets(engine, cfg.scheme_id)
@@ -1245,17 +1317,33 @@ def execute_scheme(
                 run_date=predict_date,
                 duration_sec=duration,
             )
+            emit_prediction_audit(
+                'prediction_result', scheme_id=cfg.scheme_id, predict_date=predict_date,
+                run_id=run_id, status=status,
+                outcome='calculated' if status == 'success' else 'already_present' if status == 'skipped' else 'publication_failed',
+                reason=error_msg,
+                scheme_version=scheme_version, records_written=records_written,
+                directions=[{'target_tenor': r.target_tenor, 'horizon': r.horizon,
+                             'feature_date': r.feature_date, 'target_date': r.target_date,
+                             'predicted_direction': r.predicted_direction,
+                             'input_quality': (r.extra or {}).get('input_quality')} for r in records],
+                platform_fallback='none',
+            )
             return SchemeRunResult(
-                cfg.scheme_id,
-                status,
-                records_written,
-                duration,
-                error_msg,
-                run_id,
+                cfg.scheme_id, status, records_written, duration, error_msg, run_id,
             )
     except Exception as exc:
         duration = time.monotonic() - started
         error_msg = _execution_error_message(exc)
+        emit_prediction_audit(
+            'prediction_result', scheme_id=cfg.scheme_id, predict_date=predict_date,
+            run_id=run_id, status='failed', outcome='not_computable',
+            scheme_version=scheme_version, reason=error_msg,
+            error_type=type(exc).__name__, records_written=0,
+            directions=[{'target_tenor': tenor, 'horizon': horizon,
+                         'predicted_direction': None} for tenor, horizon in sorted(active_targets)],
+            platform_fallback='none',
+        )
         if run_id is not None:
             try:
                 records_written = 0

@@ -182,6 +182,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
     def test_scheduled_blackbox_uses_ready_snapshot(self) -> None:
         from scheduler.executor import run_blackbox_scheme_subprocess
         from scheduler.process_control import ProcessStartGuard
+        from shared.models import PredictionRecord
         from shared.blackbox_v2.snapshot import CutoffKeys
 
         snapshot = _gray_replay_snapshot()
@@ -209,7 +210,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                   return_value=CutoffKeys("2026-07-15", "202627", "202606")),
             patch("scheduler.executor.build_live_request", return_value=_request("001")),
             patch("scheduler.blackbox_v2_runner.run_blackbox_predict",
-                  return_value="record") as predict,
+                  return_value=PredictionRecord("blackbox_trial","10Y",1,"2026-07-15","2026-07-16",-1,feature_date="2026-07-15")) as predict,
             patch("scheduler.executor.open_blackbox_runtime_view",
                   side_effect=open_runtime_view),
         ):
@@ -218,7 +219,9 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 timeout_sec=300, process_start_guard=ProcessStartGuard(),
             )
 
-        self.assertEqual(result, ["record"])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].predicted_direction, -1)
+        self.assertEqual(result[0].extra["input_quality"]["enforcement"], "log_only")
         self.assertTrue(ready.call_args.kwargs["require_fresh"])
         self.assertEqual(ready.call_args.kwargs["snapshot_date"], "2026-07-16")
         self.assertEqual(predict.call_args.kwargs["data_dir"], Path("/tmp/private-runtime-view"))

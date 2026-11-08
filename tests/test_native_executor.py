@@ -287,3 +287,30 @@ def test_native_process_group_is_terminated_on_interruption() -> None:
         )
 
     terminate.assert_called_once_with(process, process_group_id=4321)
+
+
+def test_native_audit_timeout_keeps_full_original_model_budget(tmp_path, monkeypatch):
+    import subprocess
+    from contextlib import nullcontext
+    from scheduler.executor import run_scheme_subprocess
+    monkeypatch.setenv('BFL_RUNTIME_ROOT',str(tmp_path/'runtime'))
+    calls=[]
+    def run(cmd,**kwargs):
+        calls.append((cmd,kwargs))
+        if 'scheduler.native_input_audit_runner' in cmd:
+            raise subprocess.TimeoutExpired(cmd,kwargs['timeout'])
+        return CompletedProcess(cmd,0,'[]','')
+    with (
+        patch('scheduler.executor.frozen_source_runtime_database_config',return_value=nullcontext(tmp_path/'source-db.json')),
+        patch('scheduler.executor._run_process_group',side_effect=run),
+    ):
+        result=run_scheme_subprocess('daily_1y_xgb_1y13_0629','2026-10-29',
+                                     source_database_config=object(),timeout_sec=73)
+    assert result==[] and len(calls)==2
+    assert calls[0][1]['timeout']==30
+    assert calls[1][1]['timeout']==73
+    assert 'scheduler.scheme_runner' in calls[1][0]
+    import json
+    logfile=next((tmp_path/'runtime/logs/prediction-input-quality').glob('*.jsonl'))
+    event=json.loads(logfile.read_text())
+    assert event['status']=='check_timeout' and event['enforcement']=='log_only'

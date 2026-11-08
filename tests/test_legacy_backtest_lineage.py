@@ -7,12 +7,13 @@ import pytest
 
 from scheduler.discovery import load_scheme_config
 from shared.legacy_backtest_lineage import load_legacy_backtest_lineages
+from shared.versioning import compute_scheme_version
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_repository_legacy_backtest_lineage_matches_canonical_exact() -> None:
+def test_repository_legacy_backtest_lineage_preserves_historical_exact() -> None:
     entries = load_legacy_backtest_lineages(PROJECT_ROOT)
 
     assert len(entries) == 1
@@ -20,10 +21,12 @@ def test_repository_legacy_backtest_lineage_matches_canonical_exact() -> None:
     config = load_scheme_config(
         PROJECT_ROOT / "schemes" / entry.scheme_id / "config.yaml"
     )
-    assert config.scheme_version == entry.scheme_version
-    assert config.code_hash == entry.code_hash
-    assert config.config_hash == entry.config_hash
-    assert config.manifest_hash == entry.manifest_hash
+    # 血缘绑定历史版本；同ID当前运行时升级不得重写旧回测的exact/hash。
+    assert config.scheme_id == entry.scheme_id
+    assert entry.target_tenor in config.tenors
+    assert compute_scheme_version(
+        entry.code_hash, entry.config_hash, entry.manifest_hash,
+    ) == entry.scheme_version
 
 
 def test_legacy_backtest_lineage_loader_rejects_duplicate_scope(
