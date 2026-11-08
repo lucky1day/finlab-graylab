@@ -11,6 +11,8 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
 from scheduler import repository
+from scheduler.persistence import lifecycle as lifecycle_impl
+from scheduler.persistence import predictions as prediction_impl
 from shared.models import PredictionRecord
 
 
@@ -80,7 +82,7 @@ def case(request, tmp_path, monkeypatch):
             VALUES (101, 'demo', 'version-1', :runtime, 'active',
                     'scheduled_live', '2026-07-20', 'running', 2)"""),
             {"runtime": runtime_type})
-    monkeypatch.setattr(repository, "load_scheme_config", lambda _path: cfg)
+    monkeypatch.setattr(prediction_impl, "load_scheme_config", lambda _path: cfg)
     complete = (
         repository.complete_active_native_run
         if runtime_type == "native_adapter"
@@ -270,7 +272,7 @@ def test_blackbox_lifecycle_comes_from_database(case, monkeypatch, database_stat
             {"status": database_status},
         )
     monkeypatch.setattr(
-        repository, "replace",
+        lifecycle_impl, "replace",
         lambda value, **changes: SimpleNamespace(**{**vars(value), **changes}),
     )
     resolved = repository.resolve_database_lifecycle(engine, [cfg])[0]
@@ -281,7 +283,7 @@ def test_blackbox_lifecycle_comes_from_database(case, monkeypatch, database_stat
 def test_blackbox_disk_version_drift_cannot_publish(case, monkeypatch):
     engine, cfg, _records, finish = case
     monkeypatch.setattr(
-        repository, "load_scheme_config",
+        prediction_impl, "load_scheme_config",
         lambda _path: SimpleNamespace(**{**vars(cfg), "scheme_version": "changed"}),
     )
     before = _facts(engine)

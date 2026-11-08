@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from sqlalchemy import text
 from scheduler import repository as repo
+from scheduler.persistence import predictions as prediction_impl
 from shared.models import PredictionRecord
 
 pytestmark = pytest.mark.mysql_integration
@@ -17,10 +18,10 @@ def test_today_replacement_is_atomic(mysql_test_engine, monkeypatch):
     configs = [SimpleNamespace(scheme_id=sid, scheme_version='repair_exact',
                path=Path('/unused') / sid, runtime_type='native_adapter',
                horizon=5, tenors=('5Y',)) for sid in ('repair_a', 'repair_b')]
-    monkeypatch.setattr(repo, 'load_scheme_config', lambda path: next(c for c in configs if c.scheme_id == path.parent.name))
+    monkeypatch.setattr(prediction_impl, 'load_scheme_config', lambda path: next(c for c in configs if c.scheme_id == path.parent.name))
     # 此合同专测事务；active/Registry审批由既有独立合同覆盖。
-    monkeypatch.setattr(repo, '_validate_gray_gap_active_version', lambda *args: None)
-    monkeypatch.setattr(repo, '_validate_gray_gap_active_registry', lambda *args: None)
+    monkeypatch.setattr(prediction_impl, '_validate_gray_gap_active_version', lambda *args: None)
+    monkeypatch.setattr(prediction_impl, '_validate_gray_gap_active_registry', lambda *args: None)
     with mysql_test_engine.begin() as conn:
         for cfg in configs:
             run_id = conn.execute(text("INSERT INTO t_scheme_runs (scheme_id,predict_date,status) VALUES (:sid,:day,'success')"), {'sid': cfg.scheme_id, 'day': day}).lastrowid
@@ -40,13 +41,13 @@ def test_today_replacement_is_atomic(mysql_test_engine, monkeypatch):
         if rows[0]['scheme_id'] == 'repair_b':
             raise RuntimeError('simulated failure after first insert')
         return insert(conn, rows)
-    monkeypatch.setattr(repo, '_insert_run_predictions_conn', fail_second)
+    monkeypatch.setattr(prediction_impl, '_insert_run_predictions_conn', fail_second)
     with pytest.raises(RuntimeError, match='simulated failure'):
         repo.replace_authorized_prediction_day(mysql_test_engine, **kwargs)
     assert read() == old
     with mysql_test_engine.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM t_scheme_runs WHERE scheme_id IN ('repair_a','repair_b')")).scalar_one() == 2
-    monkeypatch.setattr(repo, '_insert_run_predictions_conn', insert)
+    monkeypatch.setattr(prediction_impl, '_insert_run_predictions_conn', insert)
     run_ids = repo.replace_authorized_prediction_day(mysql_test_engine, **kwargs)
     assert set(run_ids) == {'repair_a', 'repair_b'}
     assert all(row['predicted_direction'] == -1 for row in read())

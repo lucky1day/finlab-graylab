@@ -389,11 +389,11 @@ def test_revision_repository_atomically_switches_versions() -> None:
     try:
         with (
             patch(
-                "scheduler.repository._blackbox_activation_advisory_lock",
+                "scheduler.persistence.lifecycle._blackbox_activation_advisory_lock",
                 return_value=nullcontext(),
             ),
             patch(
-                "scheduler.repository._upsert_scheme_version_conn",
+                "scheduler.persistence.lifecycle._upsert_scheme_version_conn",
                 side_effect=_sqlite_revision_upsert,
             ),
         ):
@@ -420,15 +420,15 @@ def test_initial_repository_atomically_creates_active_identity() -> None:
     try:
         with (
             patch(
-                "scheduler.repository._blackbox_activation_advisory_lock",
+                "scheduler.persistence.lifecycle._blackbox_activation_advisory_lock",
                 return_value=nullcontext(),
             ),
             patch(
-                "scheduler.repository._upsert_scheme_version_conn",
+                "scheduler.persistence.lifecycle._upsert_scheme_version_conn",
                 side_effect=_sqlite_revision_upsert,
             ),
             patch(
-                "scheduler.repository._sync_scheme_registry_conn",
+                "scheduler.persistence.lifecycle._sync_scheme_registry_conn",
                 side_effect=_sqlite_initial_registry_sync,
             ),
         ):
@@ -482,15 +482,15 @@ def test_initial_repository_rolls_back_if_registry_display_readback_fails(
     try:
         with (
             patch(
-                "scheduler.repository._blackbox_activation_advisory_lock",
+                "scheduler.persistence.lifecycle._blackbox_activation_advisory_lock",
                 return_value=nullcontext(),
             ),
             patch(
-                "scheduler.repository._upsert_scheme_version_conn",
+                "scheduler.persistence.lifecycle._upsert_scheme_version_conn",
                 side_effect=_sqlite_revision_upsert,
             ),
             patch(
-                "scheduler.repository._sync_scheme_registry_conn",
+                "scheduler.persistence.lifecycle._sync_scheme_registry_conn",
                 side_effect=sync_then_tamper,
             ),
             pytest.raises(RuntimeError, match="Registry display readback"),
@@ -522,15 +522,15 @@ def test_initial_repository_rolls_back_if_registry_insert_fails() -> None:
     try:
         with (
             patch(
-                "scheduler.repository._blackbox_activation_advisory_lock",
+                "scheduler.persistence.lifecycle._blackbox_activation_advisory_lock",
                 return_value=nullcontext(),
             ),
             patch(
-                "scheduler.repository._upsert_scheme_version_conn",
+                "scheduler.persistence.lifecycle._upsert_scheme_version_conn",
                 side_effect=_sqlite_revision_upsert,
             ),
             patch(
-                "scheduler.repository._sync_scheme_registry_conn",
+                "scheduler.persistence.lifecycle._sync_scheme_registry_conn",
                 side_effect=RuntimeError("injected registry failure"),
             ),
             pytest.raises(RuntimeError, match="injected registry failure"),
@@ -576,7 +576,7 @@ def test_initial_repository_revalidates_locked_backtest_evidence(
             conn.exec_driver_sql(tamper_sql)
         with (
             patch(
-                "scheduler.repository._blackbox_activation_advisory_lock",
+                "scheduler.persistence.lifecycle._blackbox_activation_advisory_lock",
                 return_value=nullcontext(),
             ),
             pytest.raises(ValueError, match=message),
@@ -609,11 +609,11 @@ def test_revision_repository_rolls_back_after_mid_transaction_failure() -> None:
     try:
         with (
             patch(
-                "scheduler.repository._blackbox_activation_advisory_lock",
+                "scheduler.persistence.lifecycle._blackbox_activation_advisory_lock",
                 return_value=nullcontext(),
             ),
             patch(
-                "scheduler.repository._upsert_scheme_version_conn",
+                "scheduler.persistence.lifecycle._upsert_scheme_version_conn",
                 side_effect=insert_then_fail,
             ),
             pytest.raises(RuntimeError, match="injected revision failure"),

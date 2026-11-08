@@ -48,29 +48,30 @@ def test_range_checks_every_business_key_before_any_prediction_insert(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from scheduler import repository
+    from scheduler.persistence import predictions as prediction_impl
 
     engine = _Engine()
     insert = Mock(return_value=1)
     absent = Mock(side_effect=RuntimeError("business key conflict"))
     monkeypatch.setattr(
-        repository,
+        prediction_impl,
         "_normalize_gray_gap_target_keys",
         lambda _cfg, targets: targets,
     )
-    monkeypatch.setattr(repository, "_normalize_gray_gap_source_authority", lambda *_a, **_k: None)
-    monkeypatch.setattr(repository, "_validate_gray_gap_records", lambda *_a, **_k: None)
+    monkeypatch.setattr(prediction_impl, "_normalize_gray_gap_source_authority", lambda *_a, **_k: None)
+    monkeypatch.setattr(prediction_impl, "_validate_gray_gap_records", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        repository,
+        prediction_impl,
         "_enrich_gray_gap_records",
         lambda _cfg, *, records, **_k: records,
     )
-    monkeypatch.setattr(repository, "_blackbox_gray_gap_snapshot_id", lambda *_a, **_k: None)
-    monkeypatch.setattr(repository, "_read_scheme_run_conn", lambda *_a, **_k: {})
-    monkeypatch.setattr(repository, "_validate_gray_gap_run", lambda *_a, **_k: None)
-    monkeypatch.setattr(repository, "_validate_gray_gap_active_version", lambda *_a, **_k: None)
-    monkeypatch.setattr(repository, "_validate_gray_gap_active_registry", lambda *_a, **_k: None)
-    monkeypatch.setattr(repository, "_assert_gray_gap_business_keys_absent", absent)
-    monkeypatch.setattr(repository, "_insert_run_predictions_conn", insert)
+    monkeypatch.setattr(prediction_impl, "_blackbox_gray_gap_snapshot_id", lambda *_a, **_k: None)
+    monkeypatch.setattr(prediction_impl, "_read_scheme_run_conn", lambda *_a, **_k: {})
+    monkeypatch.setattr(prediction_impl, "_validate_gray_gap_run", lambda *_a, **_k: None)
+    monkeypatch.setattr(prediction_impl, "_validate_gray_gap_active_version", lambda *_a, **_k: None)
+    monkeypatch.setattr(prediction_impl, "_validate_gray_gap_active_registry", lambda *_a, **_k: None)
+    monkeypatch.setattr(prediction_impl, "_assert_gray_gap_business_keys_absent", absent)
+    monkeypatch.setattr(prediction_impl, "_insert_run_predictions_conn", insert)
 
     with pytest.raises(RuntimeError, match="business key conflict"):
         repository.complete_gray_gap_runs_atomic(
