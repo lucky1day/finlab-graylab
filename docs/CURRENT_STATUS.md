@@ -18,8 +18,8 @@
 | 项目 | ECS 灰度 | Mac |
 |---|---|---|
 | `BFL_DEPLOYMENT_TARGET` | `aliyun-gray` | `mac3-production` |
-| current / previous release（2026-11-08 V8入库后） | `7943052e` / `0b74428c` | 同左 |
-| Dashboard Backend 进程 cwd（2026-11-08 V8入库后） | `7943052e` | 同左 |
+| current / previous release（2026-11-08 公网504修复后） | `2f438267` / `7943052e` | 同左 |
+| Dashboard Backend 进程 cwd（2026-11-08 公网504修复后） | `2f438267` | 同左 |
 | schema | 025 | 025 |
 | 调度控制面 | 5 个 systemd timer（DataBridge、日/周/月预测、Actuals） | launchd：同样 5 项 + 公网 Backend 与反向隧道 |
 | 部署矩阵范围（按期限计，含历史只读方案） | 112（两端共有） | 121（112 + 9 个 W4 原生方案，只在 Mac 运行） |
@@ -29,6 +29,7 @@
 - 2026-11-08框架全面复核发布：ECS先验证、Mac晋级同一份`0b74428c`源码包，SHA256为`83925e030dcb5629e98342413269dc2810cf7aec55e6b54c63ed6d1ec57c2737`，previous为`c1b3cd1c`。修复整组进程清理及批次启动围栏、Native IPC整数校验、周缓存滞后模式身份、审计取消释放、非法FIFO读取阻塞和UI身份/自动退避边界；公共端点、111套方案身份、619个受保护文件及migration SQL保持。两端各1136项公共测试与186项子测试、Mac 53项Node和24项MySQL8.4隔离集成、四项远程CI通过。发布前后ECS 31表151,368行、Mac 57表1,569,085行全字段多重集及保护范围内1732/3176个运行文件相等；输入/ready、模型状态和Dashboard读模型不变；两端认证Summary及各11组Detail覆盖8类任务且相等，ECS五项timer和Mac七项漂移检查通过。公网正向验收与串行复测通过，另有一次中继504，详见已知限制。回执见[全面复核验收](/Users/qiyo3/国债期货报告/outputs/framework_recheck_20261108/验收结果.json)；前轮重复实现/私有转发清理证据保留在[前轮回执](/Users/qiyo3/国债期货报告/outputs/framework_final_cleanup_20261108/验收结果.json)。即时验收不替代新版本未来宿主自然运行样本。
 - 2026-11-08 V8六套已按Blackbox V2 SOP在双端激活：3Y/5Y/10Y各一套日频T+5和周频点预测，Metadata、Registry及认证看板owner均为`lw`。两端同包`7943052e`，SHA256为`ffa7fe3c4c80fe5faac0395028769eeb9b7472d9d34706244418ac0e2b41fc3a`，previous为`0b74428c`。原84条跨端方向差异经均匀列采样及日频局部数值运算顺序修订后为0；因子池、学习参数、随机种子、阈值与日期保护保持，旧研究run和引用它们的release保留。
 - V8两端各发布1608条已完成target的历史结果及15条已发出日期的待到期gray补缺，1623条业务结果及138条月度指标逐项一致。历史物理来源为`backtest/current_snapshot_as_of_not_historical_vintage`，前端继续按`feature_date=2026-06-01`分区。两端各1136项公共测试/192项子测试、远程53项Node/24项disposable MySQL8.4集成及四项CI通过；原111身份/619受保护文件、业务历史、输入和模型状态保持。两端认证Summary/各12组Detail、静态入口、ECS五timer与Mac七项漂移检查通过；公网一次504后串行复测通过，失败证据保留。原范围585个旧disposable测试资产的另行移除单列记录，其余2591/1732文件未变。本机可读回执见[V8入库验收](/Users/qiyo3/国债期货报告/outputs/v8_onboarding_20261108/当前状态.json)。
+- 2026-11-08公网偶发504已定位并修复：旧反向SSH隧道经本机SOCKS代理，Backend已200但中继等待超时；同Backend的直连对照及旧代理复测确认链路差异。现用隧道显式`ProxyCommand=none`，绑定`en1`直连既有中继，Nginx超时及应用代码未改。双端同包`2f438267`，SHA256为`0e9675e234f47e5c114a1fea382e463b8ff66c84e0e38c509263e3f8d4eb03e4`；修复前认证Summary 60次有7次504，修复后同条件60次及绕过客户端HTTP代理的60次均0失败，最慢分别835/1035ms；中继与公网健康各100次0失败。两端各1136项公共测试/192项子测试、远程53项Node/24项disposable MySQL8.4/59项release测试通过；117身份、652受保护源码、Mac 57表1,577,044行/2591文件及ECS 31表159,327行/1732文件保持，两端Summary和各11组Detail相等。公网入口认证Gate、Mac七项配置漂移、ECS五timer及进程cwd回读通过。临时诊断隧道与会话已清理，旧plist及源码包保留可恢复；详细因果对照、请求记录与验收边界见[504闭环报告](/Users/qiyo3/国债期货报告/outputs/public_504_20261108/公网504闭环报告.md)。这次有限窗口验收不代替未来网络可用性保证。
 - V8首轮自然运行尚未到期：日频2026-11-09 07:03、周频2026-11-14 11:30（上海）。本次15条`gray_live`不计为`scheduled_live`，自然证据按[待办](TODO.md#v8-首轮自然运行观察)读取。
 - 产品接口为 `factor-lab-dashboard-v7`（见 [Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)）；输入为五文件 DataBridge，存量 `factor_version` 为 `V1.0`（见 [DataBridge](blackbox_v2/data_bridge_v1/README.md)）。两端各标记 9 个生产方案 target（外置 `production_schemes.json`，规则见 [Dashboard 合同](operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md#生产方案标记)）。
 - **访问入口**：只用公网域名（中继 Nginx → `18101` 反向隧道 → Mac Backend `8101`，自 2026-10-18 起）或 ECS Dashboard。Mac 本地 `8100` Backend 与 `18100` 回退隧道已于 2026-10-24 退役，原 LaunchAgent 备份在 `~/.config/bond-factor-lab/launchagents-retired-20261024`。切换回执见[公网切换](/Users/macstudio0/bond-factor-lab-production/runtime/releases/public-cutover-20261018-1631/README.md)。
@@ -46,7 +47,6 @@
 
 ## 已知限制
 
-- 2026-11-08 16:53:52 公网明细一次返回中继504：同一request ID的Backend为200、20.781ms，中继上游读取达到5秒超时。后续完整Summary/11组Detail及三次公网健康复测通过；具体隧道/网络原因未定，不能据此归因于模型、数据库或本轮源码。现用隧道/SOCKS与Nginx配置未改，继续按[TODO](TODO.md#阶段-d-收尾)的独立链路复核处理。证据见[中继与Backend关联记录](/Users/qiyo3/国债期货报告/outputs/framework_recheck_20261108/relay-timeout-review.json)。
 - ECS 4 核 / 14 GB，单个重任务（回测、状态重建）已贴近 2 小时上限；目前缓存状态的行身份哈希基于特征原始比特，Mac 状态迁到 ECS 会被判为“全部行已变化”。实测与改造计划见 [TODO](TODO.md#ecs-算力卡点与新验证流程)。
 - 旧回测的全历史 DataConsistency Gate 不通过（2026-09-21 记录）：部分旧回测 run 缺 `persisted_prediction_count` 依据、旧产品记录 exact 为空、2025-01-26 旧目标日期与现行 T+5 日历不符。历史冻结，不伪填字段、不放宽 Gate；逐机例子见[维护报告](/Users/macstudio0/bond-factor-lab-production/runtime/releases/four-v3-20260920/state-repair-20260921/README.md)。
 - ECS 权威交易日历止于 2026-12-31，年均方案的下一 SF 锚点须待日历扩展后计算。
