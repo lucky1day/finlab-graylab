@@ -1894,6 +1894,9 @@ def _fit_model(values, targets, directions):
                           colsample_bytree=.6, max_bin=64, tree_method="hist",
                           objective="binary:logistic", eval_metric="logloss",
                           random_state=20261027, n_jobs=2, verbosity=0)
+    # 等权保持原均匀列抽样语义，固定为 XGBoost 自身的加权采样路径。
+    # 避免不同 C++ 标准库的 shuffle 差异，不改变采样比例或随机种子。
+    model.set_params(feature_weights=np.ones(x.shape[1], dtype=np.float32))
     model.fit(x[nonflat], binary, sample_weight=weights)
     return fitted, model
 
