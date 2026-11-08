@@ -10,7 +10,6 @@ import pytest
 
 from shared.source_runtime_database import (
     assert_source_interpreter_supports_package,
-    compiled_extension_suffixes,
 )
 
 
@@ -22,35 +21,35 @@ def _native_suffix() -> str:
     pytest.skip("当前解释器没有带 ABI 标签的扩展后缀")
 
 
-def test_suffixes_are_collected_from_the_tree(tmp_path: Path) -> None:
+@pytest.mark.parametrize("tagged_only", [False, True], ids=["native", "tagged-only"])
+def test_matching_interpreter_passes(tmp_path: Path, tagged_only: bool) -> None:
+    suffix = _native_suffix()
     (tmp_path / "pkg").mkdir()
-    (tmp_path / "runtime_common.cpython-313-darwin.so").touch()
-    (tmp_path / "pkg" / "engine.cpython-313-darwin.so").touch()
-    (tmp_path / "pkg" / "other.cpython-311-x86_64-linux-gnu.so").touch()
+    (tmp_path / f"runtime_common{suffix}").touch()
+    (tmp_path / "pkg" / f"engine{suffix}").touch()
     (tmp_path / "pkg" / "libthing.so").touch()
-
-    assert compiled_extension_suffixes(tmp_path) == {
-        ".cpython-313-darwin.so",
-        ".cpython-311-x86_64-linux-gnu.so",
-    }
-
-
-def test_matching_interpreter_passes(tmp_path: Path) -> None:
-    (tmp_path / f"engine{_native_suffix()}").touch()
+    # 限定探测响应只声明 ABI 后缀，普通 .so 不能增加解释器要求。
+    command = (
+        [sys.executable, "-c", f"print({suffix!r})", "--"]
+        if tagged_only else [sys.executable]
+    )
     assert_source_interpreter_supports_package(
-        [sys.executable], tmp_path, label="t"
+        command, tmp_path, label="t"
     )
 
 
 def test_mismatched_abi_fails_closed(tmp_path: Path) -> None:
+    (tmp_path / "pkg").mkdir()
     (tmp_path / "engine.cpython-299-nonesuch.so").touch()
+    (tmp_path / "pkg" / "duplicate.cpython-299-nonesuch.so").touch()
+    (tmp_path / "pkg" / "other.cpython-298-other.so").touch()
     with pytest.raises(RuntimeError) as excinfo:
         assert_source_interpreter_supports_package(
             [sys.executable], tmp_path, label="daily 0629"
         )
     message = str(excinfo.value)
     assert "daily 0629" in message
-    assert ".cpython-299-nonesuch.so" in message
+    assert "['.cpython-298-other.so', '.cpython-299-nonesuch.so']" in message
     assert "cannot be rebuilt" in message
 
 

@@ -96,7 +96,7 @@ def run_daily_0629_prediction(scheme_id: str, predict_date: str) -> list[Predict
             feature_date=context.feature_date,
             target_date=context.target_date,
             predicted_direction=direction,
-            model_version=_model_version_from_evidence(evidence),
+            model_version=str(evidence.final_select_id),
             extra=_extra_from_source(
                 evidence,
                 source,
@@ -143,10 +143,6 @@ def _extra_from_source(
     for field in DAILY_0629_INTERNAL_FIELDS:
         extra[field] = _clean_internal_field(field, source.get(field))
     return extra
-
-
-def _model_version_from_evidence(evidence: Any) -> str:
-    return str(evidence.final_select_id)
 
 
 def _direction_from_source(source: dict[str, Any]) -> int:
