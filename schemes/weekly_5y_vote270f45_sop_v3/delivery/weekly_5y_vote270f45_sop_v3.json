@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "weekly_5y_vote270f45_sop_v3",
+  "name": "VOTE270F45",
+  "owner": "guozhai",
+  "description": "冻结日周曲线、资金与期货量价特征，保留原逻辑回归和参考投票成员及窗口，以三成员等权多数投票形成下一实际周末相对当前周末的方向。",
+  "algorithm_version": "3.1.2",
+  "target_tenor": "5Y",
+  "task_type": "weekly_point",
+  "horizon": 1,
+  "target_rule": "target_week_end_yield_vs_feature_week_end_yield"
+}

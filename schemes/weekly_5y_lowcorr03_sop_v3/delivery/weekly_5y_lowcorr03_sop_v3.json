@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "weekly_5y_lowcorr03_sop_v3",
+  "name": "LOWCORR03",
+  "owner": "lw",
+  "description": "冻结日周曲线及因子，以LightGBM与两条规则等权投票，使用严格成熟的历史标签滚动训练，形成下一实际周末相对当前周末的方向。",
+  "algorithm_version": "3.1.2",
+  "target_tenor": "5Y",
+  "task_type": "weekly_point",
+  "horizon": 1,
+  "target_rule": "target_week_end_yield_vs_feature_week_end_yield"
+}

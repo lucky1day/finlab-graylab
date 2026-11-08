@@ -15161,6 +15161,256 @@
           "mode": "audit"
         }
       ]
+    },
+    "input-9d0913cee3a57b30": {
+      "requirements": [
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TB5YWI0C"
+          ],
+          "rows": 1,
+          "min_valid": 1,
+          "role": "required",
+          "mode": "audit"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TB0YWI0C",
+            "TB1YWI0C",
+            "TB3YWI0C",
+            "TB7YWI0C"
+          ],
+          "rows": 1,
+          "min_valid": 1,
+          "role": "candidate_or_optional",
+          "mode": "audit"
+        },
+        {
+          "filename": "weekly_output.csv",
+          "columns": [
+            "CSI26902",
+            "G0100893",
+            "HWM00007",
+            "HWM00018",
+            "HWW00005",
+            "HWW00010",
+            "L0147566",
+            "M0161682",
+            "M0161686",
+            "M0217126",
+            "M1024902",
+            "M1332208",
+            "RSI010YW",
+            "S5021697",
+            "S5133394",
+            "S5134688",
+            "S5134689",
+            "S5134691",
+            "S5440890",
+            "S5441858",
+            "S5442122",
+            "S5442127",
+            "S5446171",
+            "S5458286",
+            "S5458287",
+            "S5470009",
+            "S5715671",
+            "S5811163",
+            "S5811176",
+            "SH069802",
+            "TCFE002A",
+            "TCFE002V",
+            "TCFE020I",
+            "TCFE02VR",
+            "TCFE03WR",
+            "ZO000004",
+            "ZO000017",
+            "ZO000035"
+          ],
+          "rows": 1,
+          "min_valid": 1,
+          "role": "candidate_or_optional",
+          "mode": "audit"
+        }
+      ]
+    },
+    "input-60a0d6231bf0ae2d": {
+      "requirements": [
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "TB5YWI0C"
+          ],
+          "rows": 1,
+          "min_valid": 1,
+          "role": "required",
+          "mode": "audit"
+        },
+        {
+          "filename": "daily_output.csv",
+          "columns": [
+            "90000017",
+            "BIAS10YD",
+            "CCI10Y0D",
+            "CSI26901",
+            "CSI64301",
+            "DS000001",
+            "DS000002",
+            "DT000001",
+            "G1235664",
+            "M0332208",
+            "M1006336",
+            "M1006337",
+            "MACDD5YD",
+            "N2810001",
+            "NISHF01C",
+            "RSV5Y00D",
+            "S0029752",
+            "S0105897",
+            "S0142908",
+            "S2707384",
+            "S2707385",
+            "S5005830",
+            "S5005865",
+            "S5005984",
+            "S5006004",
+            "S5006011",
+            "S5470300",
+            "S5470302",
+            "S5470303",
+            "S5470305",
+            "S5470316",
+            "S5470318",
+            "S5470333",
+            "S5470364",
+            "S5470395",
+            "S5470444",
+            "S5470445",
+            "S5474439",
+            "S5474441",
+            "S5801724",
+            "S5811336",
+            "SH069801",
+            "SI801790",
+            "TB0YWI0C",
+            "TB0YWIPC",
+            "TB1YWI0C",
+            "TB3YWI0C",
+            "TB7YWI0C",
+            "TCFE000A",
+            "TCFE000C",
+            "TCFE000H",
+            "TCFE000I",
+            "TCFE000K",
+            "TCFE000L",
+            "TCFE000S",
+            "TCFE000V",
+            "TFCFE002",
+            "TFCFE003",
+            "TSCFE002",
+            "TSCFE003"
+          ],
+          "rows": 1,
+          "min_valid": 1,
+          "role": "candidate_or_optional",
+          "mode": "audit"
+        },
+        {
+          "filename": "weekly_output.csv",
+          "columns": [
+            "BBI5Y00W",
+            "BBIB5Y0W",
+            "CSI26902",
+            "EMA125YW",
+            "G0100884",
+            "G0100891",
+            "G0100893",
+            "G0200884",
+            "G0200886",
+            "G0200887",
+            "HWC00001",
+            "HWM00003",
+            "HWM00004",
+            "HWM00007",
+            "HWM00015",
+            "HWM00017",
+            "HWM00018",
+            "HWM00019",
+            "HWS00002",
+            "HWW00005",
+            "HWW00010",
+            "KDJ010YW",
+            "L0147566",
+            "M0161679",
+            "M0161682",
+            "M0161686",
+            "M0217126",
+            "M0220202",
+            "M0241371",
+            "M1024902",
+            "M1332208",
+            "MACDD0YW",
+            "RSI010YW",
+            "S0000070",
+            "S0110144",
+            "S0167795",
+            "S0180497",
+            "S5021682",
+            "S5021697",
+            "S5133394",
+            "S5133411",
+            "S5133884",
+            "S5134688",
+            "S5134689",
+            "S5134691",
+            "S5440890",
+            "S5441642",
+            "S5441857",
+            "S5441858",
+            "S5442122",
+            "S5442127",
+            "S5442372",
+            "S5444097",
+            "S5444190",
+            "S5444191",
+            "S5446171",
+            "S5458286",
+            "S5458287",
+            "S5470009",
+            "S5475759",
+            "S5479504",
+            "S5713286",
+            "S5713338",
+            "S5715671",
+            "S5811163",
+            "S5811172",
+            "S5811176",
+            "S6949777",
+            "SH069802",
+            "TB1YWI2V",
+            "TB5YWI2C",
+            "TCFE002A",
+            "TCFE002V",
+            "TCFE020I",
+            "TCFE02VR",
+            "TCFE03WR",
+            "X0100205",
+            "ZO000004",
+            "ZO000006",
+            "ZO000007",
+            "ZO000011",
+            "ZO000017",
+            "ZO000019",
+            "ZO000035"
+          ],
+          "rows": 1,
+          "min_valid": 1,
+          "role": "candidate_or_optional",
+          "mode": "audit"
+        }
+      ]
     }
   },
   "schemes": {
@@ -17160,6 +17410,45 @@
           "sha256": "1761580552a45f76f2a322227c5bff93eef7eb7834ef52d0c235c0902c1e8ac3",
           "profiles": [
             "input-cda6343cfec696cf"
+          ]
+        }
+      }
+    },
+    "weekly_5y_lowcorr03_sop_v3": {
+      "scheme_version": "87061ec7172d",
+      "runtime_type": "blackbox_v2",
+      "coverage": "declared_raw_export_columns_point_only_not_model_readiness_unused_weekly_close_marker_excluded",
+      "scripts": {
+        "weekly_5y_lowcorr03_sop_v3.py": {
+          "sha256": "a28f2e0354d83504978922c8287d17d00b3b4516b6883982ca75db51978b59ac",
+          "profiles": [
+            "input-9d0913cee3a57b30"
+          ]
+        }
+      }
+    },
+    "weekly_5y_vote270f45_sop_v3": {
+      "scheme_version": "7c738e6aeab4",
+      "runtime_type": "blackbox_v2",
+      "coverage": "declared_raw_export_columns_point_only_not_model_readiness_unused_weekly_close_marker_excluded",
+      "scripts": {
+        "weekly_5y_vote270f45_sop_v3.py": {
+          "sha256": "354e460ef26b11ebafa4075a6c4f545922a9c6672cc392c2e5e4efe756ed4d74",
+          "profiles": [
+            "input-60a0d6231bf0ae2d"
+          ]
+        }
+      }
+    },
+    "weekly_5y_vote2808b6_sop_v3": {
+      "scheme_version": "dfe481234123",
+      "runtime_type": "blackbox_v2",
+      "coverage": "declared_raw_export_columns_point_only_not_model_readiness_unused_weekly_close_marker_excluded",
+      "scripts": {
+        "weekly_5y_vote2808b6_sop_v3.py": {
+          "sha256": "d312d7206db4a5dc388f7526267d7348ccd0d18c2138acc4fc9a31cced1c9ace",
+          "profiles": [
+            "input-60a0d6231bf0ae2d"
           ]
         }
       }

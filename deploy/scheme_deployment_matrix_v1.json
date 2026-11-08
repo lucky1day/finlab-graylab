@@ -5,6 +5,9 @@
     "aliyun-gray"
   ],
   "schemes": {
+    "weekly_5y_lowcorr03_sop_v3": ["mac3-production", "aliyun-gray"],
+    "weekly_5y_vote270f45_sop_v3": ["mac3-production", "aliyun-gray"],
+    "weekly_5y_vote2808b6_sop_v3": ["mac3-production", "aliyun-gray"],
     "seven_y_t5_macro_logit_b213_v1": ["mac3-production", "aliyun-gray"],
     "v8_daily_10y_t5": ["mac3-production", "aliyun-gray"],
     "v8_daily_3y_t5": ["mac3-production", "aliyun-gray"],
