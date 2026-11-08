@@ -84,9 +84,8 @@ def test_native_direction_mapping_keeps_negative_direction(adapter):
         assert adapter.run()[0].predicted_direction == -1
 
 
+@pytest.mark.parametrize("adapter", ["daily"], indirect=True)
 def test_daily_missing_final_direction_uses_existing_fallback(adapter):
-    if adapter.kind != "daily":
-        return
     # daily 的后备字段属于原适配合同，非法主字段不能借其掩盖。
     adapter.source["candidate_pred"] = "-1.0"
     assert adapter.run()[0].predicted_direction == -1
