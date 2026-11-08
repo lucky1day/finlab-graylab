@@ -111,7 +111,7 @@ Native core 的输入由 adapter 注入，算法适配层级和历史/live-safe 
 ```text
 Blackbox: Harness → backtests.blackbox_v2 → 原始两文件 CLI + 标准 Result
   ├─ shared.input_artifacts → 本机可信输入
-  ├─ backtests._base_runner → RunOutput 与运行内指标（使用该公共模型的 runner）
+  ├─ backtests.result → RunOutput、月度指标与运行内统计
   └─ backtests.repository → t_backtest_* 不可变回测证据
 ```
 
@@ -155,6 +155,9 @@ Dashboard 只从产品事实表聚合逐点结果。
 业务调用方仍只通过 `scheduler.repository`，内部实现保持同一 connection、锁和事务。
 迁移的类型、SQL 解析、manifest、schema 检查和纯恢复判定分别放在内部模块，
 唯一 owner lock、SQL 执行与恢复编排仍由 `migrations.runner` 管理。
+逐版本恢复身份与共用错误文本集中在 `migrations.recovery_orchestration`；
+各版本的受审 filename/SHA 保持显式冻结，不根据当前 SQL 字节自动生成可信身份。
+Harness 的固定 Gate 分派和状态重建命令由现有 CLI 直接编排，不维护额外注册层。
 
 ## 6. 代码导航
 
