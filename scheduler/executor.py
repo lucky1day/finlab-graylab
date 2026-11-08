@@ -1050,7 +1050,6 @@ def _run_process_group(
             process_group_id=process_group_id,
         )
         if isinstance(exc, subprocess.TimeoutExpired):
-            stdout, stderr = _drain_timed_out_process_output(process)
             if not termination.confirmed_gone:
                 cleanup_error = ProcessGroupTerminationError(
                     termination=termination,
@@ -1059,6 +1058,7 @@ def _run_process_group(
                 if isinstance(process_start_guard, ProcessStartGuard):
                     process_start_guard.poison(cleanup_error)
                 raise cleanup_error from exc
+            stdout, stderr = _drain_timed_out_process_output(process)
             raise subprocess.TimeoutExpired(
                 cmd,
                 timeout,

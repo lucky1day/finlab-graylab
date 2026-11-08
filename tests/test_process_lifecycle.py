@@ -136,10 +136,21 @@ else:
         assert not _group_exists(groups[0][1])
 
 
-@pytest.mark.parametrize("driver", ["blackbox", "native"])
-@pytest.mark.parametrize("outcome", ["finished", "timed_out", "interrupted"])
+@pytest.mark.parametrize("driver,outcome,drain_failure", [
+    (driver, outcome, None)
+    for driver in ("blackbox", "native")
+    for outcome in ("finished", "timed_out", "interrupted")
+] + [
+    pytest.param("native", "timed_out", failure, id=label)
+    for label, failure in (
+        ("drain-oserror", OSError("drain failed")),
+        ("drain-valueerror", ValueError("drain closed")),
+        ("drain-cancel", KeyboardInterrupt("second cancellation")),
+    )
+])
 def test_unconfirmed_runtime_cleanup_blocks_subsequent_process_start(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, driver: str, outcome: str,
+    drain_failure: BaseException | None,
 ) -> None:
     """终止权限失效后，同一批次的启动能力必须持续失效。"""
     from itertools import count
@@ -162,10 +173,17 @@ def test_unconfirmed_runtime_cleanup_blocks_subsequent_process_start(
         cleanup_clock = True
         raise cancellation
 
+    def communicate(**kwargs):
+        if cancelling:
+            return interrupted(**kwargs)
+        if drain_failure is not None:
+            raise drain_failure
+        return "[]", ""
+
     process = SimpleNamespace(
         pid=4321, returncode=returncode,
         poll=lambda: returncode,
-        communicate=interrupted if cancelling else lambda **_kwargs: ("[]", ""),
+        communicate=communicate,
     )
     if cancelling:
         monkeypatch.setattr(subprocess, "run", interrupted)
@@ -184,11 +202,14 @@ def test_unconfirmed_runtime_cleanup_blocks_subsequent_process_start(
             return _blackbox_job(tmp_path, "pass", process_start_guard=guard)
         return _native_job(tmp_path, "pass", monkeypatch, process_start_guard=guard)
 
-    with pytest.raises(ProcessGroupTerminationError) as failed:
+    with pytest.raises(BaseException) as failed:
         run()
+    assert isinstance(failed.value, ProcessGroupTerminationError)
     assert not failed.value.termination.confirmed_gone
     if cancelling:
         assert failed.value.__cause__ is cancellation
+    if drain_failure is not None:
+        assert isinstance(failed.value.__cause__, subprocess.TimeoutExpired)
 
     def forbidden_start(*_args, **_kwargs):
         raise AssertionError("poisoned batch started another process")
@@ -247,4 +268,26 @@ def test_blackbox_log_limit_stops_process_group(tmp_path: Path) -> None:
                 process_started=lambda pid, pgid: groups.append((pid, pgid)),
             )
         assert len(groups) == 1
+        assert not _group_exists(groups[0][1])
+
+
+def test_confirmed_native_timeout_preserves_partial_process_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """已确认终止后仍有界收集超时前的输出，保持原超时合同。"""
+    source = '''
+import sys
+import time
+print("partial-stdout", flush=True)
+print("partial-stderr", file=sys.stderr, flush=True)
+time.sleep(30)
+'''
+    with _registered_groups() as groups:
+        with pytest.raises(subprocess.TimeoutExpired) as failed:
+            _native_job(
+                tmp_path, source, monkeypatch, timeout_sec=0.5,
+                process_started=lambda pid, pgid: groups.append((pid, pgid)),
+            )
+        assert failed.value.output == "partial-stdout\n"
+        assert failed.value.stderr == "partial-stderr\n"
         assert not _group_exists(groups[0][1])
