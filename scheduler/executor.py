@@ -9,7 +9,7 @@ import tempfile
 import threading
 import time
 from collections import Counter
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -1155,125 +1155,156 @@ def execute_scheme(
     owns_engine = engine is None
     if engine is None:
         engine = create_engine_from_env()
-    started = time.monotonic()
-    runtime_type = getattr(cfg, "runtime_type", "native_adapter")
-    if runtime_type != "blackbox_v2" and cfg.status != "active":
-        duration = time.monotonic() - started
-        write_run_log(engine, cfg.scheme_id, predict_date, "skipped", duration, f"status={cfg.status}")
+    with ExitStack() as cleanup:
         if owns_engine:
-            engine.dispose()
-        return SchemeRunResult(cfg.scheme_id, "skipped", 0, duration, f"status={cfg.status}")
-
-    scheme_version = getattr(cfg, "scheme_version", None)
-    if runtime_type == "blackbox_v2":
-        approval = read_blackbox_execution_approval(engine, cfg)
-        if not approval.executable:
-            reason = f"Blackbox V2 version is not production-approved: {approval.reason}"
+            cleanup.callback(engine.dispose)
+        started = time.monotonic()
+        runtime_type = getattr(cfg, "runtime_type", "native_adapter")
+        if runtime_type != "blackbox_v2" and cfg.status != "active":
             duration = time.monotonic() - started
-            write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, reason)
-            if owns_engine:
-                engine.dispose()
-            return SchemeRunResult(cfg.scheme_id, "failed", 0, duration, reason)
-    else:
-        ok, reason = _verify_scheme_activation(engine, cfg.scheme_id, scheme_version)
-        if not ok:
-            duration = time.monotonic() - started
-            write_run_log(engine, cfg.scheme_id, predict_date, "skipped", duration, reason)
-            if owns_engine:
-                engine.dispose()
-            return SchemeRunResult(cfg.scheme_id, "skipped", 0, duration, reason)
-    active_targets = _active_registry_targets(engine, cfg.scheme_id)
+            write_run_log(engine, cfg.scheme_id, predict_date, "skipped", duration, f"status={cfg.status}")
+            return SchemeRunResult(cfg.scheme_id, "skipped", 0, duration, f"status={cfg.status}")
 
-    run_id: int | None = None
-    records_returned: int | None = None
-    records_written = 0
-    try:
-        creation_fence: dict[str, object] = {}
-        if prediction_phase == "scheduled_live":
-            frequency = getattr(cfg, "frequency", None)
-            if _is_scheduled_execution_context(
-                scheduled_control_plane,
-                scheduled_execution_context,
-            ):
-                creation_fence[
-                    "scheduled_control_plane"
-                ] = scheduled_control_plane
-        run_id = create_scheme_run(
-            engine,
-            scheme_id=cfg.scheme_id,
-            predict_date=predict_date,
-            scheme_version=scheme_version,
-            runtime_type=runtime_type,
-            prediction_phase=prediction_phase,
-            records_expected=len(active_targets),
-            **creation_fence,
-        )
-        if not active_targets:
-            raise ValueError(
-                f"active registry targets empty for scheme {cfg.scheme_id}: "
-                "missing=[], extra=[], duplicates=[]"
-            )
-        if scheduled_preflight_failure is not None:
-            raise RuntimeError(scheduled_preflight_failure)
-        effective_timeout_sec = _effective_timeout_sec(cfg, timeout_sec)
-        run_kwargs = {
-            "engine": engine,
-            "algo_env": algo_env,
-            "timeout_sec": effective_timeout_sec,
-        }
-        if runtime_type == "native_adapter":
-            if ephemeral_native_runtime_root is not None:
-                run_kwargs["ephemeral_native_runtime_root"] = (
-                    ephemeral_native_runtime_root
-                )
-            if cancellation_event is not None:
-                run_kwargs["cancellation_event"] = cancellation_event
-            if process_start_guard is not None:
-                run_kwargs["process_start_guard"] = process_start_guard
-        if blackbox_snapshot_mode != BLACKBOX_SNAPSHOT_MODE_FRESH:
-            run_kwargs["blackbox_snapshot_mode"] = blackbox_snapshot_mode
-            run_kwargs["expected_generation_id"] = blackbox_expected_generation_id
-            run_kwargs["expected_refresh_date"] = blackbox_expected_refresh_date
-        with audit_run_context(run_id):
-            records = run_configured_scheme(cfg, predict_date, **run_kwargs)
-        records_returned = len(records)
-        if getattr(cfg, "runtime_type", "native_adapter") == "blackbox_v2":
-            snapshot_ids = {
-                str((record.extra or {}).get("data_snapshot_id"))
-                for record in records
-                if (record.extra or {}).get("data_snapshot_id")
-            }
-            if len(snapshot_ids) != 1:
-                raise ValueError(
-                    f"Blackbox V2 run must return exactly one data_snapshot_id, got {sorted(snapshot_ids)}"
-                )
-            attach_run_data_snapshot(
-                engine,
-                run_id=run_id,
-                data_snapshot_id=next(iter(snapshot_ids)),
-            )
-        if runtime_type == "native_adapter":
-            records = [
-                replace(
-                    record,
-                    extra=_strip_native_input_provenance(record.extra),
-                )
-                for record in records
-            ]
-        records = _normalize_live_records(records, prediction_phase=prediction_phase)
-        _validate_live_record_dates(records, cfg=cfg, predict_date=predict_date, engine=engine)
-        _validate_records_against_active_registry(records, cfg=cfg, active_targets=active_targets)
-        if blackbox_record_validator is not None:
-            blackbox_record_validator(records)
+        scheme_version = getattr(cfg, "scheme_version", None)
         if runtime_type == "blackbox_v2":
-            expected = len(active_targets)
-            if records_returned != expected:
+            approval = read_blackbox_execution_approval(engine, cfg)
+            if not approval.executable:
+                reason = f"Blackbox V2 version is not production-approved: {approval.reason}"
+                duration = time.monotonic() - started
+                write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, reason)
+                return SchemeRunResult(cfg.scheme_id, "failed", 0, duration, reason)
+        else:
+            ok, reason = _verify_scheme_activation(engine, cfg.scheme_id, scheme_version)
+            if not ok:
+                duration = time.monotonic() - started
+                write_run_log(engine, cfg.scheme_id, predict_date, "skipped", duration, reason)
+                return SchemeRunResult(cfg.scheme_id, "skipped", 0, duration, reason)
+        active_targets = _active_registry_targets(engine, cfg.scheme_id)
+
+        run_id: int | None = None
+        records_returned: int | None = None
+        records_written = 0
+        try:
+            creation_fence: dict[str, object] = {}
+            if prediction_phase == "scheduled_live":
+                frequency = getattr(cfg, "frequency", None)
+                if _is_scheduled_execution_context(
+                    scheduled_control_plane,
+                    scheduled_execution_context,
+                ):
+                    creation_fence[
+                        "scheduled_control_plane"
+                    ] = scheduled_control_plane
+            run_id = create_scheme_run(
+                engine,
+                scheme_id=cfg.scheme_id,
+                predict_date=predict_date,
+                scheme_version=scheme_version,
+                runtime_type=runtime_type,
+                prediction_phase=prediction_phase,
+                records_expected=len(active_targets),
+                **creation_fence,
+            )
+            if not active_targets:
                 raise ValueError(
-                    f"expected={expected}, returned={records_returned}, written=0"
+                    f"active registry targets empty for scheme {cfg.scheme_id}: "
+                    "missing=[], extra=[], duplicates=[]"
                 )
-            duration = time.monotonic() - started
-            status, records_written, error_msg = (
-                complete_approved_blackbox_run(
+            if scheduled_preflight_failure is not None:
+                raise RuntimeError(scheduled_preflight_failure)
+            effective_timeout_sec = _effective_timeout_sec(cfg, timeout_sec)
+            run_kwargs = {
+                "engine": engine,
+                "algo_env": algo_env,
+                "timeout_sec": effective_timeout_sec,
+            }
+            if runtime_type == "native_adapter":
+                if ephemeral_native_runtime_root is not None:
+                    run_kwargs["ephemeral_native_runtime_root"] = (
+                        ephemeral_native_runtime_root
+                    )
+                if cancellation_event is not None:
+                    run_kwargs["cancellation_event"] = cancellation_event
+                if process_start_guard is not None:
+                    run_kwargs["process_start_guard"] = process_start_guard
+            if blackbox_snapshot_mode != BLACKBOX_SNAPSHOT_MODE_FRESH:
+                run_kwargs["blackbox_snapshot_mode"] = blackbox_snapshot_mode
+                run_kwargs["expected_generation_id"] = blackbox_expected_generation_id
+                run_kwargs["expected_refresh_date"] = blackbox_expected_refresh_date
+            with audit_run_context(run_id):
+                records = run_configured_scheme(cfg, predict_date, **run_kwargs)
+            records_returned = len(records)
+            if getattr(cfg, "runtime_type", "native_adapter") == "blackbox_v2":
+                snapshot_ids = {
+                    str((record.extra or {}).get("data_snapshot_id"))
+                    for record in records
+                    if (record.extra or {}).get("data_snapshot_id")
+                }
+                if len(snapshot_ids) != 1:
+                    raise ValueError(
+                        f"Blackbox V2 run must return exactly one data_snapshot_id, got {sorted(snapshot_ids)}"
+                    )
+                attach_run_data_snapshot(
+                    engine,
+                    run_id=run_id,
+                    data_snapshot_id=next(iter(snapshot_ids)),
+                )
+            if runtime_type == "native_adapter":
+                records = [
+                    replace(
+                        record,
+                        extra=_strip_native_input_provenance(record.extra),
+                    )
+                    for record in records
+                ]
+            records = _normalize_live_records(records, prediction_phase=prediction_phase)
+            _validate_live_record_dates(records, cfg=cfg, predict_date=predict_date, engine=engine)
+            _validate_records_against_active_registry(records, cfg=cfg, active_targets=active_targets)
+            if blackbox_record_validator is not None:
+                blackbox_record_validator(records)
+            if runtime_type == "blackbox_v2":
+                expected = len(active_targets)
+                if records_returned != expected:
+                    raise ValueError(
+                        f"expected={expected}, returned={records_returned}, written=0"
+                    )
+                duration = time.monotonic() - started
+                status, records_written, error_msg = (
+                    complete_approved_blackbox_run(
+                        engine,
+                        cfg,
+                        run_id=run_id,
+                        records=records,
+                        scheme_version=scheme_version,
+                        records_returned=records_returned,
+                        run_date=predict_date,
+                        duration_sec=duration,
+                    )
+                )
+                emit_prediction_audit(
+                    'prediction_result', scheme_id=cfg.scheme_id, predict_date=predict_date,
+                    run_id=run_id, status=status,
+                    outcome='calculated' if status == 'success' else 'already_present' if status == 'skipped' else 'publication_failed',
+                    reason=error_msg,
+                    scheme_version=scheme_version, records_written=records_written,
+                    directions=[{'target_tenor': r.target_tenor, 'horizon': r.horizon,
+                                 'feature_date': r.feature_date, 'target_date': r.target_date,
+                                 'predicted_direction': r.predicted_direction,
+                                 'input_quality': (r.extra or {}).get('input_quality')} for r in records],
+                    platform_fallback='none',
+                )
+                return SchemeRunResult(
+                    cfg.scheme_id, status, records_written, duration, error_msg, run_id,
+                )
+            else:
+                current_active_targets = _active_registry_targets(engine, cfg.scheme_id)
+                if current_active_targets != active_targets:
+                    raise ValueError(
+                        "active registry targets changed during run: "
+                        f"initial={sorted(active_targets)}, current={sorted(current_active_targets)}"
+                    )
+                duration = time.monotonic() - started
+                status, records_written, error_msg = complete_active_native_run(
                     engine,
                     cfg,
                     run_id=run_id,
@@ -1283,103 +1314,66 @@ def execute_scheme(
                     run_date=predict_date,
                     duration_sec=duration,
                 )
-            )
-            emit_prediction_audit(
-                'prediction_result', scheme_id=cfg.scheme_id, predict_date=predict_date,
-                run_id=run_id, status=status,
-                outcome='calculated' if status == 'success' else 'already_present' if status == 'skipped' else 'publication_failed',
-                reason=error_msg,
-                scheme_version=scheme_version, records_written=records_written,
-                directions=[{'target_tenor': r.target_tenor, 'horizon': r.horizon,
-                             'feature_date': r.feature_date, 'target_date': r.target_date,
-                             'predicted_direction': r.predicted_direction,
-                             'input_quality': (r.extra or {}).get('input_quality')} for r in records],
-                platform_fallback='none',
-            )
-            return SchemeRunResult(
-                cfg.scheme_id, status, records_written, duration, error_msg, run_id,
-            )
-        else:
-            current_active_targets = _active_registry_targets(engine, cfg.scheme_id)
-            if current_active_targets != active_targets:
-                raise ValueError(
-                    "active registry targets changed during run: "
-                    f"initial={sorted(active_targets)}, current={sorted(current_active_targets)}"
+                emit_prediction_audit(
+                    'prediction_result', scheme_id=cfg.scheme_id, predict_date=predict_date,
+                    run_id=run_id, status=status,
+                    outcome='calculated' if status == 'success' else 'already_present' if status == 'skipped' else 'publication_failed',
+                    reason=error_msg,
+                    scheme_version=scheme_version, records_written=records_written,
+                    directions=[{'target_tenor': r.target_tenor, 'horizon': r.horizon,
+                                 'feature_date': r.feature_date, 'target_date': r.target_date,
+                                 'predicted_direction': r.predicted_direction,
+                                 'input_quality': (r.extra or {}).get('input_quality')} for r in records],
+                    platform_fallback='none',
                 )
+                return SchemeRunResult(
+                    cfg.scheme_id, status, records_written, duration, error_msg, run_id,
+                )
+        except Exception as exc:
             duration = time.monotonic() - started
-            status, records_written, error_msg = complete_active_native_run(
-                engine,
-                cfg,
-                run_id=run_id,
-                records=records,
-                scheme_version=scheme_version,
-                records_returned=records_returned,
-                run_date=predict_date,
-                duration_sec=duration,
-            )
+            error_msg = _execution_error_message(exc)
             emit_prediction_audit(
                 'prediction_result', scheme_id=cfg.scheme_id, predict_date=predict_date,
-                run_id=run_id, status=status,
-                outcome='calculated' if status == 'success' else 'already_present' if status == 'skipped' else 'publication_failed',
-                reason=error_msg,
-                scheme_version=scheme_version, records_written=records_written,
-                directions=[{'target_tenor': r.target_tenor, 'horizon': r.horizon,
-                             'feature_date': r.feature_date, 'target_date': r.target_date,
-                             'predicted_direction': r.predicted_direction,
-                             'input_quality': (r.extra or {}).get('input_quality')} for r in records],
+                run_id=run_id, status='failed', outcome='not_computable',
+                scheme_version=scheme_version, reason=error_msg,
+                error_type=type(exc).__name__, records_written=0,
+                directions=[{'target_tenor': tenor, 'horizon': horizon,
+                             'predicted_direction': None} for tenor, horizon in sorted(active_targets)],
                 platform_fallback='none',
             )
+            if run_id is not None:
+                try:
+                    records_written = 0
+                    fail_scheme_run_atomic(
+                        engine,
+                        run_id=run_id,
+                        scheme_id=cfg.scheme_id,
+                        run_date=predict_date,
+                        duration_sec=duration,
+                        records_returned=records_returned,
+                        error_message=error_msg,
+                    )
+                except Exception as audit_exc:
+                    logger.exception("failed to finish failed scheme run_id=%s", run_id)
+                    error_msg = _append_audit_error(
+                        error_msg,
+                        "fail_scheme_run_atomic",
+                        audit_exc,
+                    )
+            if run_id is None:
+                try:
+                    write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, error_msg, run_id=run_id)
+                except Exception as audit_exc:
+                    logger.exception("failed to write run log for failed scheme run_id=%s", run_id)
+                    error_msg = _append_audit_error(error_msg, "write_run_log", audit_exc)
             return SchemeRunResult(
-                cfg.scheme_id, status, records_written, duration, error_msg, run_id,
+                cfg.scheme_id,
+                "failed",
+                records_written,
+                duration,
+                error_msg,
+                run_id,
             )
-    except Exception as exc:
-        duration = time.monotonic() - started
-        error_msg = _execution_error_message(exc)
-        emit_prediction_audit(
-            'prediction_result', scheme_id=cfg.scheme_id, predict_date=predict_date,
-            run_id=run_id, status='failed', outcome='not_computable',
-            scheme_version=scheme_version, reason=error_msg,
-            error_type=type(exc).__name__, records_written=0,
-            directions=[{'target_tenor': tenor, 'horizon': horizon,
-                         'predicted_direction': None} for tenor, horizon in sorted(active_targets)],
-            platform_fallback='none',
-        )
-        if run_id is not None:
-            try:
-                records_written = 0
-                fail_scheme_run_atomic(
-                    engine,
-                    run_id=run_id,
-                    scheme_id=cfg.scheme_id,
-                    run_date=predict_date,
-                    duration_sec=duration,
-                    records_returned=records_returned,
-                    error_message=error_msg,
-                )
-            except Exception as audit_exc:
-                logger.exception("failed to finish failed scheme run_id=%s", run_id)
-                error_msg = _append_audit_error(
-                    error_msg,
-                    "fail_scheme_run_atomic",
-                    audit_exc,
-                )
-        if run_id is None:
-            try:
-                write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, error_msg, run_id=run_id)
-            except Exception as audit_exc:
-                logger.exception("failed to write run log for failed scheme run_id=%s", run_id)
-                error_msg = _append_audit_error(error_msg, "write_run_log", audit_exc)
-        return SchemeRunResult(
-            cfg.scheme_id,
-            "failed",
-            records_written,
-            duration,
-            error_msg,
-            run_id,
-        )
-    finally:
-        if owns_engine:
-            engine.dispose()
 
 
 def _scheduled_scheme_identity_error(engine, cfg: SchemeConfig) -> str | None:

@@ -309,8 +309,15 @@ def test_stateful_timeout_env_override(
     assert runner._stateful_timeout_sec(profile) == 14400
 
     monkeypatch.setenv(runner.STATEFUL_TIMEOUT_ENV, "14401")
-    with pytest.raises(ValueError, match="between 1 and"):
-        runner._stateful_timeout_sec(profile)
+    assert runner._stateful_timeout_sec(profile) == 14400
+
+    smaller = replace(profile, backtest_timeout_sec=120)
+    assert runner._stateful_timeout_sec(smaller) == 120
+
+    for raw in ("0", "-1", "2h"):
+        monkeypatch.setenv(runner.STATEFUL_TIMEOUT_ENV, raw)
+        with pytest.raises(ValueError):
+            runner._stateful_timeout_sec(smaller)
 
     monkeypatch.setenv(runner.STATEFUL_TIMEOUT_ENV, "2h")
     with pytest.raises(ValueError, match="integer second count"):

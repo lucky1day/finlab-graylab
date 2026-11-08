@@ -314,3 +314,38 @@ def test_native_audit_timeout_keeps_full_original_model_budget(tmp_path, monkeyp
     logfile=next((tmp_path/'runtime/logs/prediction-input-quality').glob('*.jsonl'))
     event=json.loads(logfile.read_text())
     assert event['status']=='check_timeout' and event['enforcement']=='log_only'
+
+
+@pytest.mark.parametrize("owns_engine", [True, False])
+@pytest.mark.parametrize(
+    ("runtime_type", "failing_read"),
+    [
+        ("blackbox_v2", "read_blackbox_execution_approval"),
+        ("native_adapter", "_verify_scheme_activation"),
+        ("blackbox_v2", "_active_registry_targets"),
+    ],
+)
+def test_execution_preflight_failure_preserves_engine_ownership(
+    owns_engine: bool, runtime_type: str, failing_read: str,
+) -> None:
+    """任何预检查询失败都释放本次创建的引擎，不接管调用者引擎。"""
+    from scheduler import executor
+
+    cfg = SimpleNamespace(
+        scheme_id="demo", runtime_type=runtime_type, status="active",
+        scheme_version="exact",
+    )
+    engine = Mock()
+    with (
+        patch.object(executor, "scheduled_live_execution_configuration_error", return_value=None),
+        patch.object(executor, "create_engine_from_env", return_value=engine),
+        patch.object(executor, "read_blackbox_execution_approval", return_value=SimpleNamespace(executable=True)),
+        patch.object(executor, "_verify_scheme_activation", return_value=(True, "")),
+        patch.object(executor, failing_read, side_effect=RuntimeError("preflight unavailable")),
+        pytest.raises(RuntimeError, match="preflight unavailable"),
+    ):
+        executor.execute_scheme(
+            cfg, "2026-11-06", prediction_phase="scheduled_live",
+            **({} if owns_engine else {"engine": engine}),
+        )
+    assert engine.dispose.call_count == int(owns_engine)

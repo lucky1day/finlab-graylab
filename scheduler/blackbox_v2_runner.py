@@ -269,11 +269,8 @@ def _stateful_timeout_sec(profile: RuntimeProfile) -> int:
         if not re.fullmatch(r"[0-9]+", raw):
             raise ValueError(f"{STATEFUL_TIMEOUT_ENV} must be an integer second count")
         limit = int(raw)
-        if limit <= 0 or limit > profile.backtest_timeout_sec:
-            raise ValueError(
-                f"{STATEFUL_TIMEOUT_ENV} must be between 1 and "
-                f"{profile.backtest_timeout_sec} seconds"
-            )
+        if limit <= 0:
+            raise ValueError(f"{STATEFUL_TIMEOUT_ENV} must be a positive second count")
     return min(profile.backtest_timeout_sec, limit)
 
 
