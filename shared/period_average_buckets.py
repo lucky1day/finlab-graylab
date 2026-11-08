@@ -38,6 +38,17 @@ class SpringBoundary:
     gap_days: int
 
 
+def period_bucket_evidence(bucket: PeriodBucket) -> dict[str, object]:
+    """生成 Actual 与历史案例共用的五字段周期桶证据。"""
+    return {
+        "label": bucket.label,
+        "start_date": bucket.start_date,
+        "end_date": bucket.end_date,
+        "anchor_date": bucket.anchor_date,
+        "sample_count": len(bucket.trading_days),
+    }
+
+
 def build_period_buckets(
     task_type: str,
     calendar_rows: Iterable[Mapping[str, object]],

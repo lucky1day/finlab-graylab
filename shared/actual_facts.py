@@ -6,7 +6,6 @@ from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from decimal import Decimal
 from typing import Iterable
 
 from sqlalchemy import bindparam, text
@@ -23,6 +22,7 @@ from shared.period_average_buckets import (
     PeriodBucket,
     build_period_buckets,
     complete_bucket_average,
+    period_bucket_evidence,
     target_pointer,
 )
 from shared.prediction_context import (
@@ -82,7 +82,7 @@ def _read_yield_rows_conn(
         {
             "trade_date": str(row["rdate"])[:10],
             "tenor": code_to_tenor[str(row["indicators_code"])],
-            "close_yield": _to_float(row["indicators_value"]),
+            "close_yield": float(row["indicators_value"]),
         }
         for row in rows
     ], selected
@@ -178,7 +178,7 @@ def build_daily_actual_records_from_rows(
             raise ValueError(f"duplicate source actual fact: tenor={tenor}, trade_date={trade_date}")
         seen.add(key)
         grouped[tenor].append(
-            {"trade_date": trade_date, "close_yield": _to_float(raw["close_yield"])}
+            {"trade_date": trade_date, "close_yield": float(raw["close_yield"])}
         )
     records: list[ActualRecord] = []
     for tenor, items in grouped.items():
@@ -298,7 +298,7 @@ def build_weekly_actual_records_from_rows(
         if week_id is None:
             raise ValueError(f"trade_date={trade_date} missing from api_wind_date")
         max_date[tenor] = max(trade_date, max_date.get(tenor, trade_date))
-        item = {"trade_date": trade_date, "close_yield": _to_float(raw["close_yield"])}
+        item = {"trade_date": trade_date, "close_yield": float(raw["close_yield"])}
         bucket = grouped[tenor].setdefault(week_id, {"items": [], "last": None})
         bucket["items"].append(item)
         if bucket["last"] is None or trade_date > bucket["last"]["trade_date"]:
@@ -422,7 +422,7 @@ def build_monthly_actual_records_from_rows(
         tenor = str(raw["tenor"])
         if strict_duplicates and trade_date in grouped[tenor]:
             raise ValueError(f"duplicate source actual fact: tenor={tenor}, trade_date={trade_date}")
-        grouped[tenor][trade_date] = _to_float(raw["close_yield"])
+        grouped[tenor][trade_date] = float(raw["close_yield"])
     records: list[MonthlyActualRecord] = []
     for tenor, by_date in grouped.items():
         for feature_month_id in sorted({trade_date[:7] for trade_date in by_date}):
@@ -499,7 +499,7 @@ def build_period_average_actual_records_from_rows(
             raise ValueError(
                 f"duplicate source actual fact: tenor={tenor}, trade_date={trade_date}"
             )
-        grouped[tenor][trade_date] = _to_float(raw["close_yield"])
+        grouped[tenor][trade_date] = float(raw["close_yield"])
 
     records: list[PeriodAverageActualRecord] = []
     for tenor, by_date in grouped.items():
@@ -542,8 +542,8 @@ def build_period_average_actual_records_from_rows(
                         extra={
                             "direction_basis": "yield",
                             "aggregation": "complete_trading_day_bucket_average",
-                            "feature_bucket": _period_bucket_evidence(feature_bucket),
-                            "target_bucket": _period_bucket_evidence(target_bucket),
+                            "feature_bucket": period_bucket_evidence(feature_bucket),
+                            "target_bucket": period_bucket_evidence(target_bucket),
                             "yield_direction_1": "price_short",
                             "yield_direction_minus_1": "price_long",
                         },
@@ -569,25 +569,11 @@ def _bucket_rows(
     ]
 
 
-def _period_bucket_evidence(bucket: PeriodBucket) -> dict[str, object]:
-    return {
-        "label": bucket.label,
-        "start_date": bucket.start_date,
-        "end_date": bucket.end_date,
-        "anchor_date": bucket.anchor_date,
-        "sample_count": len(bucket.trading_days),
-    }
-
-
 def _week_id(value: object) -> int | None:
     if value is None:
         return None
     normalized = str(value).strip().removesuffix(".0")
     return int(normalized) if normalized else None
-
-
-def _to_float(value: object) -> float:
-    return float(value) if not isinstance(value, Decimal) else float(value)
 
 
 def _sign(value: float) -> int:

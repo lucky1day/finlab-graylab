@@ -29,6 +29,7 @@ from shared.prediction_context import (
 from shared.period_average_buckets import (
     build_period_buckets,
     complete_bucket_average,
+    period_bucket_evidence,
     target_pointer,
 )
 from shared.task_specs import (
@@ -449,8 +450,8 @@ def _period_average_candidates(
                         metadata.target_rule,
                     ],
                     "platform_actual_rule": metadata.target_rule,
-                    "feature_bucket": _bucket_evidence(feature_bucket),
-                    "target_bucket": _bucket_evidence(target_bucket),
+                    "feature_bucket": period_bucket_evidence(feature_bucket),
+                    "target_bucket": period_bucket_evidence(target_bucket),
                     "feature_yield": feature_yield,
                     "target_yield": target_yield,
                     "actual_target_anchor": target_bucket.anchor_date,
@@ -458,16 +459,6 @@ def _period_average_candidates(
             )
         )
     return candidates
-
-
-def _bucket_evidence(bucket) -> dict[str, Any]:
-    return {
-        "label": bucket.label,
-        "start_date": bucket.start_date,
-        "end_date": bucket.end_date,
-        "anchor_date": bucket.anchor_date,
-        "sample_count": len(bucket.trading_days),
-    }
 
 
 def _candidate_complete_date(candidate: _Candidate) -> str:
