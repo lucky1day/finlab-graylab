@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -207,3 +208,43 @@ def test_ephemeral_input_keeps_distinct_sources_separate(tmp_path, monkeypatch, 
             for index, scheme_id in enumerate(("first", "second"))
         ]
     assert [pd.read_csv(item.path)["D"].iloc[0] for item in artifacts] == [1.0, 2.0]
+
+
+@pytest.mark.parametrize("first_default", [True, False], ids=["default-first", "explicit-first"])
+def test_weekly_cache_preserves_each_metadata_lag_mode(tmp_path, monkeypatch, first_default):
+    """相同冻结列的显式 schema 与默认 schema 仍有不同 lag 语义。"""
+    from shared import input_artifacts
+
+    columns = json.loads(input_artifacts.BLACKBOX_SCHEMA_PATH.read_text())["files"]["weekly_output.csv"]["columns"]
+    code = columns[1]
+    metadata = pd.DataFrame({
+        "indicators_code": columns[1:], "frequency": "weekly",
+        "lag_length": [1] + [0] * (len(columns) - 2),
+    })
+    raw = pd.DataFrame({
+        "rdate": ["2026-08-14", "2026-08-21"], "week_id": [202633, 202634],
+        "indicators_code": [code, code], "indicators_value": [1.0, 2.0],
+    })
+    monkeypatch.setenv(input_artifacts.EPHEMERAL_NATIVE_INPUT_ROOT_ENV, str(tmp_path))
+    monkeypatch.delenv("BFL_SOURCE_DB_CONFIG_PATH", raising=False)
+    monkeypatch.setattr(data_service, "read_factor_metadata_from_db", lambda engine: metadata)
+    monkeypatch.setattr(
+        data_service, "read_weekly_long_from_db",
+        lambda codes, table_name, engine=None, end_date=None: (
+            raw.copy() if table_name == "api_wind_weekly" else raw.iloc[:0].copy()
+        ),
+    )
+
+    artifacts = []
+    for scheme_id, default in (("first", first_default), ("second", not first_default), ("reused", first_default)):
+        artifact = input_artifacts.build_weekly_input_artifact(
+            scheme_id=scheme_id, predict_date="2026-08-22",
+            schema_columns=None if default else columns,
+            start_week=202633, end_week=202634, as_of_date="2026-08-21", engine=object(),
+        )
+        expected = [None, 1.0] if default else [1.0, 2.0]
+        assert [None if pd.isna(value) else value for value in artifact.dataframe[code]] == expected
+        assert artifact.path.stat().st_mode & 0o222 == 0
+        artifacts.append(artifact)
+    assert artifacts[0].path.stat().st_ino != artifacts[1].path.stat().st_ino
+    assert artifacts[0].path.stat().st_ino == artifacts[2].path.stat().st_ino

@@ -150,6 +150,7 @@ def build_weekly_input_artifact(
     )
     metadata = {
         "schema_columns": effective_schema_columns,
+        "preserve_metadata_lags": schema_columns is None,
         "start_week": start_week,
         "end_week": end_week,
         "as_of_date": as_of_date,
