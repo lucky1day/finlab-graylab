@@ -95,6 +95,10 @@ Native core 的输入由 adapter 注入，算法适配层级和历史/live-safe 
             → t_scheme_runs + t_scheme_predictions + run log
 ```
 
+两类算法执行器共用 `scheduler.process_control` 的进程组清理合同：正常结束、异常、超时和取消均确认整个组退出；
+无法确认清理时保留错误并 poison 本批次启动 guard，阻止后续启动。Native IPC 在平台边界校验整数方向与正整数 horizon，
+不以截断或布尔转换补成有效预测。
+
 历史 gap harness 只以 `gray_live` insert-only 修复；宿主 one-shot 自然触发才可以
 写 `scheduled_live`。早期失败/跳过只写审计日志，不能伪装为成功完成。
 

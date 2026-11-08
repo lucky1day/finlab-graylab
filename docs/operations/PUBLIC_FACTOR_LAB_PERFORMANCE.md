@@ -69,7 +69,8 @@ Accept-Encoding 返回对应字节；HEAD/GET 表示与 Content-Length 语义一
 
 HTTP 失败携带合法 `Retry-After` 时，同时支持 delta-seconds 和标准 IMF-fixdate；自动重试取既有退避与该时刻的
 较晚者。超过浏览器定时器可表示范围的等待不创建可能提前触发的 timer，保持 fail-closed，等待用户重新进入
-或其他显式刷新契机；非法值不替代既有退避。
+或其他显式刷新契机；非法值不替代既有退避。同一登录身份切换管理视图、页面隐藏再显示时保留自动重试
+截止时刻；新登录身份清空前一身份的失败计数与退避。
 
 ### Summary 历史增长基线
 
@@ -174,7 +175,8 @@ python -B -m harness gate dashboard \
 ```
 
 也可通过 `--session-fd <fd>` 从 pipe 或已打开的私有文件读取；调用方必须在启动命令前写入完整 token，未就绪的
-pipe 会立即失败而不会在 Gate 总预算开始前无限等待。会话文件权限不得向 group/world 开放，两个会话入口互斥
+pipe 会立即失败而不会在 Gate 总预算开始前无限等待。传入 FD 由本次调用独占消费，不与其他 reader
+竞争读取；读取不会修改调用方共享的阻塞 flags。会话文件权限不得向 group/world 开放，两个会话入口互斥
 且必须提供其一。命令只获取一次真实 Summary、校验 HTTP 与 V7 schema，并在一个只读事务中批量读取
 本次全部 Registry，然后逐方案比较名称、描述、owner、active composite、任务字段和回测分区；名称去首尾
 空白、空描述转空字符串，与 API 表示一致，不从 canonical 推断新身份。每个方案分别输出通过/失败，并引用相同
