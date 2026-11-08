@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Mapping
 
 from sqlalchemy import text
+
+
+def utc_isoformat(value: datetime) -> str:
+    """将数据库 UTC 时间显式编码，兼容带时区的调用方。"""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat(timespec="microseconds")
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +43,7 @@ class AuthUser:
             "status": self.status,
             "is_protected_admin": self.is_protected_admin,
             "must_change_password": self.must_change_password,
-            "created_at": self.created_at.isoformat(timespec="microseconds"),
+            "created_at": utc_isoformat(self.created_at),
         }
 
 

@@ -207,6 +207,7 @@
   var FACTOR_LAB_RETRY_DELAYS_MS = [10000, 30000, 60000, 300000];
   var factorLabRuntimeState = {
     authenticated: false,
+    identitySeq: 0,
     loadSeq: 0,
     controller: null,
     committedViewModel: null,
@@ -218,7 +219,7 @@
     aggregateCache: new Map(),
     detailCache: new Map(),
     detailSeq: 0,
-    detailController: null,
+    detailControllers: new Set(),
     lastSuccessfulAt: 0,
     lastSuccessfulGeneratedAt: ""
   };
@@ -1151,11 +1152,7 @@
     if (!candidate || seq !== factorLabRuntimeState.loadSeq) return false;
     validateFactorLabTasksForCommit(candidate.tasks);
     factorLabRuntimeState.detailSeq += 1;
-    if (factorLabRuntimeState.detailController &&
-        typeof factorLabRuntimeState.detailController.abort === "function") {
-      factorLabRuntimeState.detailController.abort("summary-refreshed");
-    }
-    factorLabRuntimeState.detailController = null;
+    abortFactorDetails("summary-refreshed");
     var nextTargetLabels = Object.assign(Object.create(null), factorDefaultTargetLabels);
     Object.keys(candidate.targetLabels || {}).forEach(function (target) {
       if (candidate.targetLabels[target]) nextTargetLabels[target] = String(candidate.targetLabels[target]);
@@ -1276,11 +1273,7 @@
       factorLabRuntimeState.aggregateCache = new Map();
       factorLabRuntimeState.detailCache = new Map();
       factorLabRuntimeState.detailSeq += 1;
-      if (factorLabRuntimeState.detailController &&
-          typeof factorLabRuntimeState.detailController.abort === "function") {
-        factorLabRuntimeState.detailController.abort("summary-failed");
-      }
-      factorLabRuntimeState.detailController = null;
+      abortFactorDetails("summary-failed");
       factorLabDataMode = "error";
       closeFactorCalendar();
       renderFactorLab();
@@ -1342,10 +1335,12 @@
     renderFactorLabDataStatus();
     var signal = controller ? controller.signal : null;
 
+    var identitySeq = factorLabRuntimeState.identitySeq;
     var candidatePromise = fetchJson(
       requestUrl,
       {
         signal: signal,
+        isCurrent: function () { return identitySeq === factorLabRuntimeState.identitySeq; },
         timeoutMs: FACTOR_LAB_REQUEST_TIMEOUT_MS
       }
     ).then(function (payload) {
@@ -1397,6 +1392,7 @@
 
   function startAuthenticatedFactorLab() {
     if (factorLabRuntimeState.authenticated) return Promise.resolve(false);
+    factorLabRuntimeState.identitySeq += 1;
     factorLabRuntimeState.authenticated = true;
     setActiveRoute("/factor-lab", false);
     startFactorLabAutoRefresh();
@@ -1406,6 +1402,7 @@
   function clearAuthenticatedFactorLab() {
     var datePicker = document.getElementById("factorDatePicker");
     if (datePicker && datePicker.matches(":popover-open")) datePicker.hidePopover();
+    factorLabRuntimeState.identitySeq += 1;
     factorLabRuntimeState.authenticated = false;
     clearFactorLabRefreshTimer();
     factorLabRuntimeState.loadSeq += 1;
@@ -1414,12 +1411,8 @@
         typeof factorLabRuntimeState.controller.abort === "function") {
       factorLabRuntimeState.controller.abort("authentication-ended");
     }
-    if (factorLabRuntimeState.detailController &&
-        typeof factorLabRuntimeState.detailController.abort === "function") {
-      factorLabRuntimeState.detailController.abort("authentication-ended");
-    }
+    abortFactorDetails("authentication-ended");
     factorLabRuntimeState.controller = null;
-    factorLabRuntimeState.detailController = null;
     factorLabRuntimeState.committedViewModel = null;
     factorLabRuntimeState.pendingSelection = null;
     factorLabRuntimeState.draftSelection = null;
@@ -2238,6 +2231,13 @@
     return [snapshotId, schemeId, month, source].join("\u0000");
   }
 
+  function abortFactorDetails(reason) {
+    factorLabRuntimeState.detailControllers.forEach(function (controller) {
+      if (!controller.signal.aborted) controller.abort(reason);
+    });
+    factorLabRuntimeState.detailControllers.clear();
+  }
+
   function loadFactorCalendarDetail(scheme, month, source, force) {
     var committed = factorLabRuntimeState.committedViewModel;
     if (!committed || !scheme) return Promise.reject(new Error("dashboard summary is unavailable"));
@@ -2251,11 +2251,13 @@
       "&month=" + encodeURIComponent(month) +
       "&source=" + encodeURIComponent(source);
     var controller = window.AbortController ? new window.AbortController() : null;
-    factorLabRuntimeState.detailController = controller;
+    if (controller) factorLabRuntimeState.detailControllers.add(controller);
+    var identitySeq = factorLabRuntimeState.identitySeq;
     var promise = fetchJson(
       "/api/factor-lab/dashboard" + query,
       {
         signal: controller ? controller.signal : null,
+        isCurrent: function () { return identitySeq === factorLabRuntimeState.identitySeq; },
         timeoutMs: FACTOR_LAB_REQUEST_TIMEOUT_MS
       }
     ).then(function (payload) {
@@ -2270,6 +2272,8 @@
     }).catch(function (error) {
       if (cache.get(key) === promise) cache.delete(key);
       throw error;
+    }).finally(function () {
+      if (controller) factorLabRuntimeState.detailControllers.delete(controller);
     });
     cache.set(key, promise);
     return promise;
@@ -2373,11 +2377,7 @@
     drawer.setAttribute("aria-hidden", "true");
     factorLabDrawerSelection = null;
     factorLabRuntimeState.detailSeq += 1;
-    if (factorLabRuntimeState.detailController &&
-        typeof factorLabRuntimeState.detailController.abort === "function") {
-      factorLabRuntimeState.detailController.abort("drawer-closed");
-    }
-    factorLabRuntimeState.detailController = null;
+    abortFactorDetails("drawer-closed");
     Array.prototype.slice.call(document.querySelectorAll(".factor-calendar-link.is-active")).forEach(function (button) {
       button.classList.remove("is-active");
     });

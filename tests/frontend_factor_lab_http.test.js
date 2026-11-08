@@ -166,6 +166,24 @@ test("HTTP client reports cancellation without raising an auth event", async () 
   assert.equal(unauthorizedEvents, 0);
 });
 
+test("HTTP client checks the request identity before a late unauthorized side effect", async () => {
+  let identity = 1;
+  let resolveResponse;
+  let unauthorizedEvents = 0;
+  const fetchJson = createClient(() => new Promise((resolve) => { resolveResponse = resolve; }), {
+    onUnauthorized: () => { unauthorizedEvents += 1; }
+  });
+  const requestIdentity = identity;
+  const request = fetchJson("/api/factor-lab/dashboard", {
+    isCurrent: () => requestIdentity === identity
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  identity = 2;
+  resolveResponse({ ok: false, status: 401, headers: { get: () => null }, json: () => Promise.resolve({}) });
+  await assert.rejects(request, (error) => error.status === 401);
+  assert.equal(unauthorizedEvents, 0);
+});
+
 test("HTTP client preserves Retry-After and unauthorized semantics", async () => {
   let calls = 0;
   let unauthorizedEvents = 0;

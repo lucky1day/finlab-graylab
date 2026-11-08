@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import SQLAlchemyError
 
-from backend.auth.repository import AuthUser
+from backend.auth.repository import AuthUser, utc_isoformat
 from backend.auth.security import PasswordPolicyError, UsernamePolicyError
 from backend.auth.service import AuthError, AuthService, SessionResult
 from backend.db import (
@@ -292,7 +292,7 @@ def login(payload: LoginRequest) -> JSONResponse:
     response = JSONResponse(
         {
             "user": result.user.public_dict(),
-            "expires_at": result.expires_at.isoformat(timespec="microseconds"),
+            "expires_at": utc_isoformat(result.expires_at),
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -321,7 +321,7 @@ def me(token: Annotated[str | None, Depends(_token)]) -> dict:
     result: SessionResult = _service().current_session(token)
     return {
         "user": result.user.public_dict(),
-        "expires_at": result.expires_at.isoformat(timespec="microseconds"),
+        "expires_at": utc_isoformat(result.expires_at),
     }
 
 

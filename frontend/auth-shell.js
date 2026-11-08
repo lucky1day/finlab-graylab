@@ -116,6 +116,7 @@
     state.activeRequests.add(controller);
     var clientOptions = {
       method: requestOptions.method || "GET",
+      isCurrent: function () { return identitySeq === state.identitySeq; },
       signal: controller.signal,
       handleUnauthorized: path !== "/api/auth/login"
     };
@@ -159,6 +160,8 @@
 
   function clearAuthDialogs() {
     document.querySelectorAll(".auth-dialog[open]").forEach(function (dialog) {
+      if (dialog.saveState) endDialogSave(dialog.saveState);
+      dialog.openSeq = (dialog.openSeq || 0) + 1;
       var form = dialog.querySelector("form");
       if (form) form.reset();
       emitError(dialog.querySelector(".auth-error"), "");
@@ -261,6 +264,7 @@
         new_password: newPassword
       }
     }).then(function () {
+      if (!currentDialogSave(saveState)) return;
       form.reset();
       var dialog = form.closest("dialog");
       if (dialog) delete dialog.returnFocusButton;
@@ -268,7 +272,7 @@
       showLogin("密码已修改，请使用新密码重新登录");
     }).catch(function (error) {
       if (error.message === "password_confirmation_mismatch") throw error;
-      emitError(errorHost, errorMessage(error.errorCode));
+      if (currentDialogSave(saveState)) emitError(errorHost, errorMessage(error.errorCode));
       throw error;
     }).finally(function () {
       endDialogSave(saveState);
@@ -295,8 +299,17 @@
   }
 
   function formatCreatedAt(value) {
-    var match = String(value || "").match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
-    return match ? match[1] + " " + match[2] : String(value || "");
+    var text = String(value || "");
+    // 旧响应的无偏移时间按认证数据库的 UTC 合同读取。
+    var instant = new Date(/(?:Z|[+-]\d{2}:\d{2})$/i.test(text) ? text : text + "Z");
+    if (!Number.isFinite(instant.getTime())) return text;
+    var parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hourCycle: "h23"
+    }).formatToParts(instant);
+    var fields = {};
+    parts.forEach(function (part) { fields[part.type] = part.value; });
+    return fields.year + "-" + fields.month + "-" + fields.day + " " + fields.hour + ":" + fields.minute;
   }
 
   function actionButton(label, action, userId, disabled) {
@@ -425,6 +438,8 @@
   }
 
   function showDialog(dialog) {
+    if (dialog.saveState) endDialogSave(dialog.saveState);
+    dialog.openSeq = (dialog.openSeq || 0) + 1;
     dialog.classList.remove("is-closing");
     dialog.querySelectorAll("[data-password-toggle]").forEach(function (button) {
       var input = document.getElementById(button.dataset.passwordToggle);
@@ -444,8 +459,10 @@
   function closeDialog(dialog) {
     if (!dialog || !dialog.open || dialog.classList.contains("is-closing")) return;
     var returnFocusButton = dialog.returnFocusButton;
+    var openSeq = dialog.openSeq;
     dialog.classList.add("is-closing");
     window.setTimeout(function () {
+      if (openSeq !== dialog.openSeq) return;
       if (dialog.open) dialog.close();
       dialog.classList.remove("is-closing");
       delete dialog.returnFocusButton;
@@ -462,8 +479,11 @@
     var saveState = {
       dialog: dialog,
       submit: submit,
-      originalLabel: submit.textContent
+      originalLabel: submit.textContent,
+      identitySeq: state.identitySeq,
+      openSeq: dialog.openSeq
     };
+    dialog.saveState = saveState;
     dialog.dataset.saving = "true";
     dialog.setAttribute("aria-busy", "true");
     submit.disabled = true;
@@ -474,8 +494,15 @@
     return saveState;
   }
 
+  function currentDialogSave(saveState) {
+    return saveState && saveState.dialog.saveState === saveState &&
+      saveState.identitySeq === state.identitySeq && saveState.openSeq === saveState.dialog.openSeq;
+  }
+
   function endDialogSave(saveState) {
     var dialog = saveState.dialog;
+    if (dialog.saveState !== saveState) return;
+    delete dialog.saveState;
     saveState.submit.disabled = false;
     saveState.submit.textContent = saveState.originalLabel;
     delete dialog.dataset.saving;
@@ -629,6 +656,9 @@
   document.getElementById("authCreateUserForm").addEventListener("submit", function (event) {
     event.preventDefault();
     var form = event.currentTarget;
+    emitError(form.querySelector(".auth-error"), "");
+    var saveState = beginDialogSave(form, "创建中…");
+    if (!saveState) return;
     apiRequest("/api/admin/users", {
       method: "POST",
       body: {
@@ -639,11 +669,14 @@
         role: form.elements.role.value
       }
     }).then(function () {
+      if (!currentDialogSave(saveState)) return;
       form.reset();
       form.closest("dialog").close();
       loadUsers();
     }).catch(function (error) {
-      emitError(form.querySelector(".auth-error"), errorMessage(error.errorCode));
+      if (currentDialogSave(saveState)) emitError(form.querySelector(".auth-error"), errorMessage(error.errorCode));
+    }).finally(function () {
+      endDialogSave(saveState);
     });
   });
 
@@ -683,6 +716,7 @@
         status: form.elements.status.value
       }
     }).then(function (payload) {
+      if (!currentDialogSave(saveState)) return;
       endDialogSave(saveState);
       saveState = null;
       var selfSessionRevoked = Boolean(
@@ -701,7 +735,7 @@
       loadUsers();
       return null;
     }).catch(function (error) {
-      emitError(form.querySelector(".auth-error"), errorMessage(error.errorCode));
+      if (currentDialogSave(saveState)) emitError(form.querySelector(".auth-error"), errorMessage(error.errorCode));
     }).finally(function () {
       if (saveState) endDialogSave(saveState);
     });
@@ -734,13 +768,14 @@
         new_password: newPassword
       }
     }).then(function () {
+      if (!currentDialogSave(saveState)) return;
       endDialogSave(saveState);
       saveState = null;
       form.reset();
       closeDialog(form.closest("dialog"));
       loadUsers();
     }).catch(function (error) {
-      emitError(errorHost, errorMessage(error.errorCode));
+      if (currentDialogSave(saveState)) emitError(errorHost, errorMessage(error.errorCode));
     }).finally(function () {
       if (saveState) endDialogSave(saveState);
     });
@@ -749,16 +784,23 @@
   document.getElementById("authProfileForm").addEventListener("submit", function (event) {
     event.preventDefault();
     var form = event.currentTarget;
+    emitError(form.querySelector(".auth-error"), "");
+    var saveState = beginDialogSave(form, "保存中…");
+    if (!saveState) return;
     var body = {
       full_name: form.elements.fullName.value || null,
       organization_name: form.elements.organizationName.value || null
     };
     apiRequest("/api/auth/update-profile", { method: "POST", body: body }).then(function (payload) {
+      if (!currentDialogSave(saveState)) return;
       state.user = payload.user;
       form.reset();
+      endDialogSave(saveState);
       closeDialog(form.closest("dialog"));
     }).catch(function (error) {
-      emitError(form.querySelector(".auth-error"), errorMessage(error.errorCode));
+      if (currentDialogSave(saveState)) emitError(form.querySelector(".auth-error"), errorMessage(error.errorCode));
+    }).finally(function () {
+      endDialogSave(saveState);
     });
   });
 

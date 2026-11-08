@@ -41,6 +41,8 @@ function jsonResponse(status, body, headers) {
 function createElement(id) {
   const listeners = new Map();
   const fields = new Map();
+  const children = [];
+  const queries = new Map();
   const element = {
     id,
     hidden: false,
@@ -60,14 +62,18 @@ function createElement(id) {
     addEventListener(type, callback) { listeners.set(type, callback); },
     setAttribute() {},
     removeAttribute() {},
-    appendChild() {},
+    appendChild(child) { children.push(child); },
+    children,
     contains() { return false; },
     focus() {},
     reset() {},
     close() { element.open = false; },
     showModal() { element.open = true; },
     getBoundingClientRect() { return { right: 100, bottom: 100, top: 50 }; },
-    querySelector() { return createElement(id + "-child"); },
+    querySelector(selector) {
+      if (!queries.has(selector)) queries.set(selector, createElement(id + "-" + selector));
+      return queries.get(selector);
+    },
     querySelectorAll() { return []; },
     closest() { return createElement(id + "-closest"); },
     _listeners: listeners
@@ -88,14 +94,26 @@ function createHarness(fetchImpl) {
   let dashboardStarts = 0;
   let dashboardStops = 0;
   const getElement = (id) => {
-    if (!elements.has(id)) elements.set(id, createElement(id));
+    if (!elements.has(id)) {
+      const element = createElement(id);
+      elements.set(id, element);
+      if (id.endsWith("Form")) {
+        element.closest = () => getElement(id.replace(/Form$/, "Dialog"));
+      }
+      if (id.endsWith("Dialog")) {
+        const query = element.querySelector;
+        element.querySelector = (selector) => selector === "form"
+          ? getElement(id.replace(/Dialog$/, "Form")) : query(selector);
+      }
+    }
     return elements.get(id);
   };
   const document = {
     body: { contains: () => true },
     getElementById: getElement,
     querySelector: () => getElement("factor-view"),
-    querySelectorAll: () => [],
+    querySelectorAll: (selector) => selector === ".auth-dialog[open]"
+      ? [...elements.values()].filter((element) => element.id.endsWith("Dialog") && element.open) : [],
     createElement: (tag) => createElement(tag),
     addEventListener() {}
   };
@@ -137,6 +155,7 @@ function createHarness(fetchImpl) {
     Map,
     Set,
     Date,
+    Intl,
     Math,
     console
   });
@@ -281,4 +300,77 @@ test("logout keeps login unavailable until its Set-Cookie response completes", a
 
   assert.equal(harness.getElement("authLoading").hidden, true);
   assert.equal(harness.getElement("authLogin").hidden, false);
+});
+
+for (const [formId, endpoint, buttonId] of [
+  ["authCreateUserForm", "/api/admin/users", "authCreateUserButton"],
+  ["authProfileForm", "/api/auth/update-profile", "authProfileButton"]
+]) {
+  test(`${formId} coalesces writes and ignores an old dialog completion`, async () => {
+    const writes = [];
+    const harness = createHarness((url, options) => {
+      if (url.endsWith("/api/auth/me")) return Promise.resolve(jsonResponse(200, { user: validUser() }));
+      if (url.endsWith(endpoint) && options.method === "POST") {
+        return new Promise((resolve) => writes.push(resolve));
+      }
+      return Promise.resolve(jsonResponse(200, { users: [] }));
+    });
+    await flush();
+    const open = () => harness.getElement(buttonId)._listeners.get("click")();
+    const form = harness.getElement(formId);
+    const dialog = form.closest("dialog");
+    const submit = () => form._listeners.get("submit")({ preventDefault() {}, currentTarget: form });
+    open();
+    submit();
+    submit();
+    await flush();
+    assert.equal(writes.length, 1);
+    assert.equal(dialog.dataset.saving, "true");
+    harness.hooks.showLogin();
+    harness.hooks.showAuthenticated(validUser({ id: 3, username: "replacement" }));
+    open();
+    form.elements.fullName.value = "New draft";
+    writes[0](jsonResponse(200, { user: validUser({ full_name: "Old result" }) }));
+    await flush();
+    assert.equal(dialog.open, true);
+    assert.equal(form.elements.fullName.value, "New draft");
+    assert.equal(harness.hooks.state().user.username, "replacement");
+    assert.notEqual(dialog.dataset.saving, "true");
+  });
+
+  test(`${formId} restores controls after timeout without retrying the write`, async () => {
+    let writes = 0;
+    const harness = createHarness((url, options) => {
+      if (options.method !== "POST") return Promise.resolve(jsonResponse(200, { user: validUser() }));
+      writes += 1;
+      return new Promise(() => {});
+    });
+    await flush();
+    harness.getElement(buttonId)._listeners.get("click")();
+    const form = harness.getElement(formId);
+    form._listeners.get("submit")({ preventDefault() {}, currentTarget: form });
+    await flush();
+    harness.runTimers(6000);
+    await flush();
+    assert.notEqual(form.closest("dialog").dataset.saving, "true");
+    assert.equal(form.querySelector('[type="submit"]').disabled, false);
+    assert.match(form.querySelector(".auth-error").textContent, /请求结果待确认/);
+    harness.runTimers(6000);
+    assert.equal(writes, 1);
+  });
+}
+
+test("account creation dates render in Shanghai for explicit and legacy UTC values", async () => {
+  const harness = createHarness((url) => Promise.resolve(jsonResponse(200,
+    url.endsWith("/api/auth/me") ? { user: validUser() } : {
+      users: [validUser({ created_at: "2026-12-31T20:30:00.000000Z" }),
+        validUser({ id: 2, created_at: "2026-12-31T20:30:00.000000" })]
+    }
+  )));
+  await flush();
+  harness.getElement("authUsersNav")._listeners.get("click")();
+  await flush();
+  const rows = harness.getElement("authUsersBody").children;
+  assert.equal(rows.length, 2);
+  for (const row of rows) assert.equal(row.children[5].textContent, "2027-01-01 04:30");
 });

@@ -664,3 +664,22 @@ def test_validation_failure_does_not_echo_password():
     assert response.status_code == 422
     assert response.json() == {"error_code": "invalid_request"}
     assert secret not in response.text
+
+
+def test_auth_http_dates_are_explicit_utc(monkeypatch):
+    user = replace(_user(), created_at=datetime(2026, 12, 31, 20, 30))
+    expires_at = datetime(2027, 1, 1, 8, 30)
+    service = Mock()
+    service.current_session.return_value = SimpleNamespace(user=user, expires_at=expires_at)
+    service.login.return_value = LoginResult(user=user, token="opaque", expires_at=expires_at)
+    monkeypatch.setattr(routes, "_service", lambda: service)
+
+    me = _request("GET", "/api/auth/me")
+    login = _request("POST", "/api/auth/login", headers={
+        "Origin": "https://bond.finailab.cn", "Sec-Fetch-Site": "same-origin",
+    }, json={"username": "owner", "password": "Example123"})
+
+    for response in (me, login):
+        assert response.status_code == 200
+        assert response.json()["user"]["created_at"] == "2026-12-31T20:30:00.000000+00:00"
+        assert response.json()["expires_at"] == "2027-01-01T08:30:00.000000+00:00"

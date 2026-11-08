@@ -52,7 +52,9 @@ function createHarness(fetchImpl, elements = {}) {
     visibilityState: "visible",
     addEventListener() {},
     getElementById(id) { return elements[id] || null; },
-    querySelector() { return null; },
+    querySelector(selector) {
+      return selector === '[data-view="factor-lab"]' ? elements.factorPage || null : null;
+    },
     querySelectorAll() { return []; }
   };
   const context = {
@@ -126,6 +128,42 @@ function waitFor(predicate, timeoutMs = 250) {
 function flushPromises() {
   return new Promise((resolve) => setImmediate(resolve));
 }
+
+test("all pending month requests end with their identity and cannot invalidate the next login", async (t) => {
+  let pageClick;
+  const elements = {
+    factorPage: { addEventListener(_type, callback) { pageClick = callback; }, querySelectorAll() { return []; } },
+    factorCalendarDrawer: {
+      classList: { add() {}, remove() {} }, setAttribute() {}, querySelector() { return null; }
+    }
+  };
+  const pending = [];
+  const harness = createHarness((url, options) => {
+    if (!url.includes("?scheme-id=")) return Promise.resolve(okResponse(schemePayload("T+1")));
+    return new Promise((resolve) => pending.push({ resolve, signal: options.signal }));
+  }, elements);
+  t.after(() => harness.hooks.stop());
+  harness.hooks.start();
+  await waitFor(() => harness.hooks.state().snapshotId === "feature-axis");
+  for (const month of ["2026-05", "2026-06"]) {
+    const button = {
+      closest(selector) { return selector === "[data-factor-calendar-month]" ? this : null; },
+      getAttribute() { return month; }, classList: { add() {} }
+    };
+    pageClick({ target: button });
+  }
+  await flushPromises();
+  assert.equal(pending.length, 2);
+  harness.hooks.stop();
+  assert.ok(pending.every((request) => request.signal.aborted));
+  harness.hooks.start();
+  await waitFor(() => harness.hooks.state().snapshotId === "feature-axis");
+  pending[0].resolve({ ok: false, status: 401, headers: { get: () => null }, json: () => Promise.resolve({}) });
+  pending[1].resolve(okResponse(detailPayload([], "2026-06")));
+  await flushPromises();
+  assert.deepEqual(harness.dispatchedEvents, []);
+  assert.equal(harness.hooks.state().authenticated, true);
+});
 
 test("a pending fetch times out, enters error state, and schedules retry", async () => {
   const harness = createHarness(() => new Promise(() => {}));

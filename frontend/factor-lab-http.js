@@ -102,7 +102,8 @@
         attachRetryAfter(error, response, maxRetryDelayMs);
         responseError = error;
         if (response.status === 401 && options.handleUnauthorized !== false &&
-            !(signal && signal.aborted) && config.onUnauthorized) {
+            !(signal && signal.aborted) &&
+            (!options.isCurrent || options.isCurrent()) && config.onUnauthorized) {
           config.onUnauthorized();
         }
         var bodyPromise = typeof response.json === "function"
