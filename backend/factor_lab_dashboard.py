@@ -44,7 +44,7 @@ from backend.factor_lab_dashboard_semantics import (
     DashboardDataError,
     backtest_benchmark_label,
     backtest_data_source_label,
-    choose_latest_backtest_runs,
+    map_selected_backtest_runs,
     choose_live_prediction_rows,
     registry_task_type_index,
     collapse_actual_facts_with_diagnostics,
@@ -305,7 +305,7 @@ def _build_summary(
             connection,
             registry_rows,
         )
-        selected_backtest_runs = choose_latest_backtest_runs(
+        selected_backtest_runs = map_selected_backtest_runs(
             backtest_run_rows,
             registry_rows,
         )

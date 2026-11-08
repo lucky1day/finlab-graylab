@@ -5,9 +5,8 @@ import json
 import math
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from typing import Any, Iterable, Iterator, Mapping
-from zoneinfo import ZoneInfo
 
 from shared.models import DIRECTION_VALUES
 from shared.scheme_config_schema import normalize_scheme_owner
@@ -88,7 +87,6 @@ _ACTUAL_CONFLICT_RULE_PATTERN = re.compile(
     r"[a-z][a-z0-9_]{0,127}\Z",
     flags=re.ASCII,
 )
-SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 MAX_SAFE_JSON_INTEGER = 9_007_199_254_740_991
 SNAPSHOT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 GENERATED_AT_PATTERN = re.compile(
@@ -272,11 +270,11 @@ def live_actual_selector(task_type: Any) -> tuple[str, str]:
         ) from exc
 
 
-def choose_latest_backtest_runs(
+def map_selected_backtest_runs(
     run_rows: Iterable[Mapping[str, Any]],
     registry_rows: Iterable[Mapping[str, Any]],
 ) -> dict[str, Mapping[str, Any]]:
-    """按原业务 ID 与两层 latest-success 选择平台回测来源，不随当前运行时改写历史。"""
+    """将 SQL 已唯一选择的 base 回测映射到 Registry，保留身份一致性检查。"""
     registry = list(registry_rows)
     runtime_by_base: dict[str, str] = {}
     for row in registry:
@@ -303,45 +301,27 @@ def choose_latest_backtest_runs(
             )
         runtime_by_base[base_scheme_id] = runtime_type
 
-    latest_by_benchmark_scope: dict[
-        tuple[str, str, str],
-        tuple[Mapping[str, Any], tuple[datetime, int]],
-    ] = {}
+    by_base: dict[str, Mapping[str, Any]] = {}
     for row in run_rows:
         if row.get("status") != "success":
             continue
         base_scheme_id = _required_text(
             row.get("scheme_id"), field="backtest run scheme_id"
         )
-        runtime_type = runtime_by_base.get(base_scheme_id)
-        if runtime_type is None:
+        if base_scheme_id not in runtime_by_base:
             continue
         data_source = _required_text(
             row.get("data_source"), field="backtest run data_source"
         )
         if data_source not in BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE.values():
             continue
-        key = (
-            _required_text(
-                row.get("benchmark_id"), field="backtest run benchmark_id"
-            ),
-            base_scheme_id,
-            data_source,
-        )
-        rank = _backtest_run_rank(row)
-        current = latest_by_benchmark_scope.get(key)
-        if current is None or rank > current[1]:
-            latest_by_benchmark_scope[key] = (row, rank)
-
-    latest_by_base: dict[
-        str,
-        tuple[Mapping[str, Any], tuple[datetime, int]],
-    ] = {}
-    for row, rank in latest_by_benchmark_scope.values():
-        base_scheme_id = str(row["scheme_id"])
-        current = latest_by_base.get(base_scheme_id)
-        if current is None or rank > current[1]:
-            latest_by_base[base_scheme_id] = (row, rank)
+        _required_text(row.get("benchmark_id"), field="backtest run benchmark_id")
+        _validate_selected_backtest_run(row)
+        if base_scheme_id in by_base:
+            raise DashboardDataError(
+                f"selected backtest run is ambiguous: base_scheme_id={base_scheme_id}"
+            )
+        by_base[base_scheme_id] = row
 
     selected: dict[str, Mapping[str, Any]] = {}
     for row in registry:
@@ -352,9 +332,9 @@ def choose_latest_backtest_runs(
         base_scheme_id = _required_text(
             row.get("base_scheme_id"), field="registry base_scheme_id"
         )
-        latest = latest_by_base.get(base_scheme_id)
-        if latest is not None:
-            selected[scheme_id] = latest[0]
+        selected_run = by_base.get(base_scheme_id)
+        if selected_run is not None:
+            selected[scheme_id] = selected_run
     return selected
 
 
@@ -1086,18 +1066,14 @@ def _row_id(row: Mapping[str, Any]) -> int:
         ) from exc
 
 
-def _backtest_updated_at_rank(value: Any) -> datetime:
-    if isinstance(value, datetime):
-        parsed = value
-    elif isinstance(value, date):
-        parsed = datetime.combine(value, datetime.min.time())
-    elif (
-        isinstance(value, str)
-        and value
-        and value == value.strip()
-    ):
+def _validate_selected_backtest_run(row: Mapping[str, Any]) -> None:
+    """检查选中回测的数据库身份字段，不在 Python 重新排名。"""
+    value = row.get("updated_at")
+    if isinstance(value, (datetime, date)):
+        pass
+    elif isinstance(value, str) and value and value == value.strip():
         try:
-            parsed = datetime.fromisoformat(value)
+            datetime.fromisoformat(value)
         except ValueError as exc:
             raise DashboardDataError(
                 f"backtest run updated_at is invalid: {value!r}"
@@ -1106,20 +1082,12 @@ def _backtest_updated_at_rank(value: Any) -> datetime:
         raise DashboardDataError(
             f"backtest run updated_at is invalid: {value!r}"
         )
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        parsed = parsed.replace(tzinfo=SHANGHAI_TIMEZONE)
-    return parsed.astimezone(timezone.utc)
-
-
-def _backtest_run_rank(row: Mapping[str, Any]) -> tuple[datetime, int]:
-    updated_rank = _backtest_updated_at_rank(row.get("updated_at"))
     try:
-        run_id = int(row.get("id"))
+        int(row.get("id"))
     except (TypeError, ValueError) as exc:
         raise DashboardDataError(
             f"backtest run id is invalid: {row.get('id')!r}"
         ) from exc
-    return updated_rank, run_id
 
 
 def _required_text(value: Any, *, field: str) -> str:

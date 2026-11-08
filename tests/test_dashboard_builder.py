@@ -16,7 +16,6 @@ from backend.db import (
     create_http_request_context,
 )
 from backend.factor_lab_dashboard_semantics import (
-    choose_latest_backtest_runs,
     choose_live_prediction_rows,
     iter_grouped_live_prediction_rows,
     live_actual_selector,
@@ -369,8 +368,29 @@ def test_backtest_query_returns_only_deterministic_latest_candidate() -> None:
 
     assert len(rows) == 1
     assert int(rows[0]["id"]) == 10
-    selected = choose_latest_backtest_runs(rows, registry_rows)
-    assert int(selected["demo_daily__h1__5Y"]["id"]) == 10
+    payload = build_factor_lab_dashboard(engine)
+    assert payload["schemes"][0]["backtest"]["benchmark_id"] == "same-time-lower-id"
+
+
+@pytest.mark.parametrize("runtime_type", ["blackbox_v2", "native_adapter", "invalid"])
+def test_selected_base_backtest_maps_multiple_targets_and_checks_runtime(runtime_type):
+    engine = _engine()
+    with engine.begin() as connection:
+        connection.execute(text("""INSERT INTO t_target_registry VALUES
+            ('10Y','10年','bond','yield',2,'active','{}')"""))
+        connection.execute(text("""INSERT INTO t_scheme_registry VALUES
+            ('demo_daily__h1__10Y','demo_daily',:runtime,'Other target','lw','',
+             1,'T+1','daily','10Y','active','2026-06-01')"""), {"runtime": runtime_type})
+    if runtime_type != "blackbox_v2":
+        with pytest.raises(DashboardDataError, match="runtime_type"):
+            build_factor_lab_dashboard(engine)
+        return
+    schemes = build_factor_lab_dashboard(engine)["schemes"]
+    assert len(schemes) == 2
+    assert schemes[0]["backtest"] == schemes[1]["backtest"]
+    with engine.begin() as connection:
+        connection.execute(text("DELETE FROM t_backtest_runs"))
+    assert all(row["backtest"] is None for row in build_factor_lab_dashboard(engine)["schemes"])
 
 
 def test_summary_streams_across_fetch_boundaries_without_changing_counts(
