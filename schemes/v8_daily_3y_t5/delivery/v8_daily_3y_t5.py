@@ -487,6 +487,78 @@ def _stable_rolling_corr(left, right, window, *, min_periods=None, ddof=1):
     return pd.Series(result, index=left.index, name=result_name)
 
 
+def _stable_rolling_quantile(series, window, *, min_periods=None, q):
+    """保留linear顺序统计量和有限样本资格，只分离最终减/乘/加。"""
+    if not isinstance(series, pd.Series):
+        raise TypeError('series must be a pandas Series')
+    if isinstance(q, bool) or not isinstance(q, numbers.Real) or (not math.isfinite(q)) or (not 0.0 <= q <= 1.0):
+        raise ValueError('requires finite q in [0, 1]')
+    q = float(q)
+    if q == 0.0 or q == 1.0:
+        return series.rolling(window, min_periods=min_periods).quantile(q)
+    prepared = series.astype(float)
+    prepared = prepared.where(np.isfinite(prepared.to_numpy()))
+    rolling = prepared.rolling(window, min_periods=min_periods)
+    lower = rolling.quantile(q, interpolation='lower')
+    higher = rolling.quantile(q, interpolation='higher')
+    count = prepared.rolling(window, min_periods=0).count().to_numpy()
+    h = np.multiply(np.subtract(count, 1.0), q)
+    fraction = np.subtract(h, np.floor(h))
+    delta = np.subtract(higher.to_numpy(), lower.to_numpy())
+    weighted = np.multiply(delta, fraction)
+    result = np.add(lower.to_numpy(), weighted)
+    np.copyto(result, lower.to_numpy(), where=fraction == 0.0)
+    return pd.Series(result, index=series.index, name=series.name)
+
+def _split_ewm_values(values, min_periods, com):
+    """prepared float64/NaN全序列递推；首值、同值优化和缺失衰减保留。"""
+    output = np.full(len(values), np.nan, dtype=np.float64)
+    if not len(values):
+        return output
+    alpha = 1.0 / (1.0 + float(com))
+    decay = 1.0 - alpha
+    weighted = float(values[0])
+    observed_count = int(not math.isnan(weighted))
+    if observed_count >= min_periods:
+        output[0] = weighted
+    old_weight = 1.0
+    for i in range(1, len(values)):
+        current = float(values[i])
+        observed = not math.isnan(current)
+        observed_count += int(observed)
+        if not math.isnan(weighted):
+            old_weight = old_weight * decay
+            if observed:
+                if weighted != current:
+                    previous_part = old_weight * weighted
+                    current_part = alpha * current
+                    numerator = previous_part + current_part
+                    denominator = old_weight + alpha
+                    weighted = numerator / denominator
+                old_weight = 1.0
+        elif observed:
+            weighted = current
+        if observed_count >= min_periods:
+            output[i] = weighted
+    return output
+
+def _stable_ewm_mean(series, span, *, min_periods=0):
+    """仅固定span的源内口径，保留Series index/name和原finite/NaN准备。"""
+    if not isinstance(series, pd.Series):
+        raise TypeError('series must be a pandas Series')
+    if isinstance(span, bool) or not isinstance(span, numbers.Integral) or span < 1:
+        raise ValueError('requires a positive integer span')
+    minimum = 0 if min_periods is None else min_periods
+    if isinstance(minimum, bool) or not isinstance(minimum, numbers.Integral) or minimum < 0:
+        raise ValueError('requires nonnegative integer min_periods')
+    minimum = max(int(minimum), 1)
+    values = series.to_numpy(dtype=np.float64, na_value=np.nan).copy()
+    values[np.isinf(values)] = np.nan
+    com = (float(span) - 1.0) / 2.0
+    result = _split_ewm_values(values, minimum, com)
+    return pd.Series(result, index=series.index, name=series.name)
+
+
 def _required_window(window: int | None) -> int:
     if window is None or int(window) < 1:
         raise ValueError("This operator requires a positive window")
@@ -494,23 +566,47 @@ def _required_window(window: int | None) -> int:
 
 
 def _linear_slope(values: np.ndarray) -> float:
+    """原等权OLS斜率，非5全finite窗口用Python标量固定顺序累加。"""
     y = np.asarray(values, dtype=float)
     valid = np.isfinite(y)
     if valid.sum() < 2:
         return np.nan
     x = np.arange(len(y), dtype=float)[valid]
     y = y[valid]
-    centered_x = x - x.mean()
-    denominator = float(np.dot(centered_x, centered_x))
-    if denominator <= 1e-12:
-        return np.nan
-    centered_y = y - y.mean()
     if len(values) == 5 and valid.all():
-        # Preserve the original OpenBLAS accumulation order: a one-ULP
-        # difference before a rolling rank can change a tied observation.
+        # Keep the existing five-full-observation path, including its
+        # original means, denominator and parenthesized summation order.
+        centered_x = x - x.mean()
+        denominator = float(np.dot(centered_x, centered_x))
+        if denominator <= 1e-12:
+            return np.nan
+        centered_y = y - y.mean()
         terms = centered_x * centered_y
         return float(((terms[0] + (terms[1] + terms[3])) + terms[4]) / denominator)
-    return float(np.dot(centered_x, centered_y) / denominator)
+    # Each operand is a Python float. Multiplication and addition are
+    # distinct operations; no NumPy/BLAS reduction or fused expression.
+    total_x = 0.0
+    for value in x:
+        total_x = total_x + float(value)
+    mean_x = total_x / len(x)
+    denominator = 0.0
+    for value in x:
+        centered = float(value) - mean_x
+        square = centered * centered
+        denominator = denominator + square
+    if denominator <= 1e-12:
+        return np.nan
+    total_y = 0.0
+    for value in y:
+        total_y = total_y + float(value)
+    mean_y = total_y / len(y)
+    numerator = 0.0
+    for position, value in zip(x, y):
+        centered_x = float(position) - mean_x
+        centered_y = float(value) - mean_y
+        product = centered_x * centered_y
+        numerator = numerator + product
+    return float(numerator / denominator)
 
 
 def _skewness(values: np.ndarray) -> float:
@@ -774,7 +870,7 @@ def _rolling_iqr(
 ) -> pd.Series:
     value = _required_window(window)
     rolling = left.rolling(value, min_periods=_min_periods(value))
-    return rolling.quantile(0.75) - rolling.quantile(0.25)
+    return _stable_rolling_quantile(left, value, min_periods=_min_periods(value), q=0.75) - _stable_rolling_quantile(left, value, min_periods=_min_periods(value), q=0.25)
 
 
 @register_operator("tail_imbalance", "rolling", 1, uses_window=True)
@@ -782,7 +878,7 @@ def _tail_imbalance(left: pd.Series, right: pd.Series | None, window: int | None
     """Quantile tail asymmetry: (Q90 + Q10 - 2 * Q50) / (Q90 - Q10)."""
     value = max(3, _required_window(window))
     rolling = left.rolling(value, min_periods=_min_periods(value))
-    lower, middle, upper = rolling.quantile(0.1), rolling.quantile(0.5), rolling.quantile(0.9)
+    lower, middle, upper = _stable_rolling_quantile(left, value, min_periods=_min_periods(value), q=0.1), _stable_rolling_quantile(left, value, min_periods=_min_periods(value), q=0.5), _stable_rolling_quantile(left, value, min_periods=_min_periods(value), q=0.9)
     width = upper - lower
     return ((upper + lower - 2.0 * middle) / width.where(width > 1e-12)).mask(width <= 1e-12, 0.0)
 
@@ -923,7 +1019,7 @@ def _history_percentile(left: pd.Series, right: pd.Series | None, window: int | 
 @register_operator("ema", "rolling", 1, uses_window=True)
 def _ema(left: pd.Series, right: pd.Series | None, window: int | None) -> pd.Series:
     value = _required_window(window)
-    return left.ewm(span=value, min_periods=_min_periods(value), adjust=False).mean()
+    return _stable_ewm_mean(left, value, min_periods=_min_periods(value))
 
 
 @register_operator("ewm_std", "rolling", 1, uses_window=True)
@@ -947,11 +1043,7 @@ def _ema_deviation(
     window: int | None,
 ) -> pd.Series:
     value = _required_window(window)
-    average = left.ewm(
-        span=value,
-        min_periods=_min_periods(value),
-        adjust=False,
-    ).mean()
+    average = _stable_ewm_mean(left, value, min_periods=_min_periods(value))
     return left - average
 
 
@@ -1086,7 +1178,7 @@ def _robust_zscore(
     value = _required_window(window)
     rolling = left.rolling(value, min_periods=_min_periods(value))
     median = rolling.median()
-    interquartile_range = rolling.quantile(0.75) - rolling.quantile(0.25)
+    interquartile_range = _stable_rolling_quantile(left, value, min_periods=_min_periods(value), q=0.75) - _stable_rolling_quantile(left, value, min_periods=_min_periods(value), q=0.25)
     robust_scale = 0.7413 * interquartile_range
     return (left - median) / robust_scale.where(robust_scale > 1e-12)
 
@@ -1728,8 +1820,8 @@ def score_factor_values(values, sources, factor_ids, decision_dates=None):
         if policy.get("method") != "self_quantile":
             raise ValueError("Unsupported factor comparison policy")
         lagged = raw.shift(1).rolling(int(policy["history_window"]), min_periods=int(policy["min_history"]))
-        lower = lagged.quantile(float(policy["down_quantile"]))
-        upper = lagged.quantile(float(policy["up_quantile"]))
+        lower = _stable_rolling_quantile(raw.shift(1), int(policy['history_window']), min_periods=int(policy['min_history']), q=float(policy['down_quantile']))
+        upper = _stable_rolling_quantile(raw.shift(1), int(policy['history_window']), min_periods=int(policy['min_history']), q=float(policy['up_quantile']))
         orientation = (source.get("signal_rule") or {}).get("orientation", policy.get("orientation", 1))
         columns[identity] = ((raw - (lower + upper) / 2) * orientation).where(raw.notna() & lower.notna() & upper.notna())
     return pd.DataFrame(columns, index=dates)

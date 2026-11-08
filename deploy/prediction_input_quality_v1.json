@@ -16127,12 +16127,12 @@
       }
     },
     "v8_daily_10y_t5": {
-      "scheme_version": "abd46cd585f1",
+      "scheme_version": "f030b7947ae2",
       "runtime_type": "blackbox_v2",
       "coverage": "declared_daily_raw_columns_point_only_not_model_readiness",
       "scripts": {
         "v8_daily_10y_t5.py": {
-          "sha256": "79601e3c528e5238c9ed255d5466f367583bf981145db305bc5147afd82a6396",
+          "sha256": "884718bcb948db8a12160672519b1b68835dae5e2ab6004ca7c28b81e40f89af",
           "profiles": [
             "input-4a781fa865a44851"
           ]
@@ -16140,12 +16140,12 @@
       }
     },
     "v8_daily_3y_t5": {
-      "scheme_version": "302781e45f95",
+      "scheme_version": "c05388d61567",
       "runtime_type": "blackbox_v2",
       "coverage": "declared_daily_raw_columns_point_only_not_model_readiness",
       "scripts": {
         "v8_daily_3y_t5.py": {
-          "sha256": "fe59ed432c31a91017ddf99896126239fb4ad37167e36880ed3ea3c1ffd8794d",
+          "sha256": "bc2b0e6e90f9c838d855d1efc7c15a1d3d5f0003650e946be63455f4e699a63f",
           "profiles": [
             "input-4a781fa865a44851"
           ]
@@ -16153,12 +16153,12 @@
       }
     },
     "v8_daily_5y_t5": {
-      "scheme_version": "7a69934a9505",
+      "scheme_version": "d371a42eba39",
       "runtime_type": "blackbox_v2",
       "coverage": "declared_daily_raw_columns_point_only_not_model_readiness",
       "scripts": {
         "v8_daily_5y_t5.py": {
-          "sha256": "ed208a6876f8bb9111b246ee98808525e71ca3f93a02923d89905f274285c1ae",
+          "sha256": "068726d19faf70a23f804a0e5ade953cb586c0c62851f5c6c09555b1afb0594a",
           "profiles": [
             "input-4a781fa865a44851"
           ]
