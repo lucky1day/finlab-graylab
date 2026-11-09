@@ -321,6 +321,11 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             self.assertRaisesRegex(ValueError, "no successful persisted"),
         ):
             verify_passed_blackbox_backtest(engine, cfg)
+        for previous_policy in (reviewed_old, reviewed_extraction):
+            with self.subTest(previous_policy=previous_policy):
+                store_digest(previous_policy)
+                with self.assertRaisesRegex(ValueError, "no successful persisted"):
+                    verify_passed_blackbox_backtest(engine, cfg)
         store_digest("unknown-policy")
         with self.assertRaisesRegex(ValueError, "no successful persisted"):
             verify_passed_blackbox_backtest(engine, cfg)

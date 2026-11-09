@@ -8,6 +8,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 import yaml
+import pytest
 
 
 class BlackboxV2IntakeTests(unittest.TestCase):
@@ -166,6 +167,42 @@ class BlackboxV2IntakeTests(unittest.TestCase):
 
             with self.assertRaisesRegex(FileExistsError, "already exists"):
                 intake_delivery(delivery, schemes_root=root / "schemes")
+
+
+@pytest.mark.parametrize(("source", "error"), [
+    ('import os as platform\nplatform.system("exit 0")\n', "forbidden call os.system"),
+    ('from os import popen as call\ncall("exit 0")\n', "forbidden call os.popen"),
+    ('from builtins import eval as calculate\ncalculate("1+1")\n', "forbidden call builtins.eval"),
+    ('open("/tmp/not-a-platform-input.csv")\n', "hard-coded absolute path"),
+    ('from pathlib import Path as P\nP("/var/private").read_text()\n', "hard-coded absolute path"),
+    ('import pandas as pd\npath = "/etc/demo.csv"\npd.read_csv(filepath_or_buffer=path)\n', "hard-coded absolute path"),
+    ('import os.path as paths\npaths.join("data", f"/opt/{name}")\n', "hard-coded absolute path"),
+    ('def load(data_dir):\n    return data_dir / "/mnt/test.csv"\n', "hard-coded absolute path"),
+])
+def test_intake_rejects_aliased_calls_and_absolute_file_paths(tmp_path, source, error):
+    from shared.blackbox_v2.intake import intake_delivery
+
+    delivery = _write_delivery(tmp_path / "incoming")
+    (delivery / "trial_10y.py").write_text(source, encoding="utf-8")
+    with pytest.raises(ValueError, match=error):
+        intake_delivery(delivery, schemes_root=tmp_path / "schemes")
+    assert not (tmp_path / "schemes").exists()
+
+
+def test_intake_accepts_text_and_relative_path_construction(tmp_path):
+    from shared.blackbox_v2.intake import intake_delivery
+
+    source = (
+        'from pathlib import Path as P\n'
+        'label = "/chart/ratio"\n'
+        'def load(data_dir):\n'
+        '    path = P(f"{data_dir}/daily_output.csv")\n'
+        '    return path.read_text(), label\n'
+    )
+    delivery = _write_delivery(tmp_path / "incoming")
+    (delivery / "trial_10y.py").write_text(source, encoding="utf-8")
+    canonical = intake_delivery(delivery, schemes_root=tmp_path / "schemes")
+    assert (canonical / "delivery" / "trial_10y.py").read_text() == source
 
 
 def _write_delivery(
