@@ -559,6 +559,10 @@ def test_initial_repository_rolls_back_if_registry_insert_fails() -> None:
             "backtest identity mismatch",
         ),
         (
+            "UPDATE t_backtest_runs SET summary = replace(summary, 'validator-digest', 'tampered-policy')",
+            "backtest identity mismatch",
+        ),
+        (
             "UPDATE t_backtest_predictions SET scheme_id = 'other'",
             "scheme identity mismatch",
         ),

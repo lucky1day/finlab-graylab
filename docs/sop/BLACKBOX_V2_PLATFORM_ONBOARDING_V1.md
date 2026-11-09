@@ -121,6 +121,10 @@ scheme_version + code_hash + config_hash + manifest_hash
 + generation_id + data_snapshot_id
 ```
 
+脚本校验摘要只绑定[静态策略实现](../../shared/blackbox_v2/_script_policy.py)，不受 Intake 配置生成等无关改动影响。
+仅当证据摘要等于当前策略，或[受审等价映射](../../shared/blackbox_v2/_script_policy_compat.py)的目标正是当前策略时，回测证据才适用。
+Gate 将证据原始摘要传给 repository 锁内精确复验；历史摘要保持原值。未知摘要、实际规则升级或锁内身份变化均不放行，需要按当前策略取得新的成功回测证据。
+
 首次激活在一个事务内：
 
 1. 锁定并复核唯一成功的 exact-version 持久化回测，拒绝 base/composite 身份冲突；

@@ -28,6 +28,7 @@ from scheduler.process_control import ProcessGroupTerminationError
 from shared.blackbox_v2.contracts import BlackboxMetadata
 from shared.blackbox_v2.environment_manifest import load_environment_fingerprint
 from shared.blackbox_v2.history import CURRENT_SNAPSHOT_REPLAY, build_historical_cases
+from shared.blackbox_v2._script_policy_compat import EQUIVALENT_SCRIPT_POLICY_DIGESTS
 from shared.blackbox_v2.intake import (
     DATA_SCHEMA_VERSION,
     RUNTIME_PROFILE,
@@ -326,11 +327,16 @@ def verify_passed_blackbox_backtest(
 
     for row in rows:
         summary = _decode_json_object(row["summary"], "backtest summary")
+        stored_policy_digest = summary.get("script_validator_policy_digest")
         if (
             summary.get("scheme_version") != cfg.scheme_version
             or summary.get("manifest_hash") != cfg.manifest_hash
-            or summary.get("script_validator_policy_digest")
-            != SCRIPT_VALIDATOR_POLICY_DIGEST
+            or not isinstance(stored_policy_digest, str)
+            or (
+                stored_policy_digest != SCRIPT_VALIDATOR_POLICY_DIGEST
+                and EQUIVALENT_SCRIPT_POLICY_DIGESTS.get(stored_policy_digest)
+                != SCRIPT_VALIDATOR_POLICY_DIGEST
+            )
         ):
             continue
         required = {
@@ -363,7 +369,7 @@ def verify_passed_blackbox_backtest(
             code_hash=cfg.code_hash,
             config_hash=cfg.config_hash,
             manifest_hash=cfg.manifest_hash,
-            script_validator_policy_digest=SCRIPT_VALIDATOR_POLICY_DIGEST,
+            script_validator_policy_digest=stored_policy_digest,
         )
     raise ValueError(
         f"no successful persisted Blackbox backtest for {cfg.scheme_id} "

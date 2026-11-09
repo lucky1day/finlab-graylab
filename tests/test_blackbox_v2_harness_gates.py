@@ -288,39 +288,42 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 },
             )
 
-        passed = verify_passed_blackbox_backtest(
-            engine,
-            SimpleNamespace(
-                scheme_id="trial_10y",
-                scheme_version="version-test",
-                code_hash="c" * 64,
-                config_hash="f" * 64,
-                manifest_hash="m" * 64,
-            ),
+        cfg = SimpleNamespace(
+            scheme_id="trial_10y",
+            scheme_version="version-test",
+            code_hash="c" * 64,
+            config_hash="f" * 64,
+            manifest_hash="m" * 64,
         )
+        passed = verify_passed_blackbox_backtest(engine, cfg)
 
         self.assertEqual(passed.backtest_run_id, 1)
         self.assertEqual(passed.benchmark_id, "bbv2-test")
         self.assertEqual(passed.data_snapshot_id, "snapshot-test")
         self.assertEqual(passed.generation_id, "generation-test")
 
-        summary["script_validator_policy_digest"] = "old-policy"
-        with engine.begin() as connection:
-            connection.execute(
-                text("UPDATE t_backtest_runs SET summary = :summary WHERE id = 1"),
-                {"summary": json.dumps(summary)},
-            )
+        def store_digest(digest: str) -> None:
+            summary["script_validator_policy_digest"] = digest
+            with engine.begin() as connection:
+                connection.execute(
+                    text("UPDATE t_backtest_runs SET summary = :summary WHERE id = 1"),
+                    {"summary": json.dumps(summary)},
+                )
+
+        reviewed_old = "ada0638afefdfeb64bbf681f423b68f59134b0f40d0ab7d5713411252ee77c3c"
+        reviewed_extraction = "0d49ca3996a4f64048b0cc846b853c0e0a925b046751ed9f59f9e632fd9e9e52"
+        store_digest(reviewed_old)
+        with patch("harness.blackbox_v2.gates.SCRIPT_VALIDATOR_POLICY_DIGEST", reviewed_extraction):
+            accepted = verify_passed_blackbox_backtest(engine, cfg)
+        self.assertEqual(accepted.script_validator_policy_digest, reviewed_old)
+        with (
+            patch("harness.blackbox_v2.gates.SCRIPT_VALIDATOR_POLICY_DIGEST", "f" * 64),
+            self.assertRaisesRegex(ValueError, "no successful persisted"),
+        ):
+            verify_passed_blackbox_backtest(engine, cfg)
+        store_digest("unknown-policy")
         with self.assertRaisesRegex(ValueError, "no successful persisted"):
-            verify_passed_blackbox_backtest(
-                engine,
-                SimpleNamespace(
-                    scheme_id="trial_10y",
-                    scheme_version="version-test",
-                    code_hash="c" * 64,
-                    config_hash="f" * 64,
-                    manifest_hash="m" * 64,
-                ),
-            )
+            verify_passed_blackbox_backtest(engine, cfg)
         engine.dispose()
 
     def test_backtest_preflight_reuses_intake_safety_validation(self) -> None:
