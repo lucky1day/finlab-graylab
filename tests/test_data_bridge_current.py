@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -114,6 +115,80 @@ def test_dataset_reader_preserves_complete_frames_and_literal_na(tmp_path, encod
     assert set(loaded) == set(frames)
     for name, expected in frames.items():
         pd.testing.assert_frame_equal(loaded[name], expected)
+
+
+@pytest.mark.parametrize("failure", ["previous_cleanup", "state_replace"])
+def test_publication_failure_preserves_complete_committed_generation(
+    tmp_path, monkeypatch, caplog, failure,
+):
+    from shared.data_bridge.refresh import (
+        DataBridgeRefreshConfig,
+        DataBridgeStore,
+        _build_state,
+        check_current_dataset,
+    )
+    from shared.data_bridge.validation import validate_dataset
+
+    config = DataBridgeRefreshConfig(
+        data_root=tmp_path / 'data',
+        runtime_root=tmp_path / 'runtime',
+        schema_path=SCHEMA_PATH,
+    )
+    store = DataBridgeStore(data_root=config.data_root, runtime_root=config.runtime_root)
+    initial = _bridge_frames(include_new_week=False)
+    updated = _bridge_frames(include_new_week=True)
+    now = datetime(2026, 7, 21, 6, 30, tzinfo=ZoneInfo('Asia/Shanghai'))
+
+    def candidate(frames, day):
+        path = tmp_path / day
+        path.mkdir()
+        for name, frame in frames.items():
+            frame.to_csv(path / name, index=False)
+        state = _build_state(
+            validate_dataset(frames, schema_path=SCHEMA_PATH), day, 2,
+            refresh_started_at=now, duration_sec=1,
+        )
+        return path, state
+
+    initial_path, initial_state = candidate(initial, '2026-07-20')
+    initial_published = store.publish(initial_path, initial_state)
+    remove_tree = shutil.rmtree
+    replace_file = os.replace
+
+    def fail_after_removing_one_file(path, *args, **kwargs):
+        if path == store.previous_dir:
+            (path / 'daily_output.csv').unlink()
+            raise PermissionError('injected partial backup cleanup')
+        return remove_tree(path, *args, **kwargs)
+
+    def fail_state_replace(source, destination):
+        if destination == store.state_path and not Path(source).name.startswith('.state-restore-'):
+            raise PermissionError('injected state replacement failure')
+        return replace_file(source, destination)
+
+    path, state = candidate(updated, '2026-07-21')
+    with monkeypatch.context() as patch_fs:
+        if failure == "previous_cleanup":
+            patch_fs.setattr(shutil, 'rmtree', fail_after_removing_one_file)
+            published = store.publish(path, state)
+            assert published['generation_id'] == state['generation_id']
+            assert 'previous publication cleanup failed' in caplog.text
+            assert store.previous_dir.is_dir()
+            assert not (store.previous_dir / 'daily_output.csv').exists()
+        else:
+            patch_fs.setattr(os, 'replace', fail_state_replace)
+            with pytest.raises(PermissionError, match="state replacement"):
+                store.publish(path, state)
+            published, path = initial_published, initial_path
+    checked = check_current_dataset(config, strict_read_only=True)
+    assert checked.state == published
+    for name in updated:
+        assert (store.current_dir / name).read_bytes() == (path / name).read_bytes()
+
+    store.recover(schema_path=SCHEMA_PATH)
+    store.recover(schema_path=SCHEMA_PATH)
+    assert not store.previous_dir.exists()
+    assert check_current_dataset(config, strict_read_only=True).state == published
 
 
 def _frame(filename: str, keys: list[str]) -> pd.DataFrame:

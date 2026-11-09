@@ -4,6 +4,7 @@ import copy
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -40,6 +41,11 @@ from shared.data_contract import (
     source_commit_evidence_sha256,
 )
 from shared.runtime_paths import resolve_runtime_state_path
+
+
+_logger = logging.getLogger(__name__)
+
+
 class DataBridgeRefreshError(RuntimeError):
     """A full refresh could not produce a stable valid dataset."""
 
@@ -1860,7 +1866,10 @@ class DataBridgeStore:
         _validate_publish_candidate(candidate)
         with self.lock(exclusive=True):
             _validate_publish_candidate(candidate)
-            self._recover_locked()
+            if not self.current_dir.exists() and self.previous_dir.exists():
+                raise DataBridgeRecoveryIdentityError(
+                    "DataBridge previous publication requires verified recovery"
+                )
             next_dir = Path(tempfile.mkdtemp(prefix=".current-next-", dir=self.data_root))
             shutil.rmtree(next_dir)
             shutil.copytree(
@@ -1914,8 +1923,6 @@ class DataBridgeStore:
                 self._write_state_locked(published_state)
                 _fsync_directory(self.data_root)
                 _fsync_directory(self.runtime_root)
-                if self.previous_dir.exists():
-                    shutil.rmtree(self.previous_dir)
             except BaseException:
                 if candidate_activated and self.current_dir.exists():
                     shutil.rmtree(self.current_dir)
@@ -1928,7 +1935,22 @@ class DataBridgeStore:
                 _fsync_directory(self.data_root)
                 _fsync_directory(self.runtime_root)
                 raise
+            # 新 current 和 state 已同步。删除旧备份失败不再回滚已提交发布。
+            self._discard_previous_after_commit()
         return published_state
+
+    def _discard_previous_after_commit(self) -> None:
+        if not self.previous_dir.exists():
+            return
+        try:
+            shutil.rmtree(self.previous_dir)
+            _fsync_directory(self.runtime_root)
+        except OSError as exc:
+            _logger.warning(
+                "DataBridge previous publication cleanup failed: path=%s errno=%s",
+                self.previous_dir,
+                exc.errno,
+            )
 
     def cleanup_crash_debris(self) -> tuple[str, ...]:
         """在外层 occurrence owner 下清理未发布 ``.current-next-*``。"""
@@ -1985,10 +2007,6 @@ class DataBridgeStore:
                 self.current_dir,
                 schema_path=Path(schema_path),
             )
-            previous_identity = _directory_publication_identity(
-                self.previous_dir,
-                schema_path=Path(schema_path),
-            )
             marker_path = (
                 self.current_dir / CURRENT_PUBLICATION_MANIFEST
             )
@@ -2038,14 +2056,19 @@ class DataBridgeStore:
                     state_identity is not None
                     and current_identity == state_identity
                 ):
-                    shutil.rmtree(self.previous_dir)
+                    self._discard_previous_after_commit()
                 elif (
                     state_identity is not None
-                    and previous_identity == state_identity
+                    and _directory_publication_identity(
+                        self.previous_dir,
+                        schema_path=Path(schema_path),
+                    ) == state_identity
                 ):
                     if self.current_dir.exists():
                         shutil.rmtree(self.current_dir)
                     os.replace(self.previous_dir, self.current_dir)
+                    _fsync_directory(self.data_root)
+                    _fsync_directory(self.runtime_root)
                 else:
                     raise DataBridgeRecoveryIdentityError(
                         "cannot recover DataBridge current/previous against published state"
@@ -2088,10 +2111,6 @@ class DataBridgeStore:
                 "error": _safe_failed_attempt_error(error),
             }
             self._write_state_locked(state)
-
-    def _recover_locked(self) -> None:
-        if not self.current_dir.exists() and self.previous_dir.exists():
-            os.replace(self.previous_dir, self.current_dir)
 
     def _write_state_locked(self, state: dict[str, object]) -> None:
         fd, temporary_name = tempfile.mkstemp(prefix=".state-", dir=self.runtime_root)

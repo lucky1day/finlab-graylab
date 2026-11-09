@@ -144,6 +144,8 @@ scheme_version + code_hash + config_hash + manifest_hash
 
 Native 单日按权威日期推导 feature_date 并构造本机截止输入；Blackbox 使用计划绑定的冻结 DataBridge authority。单日/区间命令都内部规划，不接收外部 plan、operator、HMAC token 或 plan SHA；任一 blocker 在执行前停止，不自动重试、fallback 或切旧版本。失败先读回已发生副作用，再按实际缺口处理。
 
+子进程组清理未确认时，正式 one-shot 的共享启动围栏阻止后续候选及普通自动重试，摘要标记 `process_cleanup_unconfirmed`。灰度补缺以批次失败结算已创建且未结算的 run，保留已提交事实和清理原因。继续前先确认该进程组退出和本机 run、预测写入状态。
+
 Dashboard 只证明当前产品可见性，不证明 exact version。Production Observed 仍必须由真实
 launchd/systemd one-shot 时钟产生成功 `scheduled_live` 证据。
 

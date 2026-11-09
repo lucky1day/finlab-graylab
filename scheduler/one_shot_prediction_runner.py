@@ -37,7 +37,7 @@ from scheduler.executor import (
     execute_scheme,
     _scheduled_scheme_identity_error,
 )
-from scheduler.process_control import ProcessStartGuard
+from scheduler.process_control import ProcessGroupTerminationError, ProcessStartGuard
 from scheduler.repository import (
     PREDICTION_KEYS_ALREADY_EXIST,
     create_engine_from_env,
@@ -63,6 +63,7 @@ DATA_BRIDGE_TRANSITION_CODES = frozenset(
     {"gate_generation_mismatch", "gate_current_missing"}
 )
 RUNNER_LOCK_TIMEOUT_SEC = 60.0
+PROCESS_CLEANUP_UNCONFIRMED = "process_cleanup_unconfirmed"
 RUNNER_LOCK_POLL_INTERVAL_SEC = 0.05
 # 失败方案的自动重试：批次结束后只重跑失败的方案，间隔 10 分钟，最多 2 次。
 PREDICTION_RETRY_ATTEMPTS = 2
@@ -517,6 +518,10 @@ def _execute_candidate(
                 scheduled_preflight_failure
             )
         result = execute_scheme(cfg, predict_date, **execute_kwargs)
+    except ProcessGroupTerminationError as exc:
+        if process_start_guard is not None:
+            process_start_guard.poison(exc)
+        raise
     except Exception:  # noqa: BLE001 - isolate one candidate
         summary.failed.append(
             _failure_item(
@@ -615,11 +620,24 @@ def _execute_native_wave(
     )
     futures = {pool.submit(execute, cfg): cfg for cfg in candidates}
     try:
+        cleanup_error: ProcessGroupTerminationError | None = None
         for future in as_completed(futures):
-            local = future.result()
+            if future.cancelled():
+                continue
+            try:
+                local = future.result()
+            except ProcessGroupTerminationError as exc:
+                if cleanup_error is None:
+                    cleanup_error = exc
+                cancellation_event.set()
+                for pending in futures:
+                    pending.cancel()
+                continue
             summary.executed.extend(local.executed)
             summary.skipped.extend(local.skipped)
             summary.failed.extend(local.failed)
+        if cleanup_error is not None:
+            raise cleanup_error
     except BaseException:
         cancellation_event.set()
         for future in futures:
@@ -837,6 +855,7 @@ def _execute_data_bridge_wave(
     scheduled_control_plane: str,
     scheduled_execution_context: object,
     engine,
+    process_start_guard: ProcessStartGuard,
 ) -> None:
     """等待共享 ready gate，并以既有错误分类执行 dependent wave。"""
     if not candidates:
@@ -861,6 +880,7 @@ def _execute_data_bridge_wave(
                 scheduled_execution_context=scheduled_execution_context,
                 scheduled_preflight_failure=SCHEDULED_PREFLIGHT_FAILURE_CALENDAR_UNAVAILABLE,
                 engine=engine, canonical_config_trusted=True,
+                process_start_guard=process_start_guard,
             )
     if expected_daily_date is None:
         return
@@ -883,6 +903,7 @@ def _execute_data_bridge_wave(
                 ),
                 engine=engine,
                 canonical_config_trusted=True,
+                process_start_guard=process_start_guard,
             )
     elif gate_code is not None:
         from shared.prediction_audit import emit_prediction_audit
@@ -898,6 +919,7 @@ def _execute_data_bridge_wave(
                 scheduled_execution_context=scheduled_execution_context,
                 scheduled_preflight_failure=SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_UNAVAILABLE,
                 engine=engine, canonical_config_trusted=True,
+                process_start_guard=process_start_guard,
             )
     else:
         for cfg in candidates:
@@ -910,6 +932,7 @@ def _execute_data_bridge_wave(
                 scheduled_execution_context=scheduled_execution_context,
                 engine=engine,
                 canonical_config_trusted=True,
+                process_start_guard=process_start_guard,
             )
 
 
@@ -1008,13 +1031,13 @@ def run_one_shot(
                     _finalize(summary)
                 return summary
 
+            process_start_guard = ProcessStartGuard()
             partitions = _partition_candidates(
                 candidates,
                 cadence=normalized_cadence,
             )
             if partitions.native:
                 cancellation_event = threading.Event()
-                process_start_guard = ProcessStartGuard()
                 try:
                     with tempfile.TemporaryDirectory(
                         prefix="bfl-native-one-shot-"
@@ -1051,6 +1074,7 @@ def run_one_shot(
                     scheduled_execution_context=scheduled_execution_context,
                     engine=engine,
                     canonical_config_trusted=True,
+                    process_start_guard=process_start_guard,
                 )
 
             _execute_data_bridge_wave(
@@ -1064,10 +1088,22 @@ def run_one_shot(
                 scheduled_control_plane=scheduled_control_plane,
                 scheduled_execution_context=scheduled_execution_context,
                 engine=engine,
+                process_start_guard=process_start_guard,
             )
 
             _finalize(summary)
             return summary
+        except ProcessGroupTerminationError as exc:
+            summary.failed.append(
+                _failure_item(None, PROCESS_CLEANUP_UNCONFIRMED, stage="process_cleanup")
+            )
+            _finalize(summary)
+            raise OneShotPredictionRunError(
+                "prediction batch stopped after unconfirmed process cleanup",
+                summary=summary,
+                code=PROCESS_CLEANUP_UNCONFIRMED,
+                stage="process_cleanup",
+            ) from exc
         except OneShotPredictionRunError as exc:
             if exc.summary is None and _has_batch_evidence(summary):
                 summary.failed.append(
@@ -1129,6 +1165,8 @@ def run_one_shot_with_retries(
     run = run or run_one_shot
     summary = run(cadence, **kwargs)
     for attempt in range(1, retry_attempts + 1):
+        if any(item.get("code") == PROCESS_CLEANUP_UNCONFIRMED for item in summary.failed):
+            break
         failed_ids = sorted({str(item["scheme_id"]) for item in summary.failed
                              if item.get("scheme_id") and item.get("code") not in {
                                  SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_UNAVAILABLE,

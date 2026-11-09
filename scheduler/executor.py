@@ -818,6 +818,8 @@ def run_blackbox_gray_replay_batch(
             backtest_kwargs["state"] = state
         try:
             records = run_blackbox_backtest(**backtest_kwargs)
+        except ProcessGroupTerminationError:
+            raise
         except Exception as exc:
             if seed_state is None or "source prefix changed" not in str(exc):
                 raise
@@ -1274,8 +1276,8 @@ def execute_scheme(
                     )
                 if cancellation_event is not None:
                     run_kwargs["cancellation_event"] = cancellation_event
-                if process_start_guard is not None:
-                    run_kwargs["process_start_guard"] = process_start_guard
+            if process_start_guard is not None:
+                run_kwargs["process_start_guard"] = process_start_guard
             if blackbox_snapshot_mode != BLACKBOX_SNAPSHOT_MODE_FRESH:
                 run_kwargs["blackbox_snapshot_mode"] = blackbox_snapshot_mode
                 run_kwargs["expected_generation_id"] = blackbox_expected_generation_id
@@ -1415,6 +1417,8 @@ def execute_scheme(
                 except Exception as audit_exc:
                     logger.exception("failed to write run log for failed scheme run_id=%s", run_id)
                     error_msg = _append_audit_error(error_msg, "write_run_log", audit_exc)
+            if isinstance(exc, ProcessGroupTerminationError):
+                raise
             return SchemeRunResult(
                 cfg.scheme_id,
                 "failed",

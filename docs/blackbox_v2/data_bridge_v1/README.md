@@ -53,6 +53,8 @@
 
 producer 独立校验五文件的 schema、freshness、cutoff 和完整性，达到连续两轮稳定后发布 generation 并一次构建 ready snapshot。任何新 publish 开始前先撤销旧 ready 指针，完成后原子发布新指针；发布失败保留原完整 current，但消费者不得绕过 ready gate 回退旧 generation。
 
+新 current、state 和目录同步成功是发布提交点。提交前失败恢复原发布；提交后旧备份清理失败保留新 current/state 并记录警告，不把已部分清理的备份恢复为 current。恢复只接受与 state 身份匹配的完整发布；保留的旧备份可在下一次受控恢复中清理。
+
 方案只读取已有 receipt，核对 producer seal 并将匹配文件稳定复制为私有只读运行视图，不重新解析或验证 generation CSV；进程前后仍须检查私有输入未被篡改。派生状态的私有回测与发布边界见[平台 SOP](../../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#51-增量方案的显式预热重建)。
 
 升级前四文件 receipt 仅供 `legacy_v1` 存量读取，`algorithm_managed` 必须等待五文件 ready generation；五文件发布失败不得破坏旧完整 current。历史运行的输入身份由已保存证据追溯，不能将“保留 current”理解成允许任意版本复用。

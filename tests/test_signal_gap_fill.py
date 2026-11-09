@@ -456,6 +456,49 @@ def test_blackbox_failure_does_not_block_native_success(
     repository.fail_scheme_run_atomic.assert_called_once()
 
 
+def test_unconfirmed_blackbox_cleanup_aborts_remaining_gap_runs(tmp_path, monkeypatch):
+    from harness import signal_gap_fill
+    from scheduler.process_control import ProcessGroupTerminationError, ProcessGroupTerminationResult
+
+    actions = [
+        _action("a_blackbox", runtime_type="blackbox_v2"),
+        _action("b_blackbox", runtime_type="blackbox_v2"),
+        _action("c_native"),
+    ]
+    plan = _plan(actions)
+    repository = _repository()
+    native_runner = Mock()
+    engine, _ = _install(
+        monkeypatch, repository=repository, plan=plan, runner=native_runner,
+        configs={str(action["base_scheme_id"]): _config(
+            str(action["base_scheme_id"]), runtime_type=str(action["runtime_type"]),
+        ) for action in actions},
+    )
+    monkeypatch.setattr(signal_gap_fill, "get_ready_blackbox_snapshot", Mock(return_value=SimpleNamespace()))
+    error = ProcessGroupTerminationError(
+        termination=ProcessGroupTerminationResult(123, 123, True, True, False),
+        context="simulated subprocess cleanup failure",
+    )
+    blackbox_runner = Mock(side_effect=error)
+    monkeypatch.setattr(signal_gap_fill, "run_blackbox_gray_replay_batch", blackbox_runner)
+
+    result = signal_gap_fill.run_signal_gap_fill(
+        plan=plan, project_root=tmp_path, engine_factory=lambda: engine,
+        databridge_config=SimpleNamespace(),
+    )
+
+    assert result["status"] == "FAILED"
+    assert result["failure_code"] == "ALGORITHM_COORDINATOR_FAILED"
+    assert "process group cleanup was not confirmed" in result["errors"][0]
+    assert len(result["remaining"]) == 3
+    blackbox_runner.assert_called_once()
+    native_runner.assert_not_called()
+    repository.complete_gray_gap_run.assert_not_called()
+    assert {call.kwargs["scheme_id"] for call in repository.fail_scheme_run_atomic.call_args_list} == {
+        "a_blackbox", "b_blackbox", "c_native",
+    }
+
+
 def test_native_interruption_closes_all_uncommitted_runs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

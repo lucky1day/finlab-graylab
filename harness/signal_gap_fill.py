@@ -22,7 +22,7 @@ from scheduler.executor import (
     run_blackbox_gray_replay_batch,
     run_configured_scheme,
 )
-from scheduler.process_control import ProcessStartGuard
+from scheduler.process_control import ProcessGroupTerminationError, ProcessStartGuard
 from shared.blackbox_v2.contracts import BlackboxRequest
 from shared.blackbox_v2.requests import build_request
 from shared.blackbox_v2.snapshot import CutoffKeys
@@ -884,6 +884,8 @@ def _run_native_wave(
                 item.records = future.result()
             except Exception as exc:  # noqa: BLE001
                 item.error = exc
+                if isinstance(exc, ProcessGroupTerminationError):
+                    raise
             settle(item)
     except BaseException:
         cancellation_event.set()
@@ -992,6 +994,8 @@ def _run_blackbox_gray_replay_batches(
             except Exception as exc:  # noqa: BLE001
                 for item in batch.executions:
                     item.error = exc
+                if isinstance(exc, ProcessGroupTerminationError):
+                    raise
 
 
 def _build_blackbox_replay_batches(

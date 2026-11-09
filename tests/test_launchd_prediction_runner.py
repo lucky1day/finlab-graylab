@@ -94,6 +94,61 @@ class _PeriodCalendar:
 
 
 class LaunchdPredictionRunnerTests(unittest.TestCase):
+    def test_unconfirmed_cleanup_aborts_batch_without_retry(self) -> None:
+        from scheduler import one_shot_prediction_runner as runner
+        from scheduler.process_control import (
+            ProcessGroupTerminationError, ProcessGroupTerminationResult,
+            ProcessStartGuard,
+        )
+
+        error = ProcessGroupTerminationError(
+            termination=ProcessGroupTerminationResult(123, 123, True, True, False),
+            context="simulated subprocess cleanup failure",
+        )
+        for first_wave in ("native", "direct", "data_bridge"):
+            with self.subTest(first_wave=first_wave):
+                cadence = "weekly" if first_wave == "direct" else "daily"
+                first = (
+                    _native_config("first") if first_wave == "native"
+                    else _blackbox_config("first", frequency=cadence, task_type="T+1")
+                )
+                later = _blackbox_config("later", frequency=cadence, task_type="T+1")
+                candidates = [first, later]
+                starts = []
+
+                def execute(cfg, _day, **kwargs):
+                    starts.append((cfg.scheme_id, kwargs.get("process_start_guard")))
+                    if cfg is first:
+                        raise error
+                    return SimpleNamespace(status="success", records_written=1)
+
+                calendar = SimpleNamespace(
+                    covers=lambda _: True, is_trading_day=lambda _: True,
+                    previous_trading_day=lambda _: "2026-08-27",
+                )
+                with (
+                    patch.dict(os.environ, {"BFL_DEPLOYMENT_TARGET": "mac3-production"}),
+                    patch.object(runner.DataBridgeRefreshConfig, "from_env", return_value=object()),
+                    patch.object(runner, "_runner_lock", return_value=nullcontext()),
+                    patch.object(runner, "discover_schemes", return_value=candidates),
+                    patch.object(runner, "create_engine_from_env", return_value=Mock()),
+                    patch.object(runner, "resolve_database_lifecycle", return_value=candidates),
+                    patch.object(runner, "_scheduled_scheme_identity_error", return_value=None),
+                    patch.object(runner, "get_calendar", return_value=calendar),
+                    patch.object(runner, "is_weekly_signal_date", return_value=True),
+                    patch.object(runner, "_wait_for_v2_daily_ready", return_value=None),
+                    patch.object(runner, "execute_scheme", side_effect=execute),
+                ):
+                    with self.assertRaises(runner.OneShotPredictionRunError) as caught:
+                        runner.run_one_shot_with_retries(
+                            cadence, predict_date="2026-08-28",
+                            run=lambda *a, **kw: _run_one_shot(runner, *a, **kw),
+                            sleep=lambda _: self.fail("unconfirmed cleanup must not retry"),
+                        )
+                self.assertEqual(caught.exception.code, "process_cleanup_unconfirmed")
+                self.assertEqual([sid for sid, _ in starts], ["first"])
+                self.assertIsInstance(starts[0][1], ProcessStartGuard)
+
     def test_native_wave_uses_at_most_two_workers(self) -> None:
         from scheduler import one_shot_prediction_runner as runner
         from scheduler.process_control import ProcessStartGuard
@@ -953,3 +1008,21 @@ class PredictionRetryTests(unittest.TestCase):
             summary = runner.run_one_shot_with_retries("daily", run=fake_run, sleep=sleeps.append)
             self.assertEqual((calls, sleeps), ([None], []))
             self.assertNotIn("retries", summary.to_payload())
+
+    def test_retry_stops_when_process_cleanup_becomes_unconfirmed(self) -> None:
+        from scheduler import one_shot_prediction_runner as runner
+
+        retry = self._summary(executed=["a"], failed=["b"])
+        retry.failed.append({"scheme_id": None, "code": "process_cleanup_unconfirmed"})
+        run = Mock(side_effect=[
+            self._summary(executed=["c"], failed=["a", "b"]),
+            runner.OneShotPredictionRunError(
+                "cleanup unconfirmed", summary=retry,
+                code="process_cleanup_unconfirmed", stage="process_cleanup",
+            ),
+        ])
+        sleeps = []
+        summary = runner.run_one_shot_with_retries("daily", run=run, sleep=sleeps.append)
+        self.assertEqual([item["scheme_id"] for item in summary.executed], ["a", "c"])
+        self.assertIn("process_cleanup_unconfirmed", {item["code"] for item in summary.failed})
+        self.assertEqual(sleeps, [runner.PREDICTION_RETRY_DELAY_SEC])
