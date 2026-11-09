@@ -17402,12 +17402,12 @@
       }
     },
     "seven_y_t5_macro_logit_b213_v1": {
-      "scheme_version": "9854cfd0a93b",
+      "scheme_version": "7d20b19ee7d3",
       "runtime_type": "blackbox_v2",
       "coverage": "declared_frozen_raw_columns_point_only_not_model_readiness",
       "scripts": {
         "seven_y_t5_macro_logit_b213_v1.py": {
-          "sha256": "1761580552a45f76f2a322227c5bff93eef7eb7834ef52d0c235c0902c1e8ac3",
+          "sha256": "a9b44bd114cd84d81da840dddc9f72f9301df14f667eaee481f27eeadd550618",
           "profiles": [
             "input-cda6343cfec696cf"
           ]

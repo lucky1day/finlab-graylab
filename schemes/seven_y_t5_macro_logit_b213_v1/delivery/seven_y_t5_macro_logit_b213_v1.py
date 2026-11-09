@@ -451,6 +451,7 @@ def predict_direction(daily: pd.DataFrame) -> int:
     model = LogisticRegression(
         C=1.0,
         max_iter=2000,
+        tol=1e-8,
         solver="lbfgs",
         random_state=RANDOM_STATE,
     )
