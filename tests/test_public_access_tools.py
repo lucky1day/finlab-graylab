@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from argparse import Namespace
 from pathlib import Path
 
@@ -35,6 +36,21 @@ def test_discovers_every_same_origin_static_reference_in_page_order() -> None:
     ]
     assert assets[1].version_digest == "a" * 64
     assert assets[3].version_digest == "b" * 64
+
+
+def test_release_homepage_versions_match_static_asset_bytes() -> None:
+    frontend = Path(__file__).resolve().parents[1] / "frontend"
+    prefix = "/bond-factor-lab/"
+    assets = discover_same_origin_assets(
+        (frontend / "index.html").read_text(encoding="utf-8"),
+        page_url=f"https://bond.finailab.cn{prefix}",
+    )
+
+    for asset in assets:
+        if asset.version_digest is not None:
+            assert asset.path.startswith(prefix)
+            content = (frontend / asset.path.removeprefix(prefix)).read_bytes()
+            assert hashlib.sha256(content).hexdigest() == asset.version_digest, asset.path
 
 
 @pytest.mark.parametrize(
