@@ -62,7 +62,8 @@ pytest 保护公共代码合同，不替代目标环境的精确版本、输入�
 上线前最小自动化入口由四层组成：`python -B -m pytest -q` 跑公共单测和固定数据闭环（真实 MySQL 层默认
 显式 skip）；`python -B -m pytest -q --mysql-integration tests/integration` 跑上述临时 MySQL 合同；
 `node --test tests/frontend_*.test.js` 直接跑可控 fetch/假计时器状态机；
-`python -B -m pytest -q tests/test_source_release_tools.py` 检查最终 release 内容。MySQL 层未注入专用管理 URL、
+release 层从干净提交实际构建并校验 archive；release 工具和启动器测试已在公共 Python 层执行，
+单独排查时可按矩阵运行对应两份测试。MySQL 层未注入专用管理 URL、
 显式 DDL 开关、期望 server UUID，或目标实例未预置 `BOND_FACTOR_LAB_DISPOSABLE_TEST_MYSQL` 标记时，命令
 必须在任何 DDL 前失败；测试不能读取 `BOND_DB_*` 或任何默认数据库配置。
 

@@ -27,25 +27,30 @@ COVERED_HOLIDAY = "2026-06-03"
 UNCOVERED = "2026-07-01"
 
 
+def _calendar_engine():
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE t_trade_calendar "
+                "(rdate TEXT PRIMARY KEY, trade_flag TEXT)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO t_trade_calendar (rdate, trade_flag) "
+                "VALUES (:rdate, :trade_flag)"
+            ),
+            [{"rdate": r, "trade_flag": f} for r, f in CALENDAR_ROWS],
+        )
+    return engine
+
+
 class CalendarCoverageTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
-        with self.engine.begin() as conn:
-            conn.execute(
-                text(
-                    "CREATE TABLE t_trade_calendar "
-                    "(rdate TEXT PRIMARY KEY, trade_flag TEXT)"
-                )
-            )
-            conn.execute(
-                text(
-                    "INSERT INTO t_trade_calendar (rdate, trade_flag) "
-                    "VALUES (:rdate, :trade_flag)"
-                ),
-                [{"rdate": r, "trade_flag": f} for r, f in CALENDAR_ROWS],
-            )
-        self.calendar = get_calendar(engine=self.engine)
+        self.engine = _calendar_engine()
         self.addCleanup(self.engine.dispose)
+        self.calendar = get_calendar(engine=self.engine)
 
     def test_covers_reports_calendar_membership(self) -> None:
         self.assertTrue(self.calendar.covers(COVERED_TRADING))
@@ -209,23 +214,9 @@ class ActualsRunnerCoverageTests(unittest.TestCase):
     """launchd actuals 入口不得把日历耗尽当成非交易日。"""
 
     def setUp(self) -> None:
-        self.engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
-        with self.engine.begin() as conn:
-            conn.execute(
-                text(
-                    "CREATE TABLE t_trade_calendar "
-                    "(rdate TEXT PRIMARY KEY, trade_flag TEXT)"
-                )
-            )
-            conn.execute(
-                text(
-                    "INSERT INTO t_trade_calendar (rdate, trade_flag) "
-                    "VALUES (:rdate, :trade_flag)"
-                ),
-                [{"rdate": r, "trade_flag": f} for r, f in CALENDAR_ROWS],
-            )
-        self.calendar = get_calendar(engine=self.engine)
+        self.engine = _calendar_engine()
         self.addCleanup(self.engine.dispose)
+        self.calendar = get_calendar(engine=self.engine)
 
     def _patches(self):
         from unittest.mock import patch as _patch

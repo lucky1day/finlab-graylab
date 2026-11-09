@@ -1608,8 +1608,7 @@
     return sortRankingSchemes(schemes, factorLabState.rankMetric, factorLabState.rankDirection);
   }
 
-  function ensureSelectedScheme() {
-    var schemes = sortSchemesByMetric(getSelectedTaskSchemes());
+  function ensureSelectedScheme(schemes) {
     if (!schemes.length) {
       factorLabState.selectedSchemeId = "";
       return;
@@ -1690,7 +1689,7 @@
     );
   }
 
-  function renderTaskOverview() {
+  function renderTaskOverview(selectedSchemes) {
     var body = document.getElementById("factorTaskMatrixBody");
     var range = document.getElementById("factorOverviewRange");
     var metricBadge = document.getElementById("factorOverviewMetric");
@@ -1704,7 +1703,8 @@
       var cells = factorTaskColumns.map(function (column) {
         var key = getTaskKey(target, column);
         var schemes = getSchemesForTask(key);
-        var best = sortSchemesByMetric(schemes)[0];
+        var best = (key === factorLabState.selectedTaskKey
+          ? selectedSchemes : sortSchemesByMetric(schemes))[0];
         var metric = best ? aggregateScheme(best) : null;
         var metricValue = metric ? metric[factorLabState.rankMetric] : null;
         var metricClass = ["overall", "upPrecision", "downPrecision"].indexOf(
@@ -1824,13 +1824,12 @@
     }
   }
 
-  function renderSchemeRanking() {
+  function renderSchemeRanking(schemes) {
     var body = document.getElementById("factorSchemeRankingBody");
     var title = document.getElementById("factorRankingTitle");
     if (!body) return;
 
     var task = getTaskByKey(factorLabState.selectedTaskKey);
-    var schemes = sortSchemesByMetric(getSelectedTaskSchemes());
     if (title) title.textContent = task.label + " 候选方案排行";
 
     if (!schemes.length) {
@@ -1844,11 +1843,10 @@
     }).join("");
   }
 
-  function renderFactorPagination() {
+  function renderFactorPagination(rows) {
     var pagination = document.getElementById("factorPaginationTop");
     if (!pagination) return;
 
-    var rows = getVisibleFactorMonthRows();
     var totalRows = rows.length;
     var totalPages = Math.max(1, Math.ceil(totalRows / factorLabState.pageSize));
     if (factorLabState.page > totalPages) factorLabState.page = totalPages;
@@ -2007,12 +2005,12 @@
     return "middle";
   }
 
-  function renderFactorTrendChart() {
+  function renderFactorTrendChart(visibleRows) {
     var host = document.getElementById("factorTrendChart");
     if (!host) return;
 
     updateFactorTrendToggles();
-    var rows = getVisibleFactorMonthRows();
+    var rows = visibleRows || getVisibleFactorMonthRows();
     var metrics = factorTrendMetrics.filter(function (metric) {
       return factorLabState.chartMetrics[metric.id] !== false;
     });
@@ -2137,7 +2135,6 @@
     var title = document.getElementById("factorDetailTitle");
     if (!tbody) return;
 
-    var task = getTaskByKey(factorLabState.selectedTaskKey);
     var scheme = getSelectedScheme();
     if (title) title.textContent = scheme ? "选中方案详情：" + scheme.name : "选中方案详情";
     var range = document.getElementById("factorDetailRange");
@@ -2146,8 +2143,16 @@
         " · 展示所涉月份的完整记录，保持当前回测/实盘口径"
       : "整月详情：暂无可展示历史";
 
+    var visibleRows = getVisibleRowsForScheme(scheme);
+    renderFactorMonthPage(visibleRows);
+    renderFactorTrendChart(visibleRows);
+  }
+
+  function renderFactorMonthPage(visibleRows) {
+    var tbody = document.getElementById("factorMonthlyTableBody");
+    if (!tbody) return;
+    var task = getTaskByKey(factorLabState.selectedTaskKey);
     var start = (factorLabState.page - 1) * factorLabState.pageSize;
-    var visibleRows = getVisibleFactorMonthRows();
     var pageRows = visibleRows.slice(start, start + factorLabState.pageSize);
     var calendarIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"></rect><path d="M16 2v4M8 2v4M3 10h18"></path></svg>';
 
@@ -2170,8 +2175,7 @@
     });
     if (!html) html = '<tr><td colspan="10" class="factor-empty-cell">当前方案暂无月度数据</td></tr>';
     tbody.innerHTML = html;
-    renderFactorPagination();
-    renderFactorTrendChart();
+    renderFactorPagination(visibleRows);
   }
 
   function renderFactorLab() {
@@ -2179,9 +2183,10 @@
     loadFactorLabData();
     renderFactorLabDataStatus();
     updateFactorFilterUi();
-    ensureSelectedScheme();
-    renderTaskOverview();
-    renderSchemeRanking();
+    var selectedSchemes = sortSchemesByMetric(getSelectedTaskSchemes());
+    ensureSelectedScheme(selectedSchemes);
+    renderTaskOverview(selectedSchemes);
+    renderSchemeRanking(selectedSchemes);
     renderFactorDetail();
   }
 
@@ -2475,7 +2480,8 @@
         var pageButton = event.target.closest("[data-factor-page]");
         if (pageButton && !pageButton.disabled) {
           var action = pageButton.getAttribute("data-factor-page");
-          var totalPages = Math.max(1, Math.ceil(getVisibleFactorMonthRows().length / factorLabState.pageSize));
+          var visibleRows = getVisibleFactorMonthRows();
+          var totalPages = Math.max(1, Math.ceil(visibleRows.length / factorLabState.pageSize));
           if (action === "prev") {
             factorLabState.page = Math.max(1, factorLabState.page - 1);
           } else if (action === "next") {
@@ -2483,7 +2489,7 @@
           } else {
             factorLabState.page = Number(action) || 1;
           }
-          renderFactorLab();
+          renderFactorMonthPage(visibleRows);
           return;
         }
 

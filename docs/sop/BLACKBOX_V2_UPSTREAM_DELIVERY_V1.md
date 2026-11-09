@@ -41,7 +41,7 @@ samples/
 {scheme_id}.json
 ```
 
-- 两个文件名、目录名和 Metadata 中的 `scheme_id` 必须完全一致。
+- 两个文件名的主体必须与 Metadata 中的 `scheme_id` 一致。推荐用 `scheme_id` 作为交付目录名；普通 `incoming` 目录也可接收。
 - `scheme_id` 必须匹配 `^[a-z][a-z0-9_]*$`。
 - 一个方案只对应一个 `target_tenor + task_type + horizon` 组合。
 - 不得额外交付依赖文件、模型文件、辅助模块、数据、凭据或项目目录。
@@ -333,7 +333,7 @@ predicted_direction
 | 离线 `backtest`（100 条及完整正式区间） | 每次调用 7200 秒安全上限 |
 | 单个算法子进程峰值 RSS | 4 GiB |
 
-7200 秒是显式传入的离线安全预算，不是每日预测 SLA；更短 caller deadline 仍生效。它不修改第 3 节 stateless Profile 默认值，stateful backtest 另有不超过 7200 秒的保护上限。优化耗时不得增加旁路模型缓存、改变算法语义或放宽截止/资源/安全要求。
+上述是上游自测预算，不是每日预测 SLA，也不授予平台单次预算覆盖。实际执行使用平台指定的 Profile 和调用期限。优化耗时不得增加旁路模型缓存、改变算法语义或放宽截止/资源/安全要求。
 
 ## 9. 最终检查
 

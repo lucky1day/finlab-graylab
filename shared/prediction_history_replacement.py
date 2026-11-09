@@ -38,8 +38,9 @@ def resolve_prediction_history_projection(
     corrected: LegacyCorrectedExactEvidence,
 ) -> PredictionHistoryProjection | None:
     """验证完整替代集，并返回展示投影与获批删除集合。"""
-    products = [dict(row) for row in product_rows]
-    sources = [dict(row) for row in source_rows]
+    # 校验只读入参，只有改写产品身份的最终投影需要新字典。
+    products = list(product_rows)
+    sources = list(source_rows)
     if not sources:
         return None
     _validate_source_identity(entry, corrected)

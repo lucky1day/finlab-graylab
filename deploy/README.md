@@ -116,10 +116,12 @@ commit/runtime/cache 漂移、外层同名覆盖及外置 `PYTHON*` 变量；配
 安装器创建 runtime 下 logs，模板日志不写开发目录。SSH tunnel 不执行项目代码，以用户主目录为 cwd；
 其 key/user、cwd 和日志由本页漂移审计核对，不参与应用代码切换。
 
-Stateful Blackbox 的默认内存上限保持 4 GiB。确需更高资源的单次授权补缺，可在执行进程显式设置
-`BFL_BLACKBOX_STATEFUL_MEMORY_LIMIT_BYTES`（允许 1..16 GiB）；实际生效值写入 prediction extra 的
-`memory_limit_bytes`。该变量只在父执行进程读取，不进入 Blackbox 子进程环境，不改变算法输入、状态或
-业务键；未设置时行为与 4 GiB 上限一致。
+Stateful Blackbox 默认内存为 4 GiB，默认回测和冷重建期限为 7200 秒。经授权的单次执行可显式设置
+`BFL_BLACKBOX_STATEFUL_MEMORY_LIMIT_BYTES`（不超过 16 GiB 的正整数字节数）及
+`BFL_BLACKBOX_STATEFUL_TIMEOUT_SEC`（正整数秒）。实际内存受 Profile 内存限制，实际回测和冷重建期限受
+Profile backtest 上限及更短调用期限限制；日常增量 predict 的期限不因离线时间覆盖扩大。
+两变量只在父执行进程读取，不进入子进程，不改变算法输入、状态身份或业务键。
+验收记录本次调用参数、Profile 上限和运行回执；实际内存值可从 prediction extra 的 `memory_limit_bytes` 回读。
 
 Signal gap fill 按计划范围分锁（`signal-gap-fill-<scope>.lock`）：不同 predict_date 可以并行执行，
 同一日期仍串行。并行前须确认各批 business key 与目标日期互不重叠。

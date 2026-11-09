@@ -173,7 +173,7 @@ python -B -m harness rebuild-blackbox-state \
 | 核验项 | 通过条件 |
 |---|---|
 | 位置与独占 | `BFL_RUNTIME_ROOT/blackbox-state` 按 base/exact 隔离；可信根内无穿越或 symlink；同 base 重建与日常推进共用非阻塞锁，拒绝第二 Writer |
-| 执行预算 | 重建不超过 `min(Profile.backtest_timeout_sec, 7200)` 秒，日常增量 predict 不超过 `min(Profile.predict_timeout_sec, 120)` 秒；更短 caller deadline 仍生效；最多 4 GiB、8 数值线程，不改 stateless 默认 Profile |
+| 执行预算 | Stateful 默认回测和冷重建为 `min(Profile.backtest_timeout_sec, 7200)` 秒，日常增量 predict 不超过 `min(Profile.predict_timeout_sec, 120)` 秒；默认内存不超过 Profile 与 4 GiB 的较小值，最多 8 数值线程。更短的调用期限仍生效；经授权的单次覆盖按[部署手册](../../deploy/README.md)执行，不改 stateless 默认 Profile |
 | 状态身份 | payload 不超过 16 MiB；封装绑定 exact、generation/snapshot、私有输入摘要、实际代码/Metadata/环境及完整性校验 |
 | 发布与证据 | Result、输入和状态全部复验成功后，同目录 fsync/replace/fsync 原子发布；记录 operator、版本、日期和状态摘要；用正常增量路径验收重建结果 |
 

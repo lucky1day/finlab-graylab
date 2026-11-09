@@ -1136,6 +1136,40 @@ def _execution_error_message(exc: BaseException) -> str:
     return f"algorithm process exited with status {exc.returncode}"
 
 
+def _emit_completed_prediction_audit(
+    *,
+    cfg: SchemeConfig,
+    predict_date: str,
+    run_id: int,
+    status: str,
+    scheme_version: str | None,
+    records_written: int,
+    records: Sequence[PredictionRecord],
+    error_msg: str | None,
+) -> None:
+    """两种运行时共用已结算预测的审计载荷。"""
+    emit_prediction_audit(
+        "prediction_result", scheme_id=cfg.scheme_id, predict_date=predict_date,
+        run_id=run_id, status=status,
+        outcome=(
+            "calculated" if status == "success"
+            else "already_present" if status == "skipped"
+            else "publication_failed"
+        ),
+        reason=error_msg, scheme_version=scheme_version, records_written=records_written,
+        directions=[
+            {
+                "target_tenor": record.target_tenor, "horizon": record.horizon,
+                "feature_date": record.feature_date, "target_date": record.target_date,
+                "predicted_direction": record.predicted_direction,
+                "input_quality": (record.extra or {}).get("input_quality"),
+            }
+            for record in records
+        ],
+        platform_fallback="none",
+    )
+
+
 def execute_scheme(
     cfg: SchemeConfig,
     predict_date: str,
@@ -1238,7 +1272,6 @@ def execute_scheme(
         try:
             creation_fence: dict[str, object] = {}
             if prediction_phase == "scheduled_live":
-                frequency = getattr(cfg, "frequency", None)
                 if _is_scheduled_execution_context(
                     scheduled_control_plane,
                     scheduled_execution_context,
@@ -1332,21 +1365,6 @@ def execute_scheme(
                         duration_sec=duration,
                     )
                 )
-                emit_prediction_audit(
-                    'prediction_result', scheme_id=cfg.scheme_id, predict_date=predict_date,
-                    run_id=run_id, status=status,
-                    outcome='calculated' if status == 'success' else 'already_present' if status == 'skipped' else 'publication_failed',
-                    reason=error_msg,
-                    scheme_version=scheme_version, records_written=records_written,
-                    directions=[{'target_tenor': r.target_tenor, 'horizon': r.horizon,
-                                 'feature_date': r.feature_date, 'target_date': r.target_date,
-                                 'predicted_direction': r.predicted_direction,
-                                 'input_quality': (r.extra or {}).get('input_quality')} for r in records],
-                    platform_fallback='none',
-                )
-                return SchemeRunResult(
-                    cfg.scheme_id, status, records_written, duration, error_msg, run_id,
-                )
             else:
                 current_active_targets = _active_registry_targets(engine, cfg.scheme_id)
                 if current_active_targets != active_targets:
@@ -1365,21 +1383,14 @@ def execute_scheme(
                     run_date=predict_date,
                     duration_sec=duration,
                 )
-                emit_prediction_audit(
-                    'prediction_result', scheme_id=cfg.scheme_id, predict_date=predict_date,
-                    run_id=run_id, status=status,
-                    outcome='calculated' if status == 'success' else 'already_present' if status == 'skipped' else 'publication_failed',
-                    reason=error_msg,
-                    scheme_version=scheme_version, records_written=records_written,
-                    directions=[{'target_tenor': r.target_tenor, 'horizon': r.horizon,
-                                 'feature_date': r.feature_date, 'target_date': r.target_date,
-                                 'predicted_direction': r.predicted_direction,
-                                 'input_quality': (r.extra or {}).get('input_quality')} for r in records],
-                    platform_fallback='none',
-                )
-                return SchemeRunResult(
-                    cfg.scheme_id, status, records_written, duration, error_msg, run_id,
-                )
+            _emit_completed_prediction_audit(
+                cfg=cfg, predict_date=predict_date, run_id=run_id, status=status,
+                scheme_version=scheme_version, records_written=records_written,
+                records=records, error_msg=error_msg,
+            )
+            return SchemeRunResult(
+                cfg.scheme_id, status, records_written, duration, error_msg, run_id,
+            )
         except BaseException as exc:
             interrupted = not isinstance(exc, Exception)
             if interrupted and run_id is None:
