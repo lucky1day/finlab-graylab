@@ -254,6 +254,34 @@ test("an old identity's late 401 cannot log out the new identity", async () => {
   assert.equal(harness.hooks.state().user.username, "replacement");
 });
 
+for (const oldStatus of [200, 500, 401]) {
+  test(`only the latest account list can commit when an older response is ${oldStatus}`, async () => {
+    const requests = [];
+    const harness = createHarness((url, options) => {
+      if (url.endsWith("/api/auth/me")) {
+        return Promise.resolve(jsonResponse(200, { user: validUser() }));
+      }
+      return new Promise((resolve) => requests.push({ resolve, signal: options.signal }));
+    });
+    await flush();
+    const openUsers = harness.getElement("authUsersNav")._listeners.get("click");
+    openUsers();
+    await flush();
+    openUsers();
+    await flush();
+    requests[1].resolve(jsonResponse(200, { users: [validUser({ username: "new-list" })] }));
+    await flush();
+    requests[0].resolve(jsonResponse(oldStatus, oldStatus === 200
+      ? { users: [validUser({ username: "old-list" })] }
+      : { error_code: "unauthorized" }));
+    await flush();
+    assert.equal(harness.hooks.state().users[0]?.username, "new-list");
+    assert.ok(harness.hooks.state().user);
+    assert.equal(harness.getElement("authUsersError").hidden, true);
+    assert.equal(requests[0].signal.aborted, true);
+  });
+}
+
 test("a timed-out authentication write reports an unknown outcome", async () => {
   const harness = createHarness((url) => {
     if (url.endsWith("/api/auth/me")) {

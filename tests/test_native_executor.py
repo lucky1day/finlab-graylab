@@ -337,6 +337,40 @@ def test_execution_preflight_failure_preserves_engine_ownership(
     assert engine.dispose.call_count == int(owns_engine)
 
 
+@pytest.mark.parametrize("runtime_type", ["native_adapter", "blackbox_v2"])
+def test_interrupted_execution_settles_its_run_and_preserves_interrupt(runtime_type):
+    from scheduler import executor
+
+    interrupted = KeyboardInterrupt("cancelled test execution")
+    cfg = SimpleNamespace(
+        scheme_id="demo", runtime_type=runtime_type, status="active",
+        scheme_version="exact", execution_timeout_sec=10,
+    )
+    engine = Mock()
+    with (
+        patch.object(executor, "scheduled_live_execution_configuration_error", return_value=None),
+        patch.object(executor, "create_engine_from_env", return_value=engine),
+        patch.object(executor, "read_blackbox_execution_approval", return_value=SimpleNamespace(executable=True)),
+        patch.object(executor, "_verify_scheme_activation", return_value=(True, "")),
+        patch.object(executor, "_active_registry_targets", return_value={("5Y", 1)}),
+        patch.object(executor, "create_scheme_run", return_value=101),
+        patch.object(executor, "run_configured_scheme", side_effect=interrupted),
+        patch.object(executor, "fail_scheme_run_atomic") as settle,
+        patch.object(executor, "emit_prediction_audit"),
+    ):
+        with pytest.raises(KeyboardInterrupt) as caught:
+            executor.execute_scheme(cfg, "2026-11-06", prediction_phase="scheduled_live")
+
+    assert caught.value is interrupted
+    settle.assert_called_once()
+    assert settle.call_args.args == (engine,)
+    assert settle.call_args.kwargs["run_id"] == 101
+    assert settle.call_args.kwargs["scheme_id"] == "demo"
+    assert settle.call_args.kwargs["run_date"] == "2026-11-06"
+    assert settle.call_args.kwargs["error_message"] == "cancelled test execution"
+    engine.dispose.assert_called_once()
+
+
 @pytest.fixture
 def run_native_stdout(monkeypatch: pytest.MonkeyPatch):
     """以受控真实子进程输出模拟 Native IPC，不加载方案或数据库。"""

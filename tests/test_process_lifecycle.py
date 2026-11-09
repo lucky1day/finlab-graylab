@@ -11,7 +11,9 @@ from typing import Iterator
 
 import pytest
 
-from scheduler.blackbox_v2_runner import RuntimeProfile, execute_blackbox_cli
+from scheduler.blackbox_v2_runner import (
+    BlackboxExecutionError, RuntimeProfile, execute_blackbox_cli,
+)
 
 
 def _group_exists(pgid: int) -> bool:
@@ -87,6 +89,72 @@ def test_blackbox_monitor_failure_stops_process_group(
             )
         assert error.value is failure
         assert len(groups) == 1
+        assert not _group_exists(groups[0][1])
+
+
+@pytest.mark.parametrize("probe_result", [
+    PermissionError("ps denied"),
+    subprocess.TimeoutExpired(["/bin/ps"], 2),
+    subprocess.CalledProcessError(1, ["/bin/ps"]),
+    "",
+    "unparseable",
+])
+def test_unmeasurable_live_blackbox_fails_before_accepting_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe_result,
+) -> None:
+    system_run = subprocess.run
+
+    def run(command, **kwargs):
+        if command[0] == "/bin/ps" and "pgid=,rss=" in command:
+            if isinstance(probe_result, Exception):
+                raise probe_result
+            return subprocess.CompletedProcess(command, 0, probe_result, "")
+        return system_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with _registered_groups() as groups:
+        with pytest.raises(BlackboxExecutionError, match="could not measure process group memory"):
+            _blackbox_job(
+                tmp_path,
+                "import pathlib,sys,time; time.sleep(0.5); pathlib.Path(sys.argv[-1]).write_text('{}')",
+                process_started=lambda pid, pgid: groups.append((pid, pgid)),
+            )
+        assert len(groups) == 1
+        assert not _group_exists(groups[0][1])
+        assert not (tmp_path / "run" / "result.json").exists()
+
+
+def test_memory_probe_racing_a_natural_exit_preserves_result(tmp_path, monkeypatch):
+    popen, system_run = subprocess.Popen, subprocess.run
+    processes = []
+    release_file = tmp_path / "probe-release"
+
+    def launch(command, **kwargs):
+        process = popen(command, **kwargs)
+        if kwargs.get("start_new_session"):
+            processes.append(process)
+        return process
+
+    def run(command, **kwargs):
+        if command[0] == "/bin/ps" and "pgid=,rss=" in command:
+            release_file.touch()
+            processes[0].wait(timeout=2)
+            raise subprocess.CalledProcessError(1, command)
+        return system_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", launch)
+    monkeypatch.setattr(subprocess, "run", run)
+    with _registered_groups() as groups:
+        completed = _blackbox_job(
+            tmp_path,
+            "import pathlib,sys,time\n"
+            "release = pathlib.Path(__file__).parent / 'probe-release'\n"
+            "while not release.exists(): time.sleep(0.01)\n"
+            "pathlib.Path(sys.argv[-1]).write_text('{}')\n",
+            process_started=lambda pid, pgid: groups.append((pid, pgid)),
+        )
+        assert completed.returncode == 0
+        assert (tmp_path / "run" / "result.json").read_text() == "{}"
         assert not _group_exists(groups[0][1])
 
 

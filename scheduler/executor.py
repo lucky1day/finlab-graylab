@@ -1129,10 +1129,10 @@ def _timeout_payload_to_text(value: str | bytes | None) -> str:
     return value
 
 
-def _execution_error_message(exc: Exception) -> str:
+def _execution_error_message(exc: BaseException) -> str:
     """返回可写入现有 run 错误列的有界子进程原因。"""
     if not isinstance(exc, subprocess.CalledProcessError):
-        return str(exc)
+        return str(exc) or type(exc).__name__
     return f"algorithm process exited with status {exc.returncode}"
 
 
@@ -1380,7 +1380,10 @@ def execute_scheme(
                 return SchemeRunResult(
                     cfg.scheme_id, status, records_written, duration, error_msg, run_id,
                 )
-        except Exception as exc:
+        except BaseException as exc:
+            interrupted = not isinstance(exc, Exception)
+            if interrupted and run_id is None:
+                raise
             duration = time.monotonic() - started
             error_msg = _execution_error_message(exc)
             emit_prediction_audit(
@@ -1411,13 +1414,15 @@ def execute_scheme(
                         "fail_scheme_run_atomic",
                         audit_exc,
                     )
+                    if interrupted or isinstance(exc, ProcessGroupTerminationError):
+                        exc.add_note(error_msg)
             if run_id is None:
                 try:
                     write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, error_msg, run_id=run_id)
                 except Exception as audit_exc:
                     logger.exception("failed to write run log for failed scheme run_id=%s", run_id)
                     error_msg = _append_audit_error(error_msg, "write_run_log", audit_exc)
-            if isinstance(exc, ProcessGroupTerminationError):
+            if interrupted or isinstance(exc, ProcessGroupTerminationError):
                 raise
             return SchemeRunResult(
                 cfg.scheme_id,

@@ -1190,7 +1190,16 @@ def _run_process(
                     if quota_failure is not None:
                         failure = quota_failure
                         break
-                    rss_bytes = _process_group_rss_bytes(process.pid)
+                    try:
+                        rss_bytes = _process_group_rss_bytes(process_group_id)
+                    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+                        # leader 可能在 poll 与 ps 之间自然退出；仍由下方统一收口整组。
+                        if process.poll() is None:
+                            failure = (
+                                "Blackbox V2 could not measure process group memory: "
+                                f"{type(exc).__name__}"
+                            )
+                        break
                     if memory_limit_bytes > 0 and rss_bytes > memory_limit_bytes:
                         failure = (
                             f"Blackbox V2 process exceeded memory limit: "
@@ -1303,30 +1312,27 @@ def _read_capture(handle, limit: int) -> str:
     return handle.read(limit).decode("utf-8", errors="replace")
 
 
-def _process_group_rss_bytes(pid: int) -> int:
-    try:
-        process_group = os.getpgid(pid)
-        completed = subprocess.run(
-            ["/bin/ps", "-o", "pgid=,rss=", "-g", str(process_group)],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=2,
-            env={"LANG": "C", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
-        )
-    except (OSError, ProcessLookupError, subprocess.SubprocessError):
-        return 0
+def _process_group_rss_bytes(process_group: int) -> int:
+    """读取已固定进程组的 RSS；缺失或非法测量不能解释成零。"""
+    completed = subprocess.run(
+        ["/bin/ps", "-o", "pgid=,rss=", "-g", str(process_group)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=2,
+        env={"LANG": "C", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+    )
     total_kib = 0
+    matched = False
     for line in completed.stdout.splitlines():
-        parts = line.split()
-        if len(parts) != 2:
-            continue
-        try:
-            row_group, rss_kib = int(parts[0]), int(parts[1])
-        except ValueError:
-            continue
+        row_group, rss_kib = map(int, line.split())
+        if row_group <= 0 or rss_kib < 0:
+            raise ValueError("invalid process group RSS row")
         if row_group == process_group:
+            matched = True
             total_kib += rss_kib
+    if not matched:
+        raise ValueError("process group RSS is unavailable")
     return total_kib * 1024
 
 

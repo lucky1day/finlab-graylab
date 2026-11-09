@@ -836,6 +836,40 @@ def test_production_membership_replaces_without_changing_facts(production_file, 
     engine.dispose()
 
 
+@pytest.mark.parametrize("invalid_file", ["fifo", "oversized"])
+def test_production_list_special_file_is_bounded_and_recovers(production_file, invalid_file):
+    import os
+    import subprocess
+    import sys
+
+    valid = '{"scheme_ids":["demo_daily__h1__5Y"]}'
+    if invalid_file == "fifo":
+        production_file.unlink()
+        os.mkfifo(production_file, 0o600)
+    else:
+        production_file.write_text(valid + " " * (1024 * 1024))
+    program = """
+import runpy, sys
+from pathlib import Path
+from backend.factor_lab_dashboard import build_factor_lab_dashboard
+ns = runpy.run_path(sys.argv[1])
+path = Path(sys.argv[2])
+engine = ns["_engine"]()
+try:
+    rows = build_factor_lab_dashboard(engine)["schemes"]
+    assert len(rows) == 1 and not rows[0]["is_production"]
+    path.unlink()
+    path.write_text(sys.argv[3], encoding="utf-8")
+    assert build_factor_lab_dashboard(engine)["schemes"] == [{**rows[0], "is_production": True}]
+finally:
+    engine.dispose()
+"""
+    subprocess.run(
+        [sys.executable, "-B", "-c", program, __file__, str(production_file), valid],
+        check=True, capture_output=True, text=True, timeout=4,
+    )
+
+
 @pytest.mark.parametrize("payload", [[], {"other": []}, {"scheme_ids": None},
     {"scheme_ids": [1]}, {"scheme_ids": [""]}, {"scheme_ids": [" A"]},
     {"scheme_ids": ["A", "A"]}])
@@ -846,6 +880,47 @@ def test_production_structure_errors_hide_markers(production_file, payload):
     engine = _engine()
     assert build_factor_lab_dashboard(engine)["schemes"][0]["is_production"] is False
     engine.dispose()
+
+
+@pytest.mark.parametrize("expired_at_entry", [True, False])
+def test_historical_replacement_respects_cumulative_database_budget(expired_at_entry):
+    from pathlib import Path
+    from backend.factor_lab_dashboard_queries import resolve_dashboard_history_replacements
+    from shared.legacy_prediction_migration import load_legacy_prediction_migrations
+
+    entry = next(iter(load_legacy_prediction_migrations(Path(__file__).resolve().parents[1])))
+    registry = [{
+        "scheme_id": f"{entry.prediction_scheme_id}__h{entry.horizon}__{entry.target_tenor}",
+        "base_scheme_id": entry.prediction_scheme_id,
+        "target_tenor": entry.target_tenor,
+        "horizon": entry.horizon,
+    }]
+    engine = _engine()
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE t_scheme_versions (scheme_id TEXT, scheme_version TEXT, "
+            "runtime_type TEXT, status TEXT, code_hash TEXT, config_hash TEXT, manifest_hash TEXT)"
+        )
+        connection.exec_driver_sql("ALTER TABLE t_scheme_predictions ADD COLUMN scheme_version TEXT")
+    now = [0.0]
+    context = create_http_request_context(None, clock=lambda: now[0], budget_seconds=1)
+    statements = []
+
+    @event.listens_for(engine, "after_cursor_execute")
+    def expire_budget(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+        now[0] = 1.25
+
+    if expired_at_entry:
+        now[0] = 1.25
+    try:
+        with engine.connect() as connection, bind_http_request_context(context):
+            with pytest.raises(RequestBudgetExceeded, match="dashboard_query"):
+                resolve_dashboard_history_replacements(connection, registry)
+        assert len(statements) == (0 if expired_at_entry else 1)
+        assert context.db_seconds == (0 if expired_at_entry else 1.25)
+    finally:
+        engine.dispose()
 
 
 @pytest.mark.parametrize("root", [None, "relative", "/nonexistent-marker-runtime"])

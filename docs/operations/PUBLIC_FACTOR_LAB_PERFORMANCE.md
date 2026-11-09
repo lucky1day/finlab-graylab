@@ -55,6 +55,7 @@ Detail 不读取或选择 `t_backtest_runs` 展示元数据，也不以 run ID�
 Accept-Encoding 返回对应字节；HEAD/GET 表示与 Content-Length 语义一致，middleware 不得再次压缩。
 请求进入 Backend middleware 时只生成一次 request ID 和单调时钟起点，认证依赖、连接获取、数据库访问、
 构建与编码共用 4 秒累计后端预算；每次进入后续 SQL 前检查剩余预算，耗尽后不再开始下一条查询。
+历史替代的来源身份、事实范围和 lineage 查询也使用该预算和计时，在同一只读事务内完成验证。
 `Server-Timing` 诊断 `request_auth`、`request_pool_acquire`、Dashboard DB/canonical/serialization、
 `request_route` 与 `backend_total`；其中 pool acquire 包含池等待以及 checkout 时发生的 pre-ping/新建连接，
 不是纯队列时间。结构化日志另记录 `auth_ms`、`pool_acquire_ms`、`db_ms`、`build_ms`、`encode_ms`、
@@ -118,7 +119,8 @@ Summary 每条 `schemes[]` 必须包含布尔值 `is_production`。唯一依据�
 不扩展同 base 的其他 target；同 ID 升级 exact 保留标记，新 ID 不继承。
 
 每次 Summary 在事务外读取并校验一次文件，不缓存旧名单。`BFL_RUNTIME_ROOT` 必须显式指定存在的绝对目录，
-无开发或仓库路径回退。非空合法名单在本次只读一致性事务中执行一次参数化批量 Registry 存在性查询，
+无开发或仓库路径回退。名单通过单个非阻塞打开的描述符读取，只接受稳定的普通文件，大小上限 256 KiB。
+非空合法名单在本次只读一致性事务中执行一次参数化批量 Registry 存在性查询，
 不按 status 过滤；不存在项逐项忽略并记 `production_scheme_not_found`，其余有效项继续匹配。
 paused/archived 身份仍通过存在性校验，但按原有 active 可见性规则隐藏，恢复可见时仍可匹配。
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import stat
@@ -30,6 +31,7 @@ _BLACKBOX_RUNTIME_VIEW_PREFIX = "blackbox-runtime-"
 
 
 _BLACKBOX_DEBRIS_MARKER_SCHEMA = "blackbox-runtime-debris-v1"
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -72,24 +74,14 @@ def open_blackbox_runtime_view(
     view = BlackboxRuntimeView(bundle=trusted_bundle, data_dir=temporary)
     try:
         _materialize_blackbox_runtime_view(view)
-    except BaseException:
-        try:
-            _remove_runtime_view(
-                temporary,
-                controlled_parent=active_root,
-            )
-        except Exception:
-            pass
-        view._closed = True
-        raise
-
-    try:
         yield view
-    except BaseException:
+    except BaseException as execution_error:
         try:
             _finalize_blackbox_runtime_view(view, runtime_root=root)
-        except Exception:
-            pass
+        except BaseException as cleanup_error:
+            execution_error.add_note(
+                f"Blackbox runtime view cleanup failed for {view.data_dir}: {cleanup_error}"
+            )
         raise
     else:
         _finalize_blackbox_runtime_view(view, runtime_root=root)
@@ -296,40 +288,59 @@ def _finalize_blackbox_runtime_view(
 ) -> None:
     try:
         if view._termination_uncertain:
-            active_root = runtime_root / "active"
-            debris_root = runtime_root / "debris"
-            if view.data_dir.parent != active_root:
-                raise ValueError(
-                    "uncertain runtime view is outside controlled active root"
-                )
-            marker_path = _blackbox_debris_marker_path(
-                debris_root,
-                view.data_dir.name,
-            )
-            marker = {
-                "schema_version": _BLACKBOX_DEBRIS_MARKER_SCHEMA,
-                "active_path": str(view.data_dir),
-                "combined_snapshot_id": view.bundle.combined_snapshot_id,
-            }
-            with marker_path.open("x", encoding="utf-8") as stream:
-                stream.write(
-                    json.dumps(
-                        marker,
-                        ensure_ascii=True,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    )
-                    + "\n"
-                )
-            marker_path.chmod(0o400)
-            view.debris_path = view.data_dir
+            _register_runtime_view_debris(view, runtime_root=runtime_root)
         else:
-            _remove_runtime_view(
-                view.data_dir,
-                controlled_parent=runtime_root / "active",
-            )
-    finally:
-        view._closed = True
+            try:
+                _remove_runtime_view(
+                    view.data_dir,
+                    controlled_parent=runtime_root / "active",
+                )
+            except BaseException as cleanup_error:
+                try:
+                    _register_runtime_view_debris(view, runtime_root=runtime_root)
+                except BaseException as registration_error:
+                    cleanup_error.add_note(
+                        f"Blackbox runtime debris registration failed: {registration_error}"
+                    )
+                raise
+            view._closed = True
+    except BaseException as cleanup_error:
+        _logger.warning(
+            "Blackbox runtime view cleanup failed: path=%s error=%s notes=%s",
+            view.data_dir, cleanup_error, getattr(cleanup_error, "__notes__", ()),
+        )
+        raise
+
+
+def _register_runtime_view_debris(view: BlackboxRuntimeView, *, runtime_root: Path) -> None:
+    """登记本次视图的既有受控清理凭证。"""
+    if (
+        view.data_dir.parent != runtime_root / "active"
+        or not view.data_dir.name.startswith(_BLACKBOX_RUNTIME_VIEW_PREFIX)
+        or not stat.S_ISDIR(view.data_dir.lstat().st_mode)
+    ):
+        raise ValueError("runtime view is outside controlled active root")
+    marker_path = _blackbox_debris_marker_path(runtime_root / "debris", view.data_dir.name)
+    marker = {
+        "schema_version": _BLACKBOX_DEBRIS_MARKER_SCHEMA,
+        "active_path": str(view.data_dir),
+        "combined_snapshot_id": view.bundle.combined_snapshot_id,
+    }
+    payload = json.dumps(marker, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n"
+    descriptor = os.open(marker_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException as error:
+        try:
+            marker_path.unlink(missing_ok=True)
+        except OSError as unlink_error:
+            error.add_note(f"partial runtime debris marker cleanup failed: {unlink_error}")
+        raise
+    view.debris_path = view.data_dir
+    view._closed = True
 
 
 def _remove_runtime_view(
@@ -341,9 +352,9 @@ def _remove_runtime_view(
         parent = path.parent.resolve(strict=True)
         expected_parent = controlled_parent.resolve(strict=True)
         mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return
     except OSError as exc:
-        if not path.exists():
-            return
         raise ValueError("runtime view cleanup path is invalid") from exc
     if (
         parent != expected_parent

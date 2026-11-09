@@ -7,6 +7,8 @@
     userMoreMenuId: null,
     userMoreMenuButton: null,
     users: [],
+    userListSeq: 0,
+    userListController: null,
     identitySeq: 0,
     activeRequests: new Set()
   };
@@ -79,6 +81,7 @@
   function advanceIdentity(reason) {
     state.identitySeq += 1;
     abortIdentityRequests(reason);
+    state.userListController = null;
   }
 
   function validUser(value) {
@@ -112,11 +115,15 @@
   function apiRequest(path, options) {
     var requestOptions = options || {};
     var identitySeq = state.identitySeq;
-    var controller = new window.AbortController();
+    var controller = requestOptions.controller || new window.AbortController();
+    function isCurrent() {
+      return identitySeq === state.identitySeq &&
+        (!requestOptions.isCurrent || requestOptions.isCurrent());
+    }
     state.activeRequests.add(controller);
     var clientOptions = {
       method: requestOptions.method || "GET",
-      isCurrent: function () { return identitySeq === state.identitySeq; },
+      isCurrent: isCurrent,
       signal: controller.signal,
       handleUnauthorized: path !== "/api/auth/login"
     };
@@ -124,8 +131,8 @@
       clientOptions.body = requestOptions.body;
     }
     return authHttpClient(path, clientOptions).then(function (payload) {
-      if (identitySeq !== state.identitySeq) {
-        var stale = new Error("stale identity response");
+      if (!isCurrent()) {
+        var stale = new Error("stale authentication response");
         stale.name = "AbortError";
         stale.code = "request_aborted";
         throw stale;
@@ -423,13 +430,27 @@
   }
 
   function loadUsers() {
+    var identitySeq = state.identitySeq;
+    var listSeq = ++state.userListSeq;
+    var previous = state.userListController;
+    var controller = new window.AbortController();
+    state.userListController = controller;
+    if (previous) previous.abort("user-list-replaced");
+    function isCurrent() {
+      return identitySeq === state.identitySeq && listSeq === state.userListSeq;
+    }
     emitError(document.getElementById("authUsersError"), "");
-    return apiRequest("/api/admin/users").then(function (payload) {
+    return apiRequest("/api/admin/users", {
+      controller: controller, isCurrent: isCurrent
+    }).then(function (payload) {
+      if (!isCurrent()) return;
       state.users = payload.users;
       renderUsers();
     }).catch(function (error) {
-      if (error.code === "request_aborted" || error.status === 401) return;
+      if (!isCurrent() || error.code === "request_aborted" || error.status === 401) return;
       emitError(document.getElementById("authUsersError"), errorMessage(error.errorCode));
+    }).finally(function () {
+      if (state.userListController === controller) state.userListController = null;
     });
   }
 

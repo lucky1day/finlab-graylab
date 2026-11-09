@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -386,6 +387,56 @@ def test_native_frozen_weekly_input_preserves_metadata_lag() -> None:
     pd.testing.assert_frame_equal(frozen, original)
     assert pd.isna(frozen.loc[0, "W1"])
     assert frozen.loc[1, "W1"] == 1.0
+
+
+@pytest.mark.parametrize("failure", ["prepare", "execution", "cleanup"])
+def test_runtime_view_cleanup_failure_records_owned_debris(tmp_path, monkeypatch, caplog, failure):
+    from shared.input_artifacts import (
+        cleanup_blackbox_runtime_debris, compose_blackbox_input_bundle,
+        get_ready_blackbox_snapshot, open_blackbox_runtime_view,
+        prepare_blackbox_generation_snapshot,
+    )
+
+    dataset, state = _dataset_and_state(_frames(include_v2=True))
+    cache = tmp_path / "cache"
+    prepare_blackbox_generation_snapshot(state=state, dataset=dataset, cache_root=cache)
+    snapshot = get_ready_blackbox_snapshot(
+        snapshot_date="2026-08-28", cache_root=cache, factor_input_mode="algorithm_managed",
+    )
+    bundle = compose_blackbox_input_bundle(snapshot, factor_input_mode="algorithm_managed")
+    root = tmp_path / "views"
+    unrelated = root / "active" / "blackbox-runtime-unrelated"
+    unrelated.mkdir(parents=True)
+    original = RuntimeError("original materialization or algorithm failure")
+    cleanup_failure = PermissionError("simulated runtime view removal failure")
+    open_file, remove_tree = os.open, shutil.rmtree
+
+    def open_path(path, flags, *args, **kwargs):
+        if failure == "prepare" and flags & os.O_CREAT and Path(path).parent.parent == unrelated.parent:
+            raise original
+        return open_file(path, flags, *args, **kwargs)
+
+    def remove_path(path, *args, **kwargs):
+        if Path(path).parent == unrelated.parent:
+            raise cleanup_failure
+        return remove_tree(path, *args, **kwargs)
+
+    with monkeypatch.context() as filesystem:
+        filesystem.setattr(os, "open", open_path)
+        filesystem.setattr(shutil, "rmtree", remove_path)
+        with pytest.raises(RuntimeError if failure != "cleanup" else PermissionError) as caught:
+            with open_blackbox_runtime_view(bundle, runtime_root=root):
+                assert failure != "prepare"
+                if failure == "execution":
+                    raise original
+
+    assert caught.value is (cleanup_failure if failure == "cleanup" else original)
+    if failure != "cleanup":
+        assert any("cleanup failed" in note for note in caught.value.__notes__)
+    assert "runtime view cleanup failed" in caplog.text
+    debris, = [path for path in unrelated.parent.iterdir() if path != unrelated]
+    cleanup_blackbox_runtime_debris(debris, runtime_root=root)
+    assert not debris.exists() and unrelated.is_dir()
 
 
 def _fifo_snapshot_read(root: str, location: str) -> None:

@@ -146,6 +146,8 @@ Native 单日按权威日期推导 feature_date 并构造本机截止输入；Bl
 
 子进程组清理未确认时，正式 one-shot 的共享启动围栏阻止后续候选及普通自动重试，摘要标记 `process_cleanup_unconfirmed`。灰度补缺以批次失败结算已创建且未结算的 run，保留已提交事实和清理原因。继续前先确认该进程组退出和本机 run、预测写入状态。
 
+运行中无法测量存活进程组的内存时终止该组并拒绝算法产物；采样期间自然退出仍经过整组清理和正常结果校验。取消在清理后只结算本次身份匹配、仍为 `running` 的 run，再传播中断。私有输入视图删除失败时保留原始执行错误、记录路径并登记既有受控 debris；后续只经现有清理入口处理。
+
 Dashboard 只证明当前产品可见性，不证明 exact version。Production Observed 仍必须由真实
 launchd/systemd one-shot 时钟产生成功 `scheduled_live` 证据。
 

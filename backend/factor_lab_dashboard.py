@@ -4,6 +4,7 @@ import gzip
 import json
 import logging
 import os
+import stat
 import time
 from collections import OrderedDict, defaultdict
 from copy import deepcopy
@@ -61,6 +62,7 @@ SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 MYSQL_SNAPSHOT_SQL = "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"
 MAX_RAW_JSON_BYTES = 1_500_000
 MAX_GZIP_JSON_BYTES = 100_000
+MAX_PRODUCTION_LIST_BYTES = 256 * 1024
 logger = logging.getLogger(__name__)
 _DIAGNOSTICS_LIMIT = 8
 _diagnostics_lock = Lock()
@@ -203,7 +205,27 @@ def _read_production_scheme_ids() -> set[str]:
             relative_path="config/production_schemes.json",
             development_default=root / "config/production_schemes.json",
         )
-        return validate_production_scheme_ids(json.loads(path.read_text(encoding="utf-8")))
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise ValueError("production scheme list must be a regular file")
+            if before.st_size > MAX_PRODUCTION_LIST_BYTES:
+                raise ValueError("production scheme list exceeds byte limit")
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                raw = stream.read(MAX_PRODUCTION_LIST_BYTES + 1)
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        if len(raw) > MAX_PRODUCTION_LIST_BYTES:
+            raise ValueError("production scheme list exceeds byte limit")
+        if (
+            len(raw) != before.st_size
+            or (before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+            != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+        ):
+            raise ValueError("production scheme list changed during read")
+        return validate_production_scheme_ids(json.loads(raw.decode("utf-8")))
     except (OSError, ValueError, RuntimeError) as exc:
         logger.error("production_schemes_invalid: %s", exc)
         return set()

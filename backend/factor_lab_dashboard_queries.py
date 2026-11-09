@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Mapping
@@ -168,6 +169,22 @@ class DashboardHistoryReplacementPlan:
         )
 
 
+@contextmanager
+def _dashboard_sql_budget() -> Iterator[None]:
+    """在同一只读请求中累计 SQL 时间，并在查询前执行预算围栏。"""
+    request_context = current_http_request_context()
+    if request_context is None:
+        yield
+        return
+    request_context.failure_stage = "dashboard_query"
+    request_context.require_remaining("dashboard_query")
+    started_at = request_context.clock()
+    try:
+        yield
+    finally:
+        request_context.db_seconds += max(0.0, request_context.clock() - started_at)
+
+
 def resolve_dashboard_history_replacements(
     connection: Connection,
     registry_rows: list[Mapping[str, Any]],
@@ -216,38 +233,40 @@ def resolve_dashboard_history_replacements(
             raise DashboardDataError(
                 "historical replacement corrected evidence is missing"
             )
-        source_identity = connection.execute(
-            text(
-                "SELECT r.base_scheme_id, r.status AS registry_status, "
-                "v.runtime_type, v.status AS version_status, v.code_hash, "
-                "v.config_hash, v.manifest_hash "
-                "FROM t_scheme_registry r "
-                "JOIN t_scheme_versions v "
-                "ON v.scheme_id = r.base_scheme_id "
-                "AND v.scheme_version = :source_exact "
-                "WHERE r.scheme_id = :source_registry_scheme_id"
-            ),
-            {
-                "source_registry_scheme_id": corrected.source_registry_scheme_id,
-                "source_exact": entry.designated_exact,
-            },
-        ).mappings().one_or_none()
-        if source_identity is None:
-            orphan_count = connection.execute(
+        with _dashboard_sql_budget():
+            source_identity = connection.execute(
                 text(
-                    "SELECT "
-                    "(SELECT COUNT(*) FROM t_scheme_versions "
-                    " WHERE scheme_id = :source_scheme_id "
-                    " AND scheme_version = :source_exact) + "
-                    "(SELECT COUNT(*) FROM t_scheme_predictions "
-                    " WHERE scheme_id = :source_scheme_id "
-                    " AND scheme_version = :source_exact)"
+                    "SELECT r.base_scheme_id, r.status AS registry_status, "
+                    "v.runtime_type, v.status AS version_status, v.code_hash, "
+                    "v.config_hash, v.manifest_hash "
+                    "FROM t_scheme_registry r "
+                    "JOIN t_scheme_versions v "
+                    "ON v.scheme_id = r.base_scheme_id "
+                    "AND v.scheme_version = :source_exact "
+                    "WHERE r.scheme_id = :source_registry_scheme_id"
                 ),
                 {
-                    "source_scheme_id": entry.designated_source_scheme_id,
+                    "source_registry_scheme_id": corrected.source_registry_scheme_id,
                     "source_exact": entry.designated_exact,
                 },
-            ).scalar_one()
+            ).mappings().one_or_none()
+        if source_identity is None:
+            with _dashboard_sql_budget():
+                orphan_count = connection.execute(
+                    text(
+                        "SELECT "
+                        "(SELECT COUNT(*) FROM t_scheme_versions "
+                        " WHERE scheme_id = :source_scheme_id "
+                        " AND scheme_version = :source_exact) + "
+                        "(SELECT COUNT(*) FROM t_scheme_predictions "
+                        " WHERE scheme_id = :source_scheme_id "
+                        " AND scheme_version = :source_exact)"
+                    ),
+                    {
+                        "source_scheme_id": entry.designated_source_scheme_id,
+                        "source_exact": entry.designated_exact,
+                    },
+                ).scalar_one()
             if int(orphan_count or 0):
                 raise DashboardDataError(
                     "historical replacement source identity is incomplete"
@@ -349,21 +368,22 @@ def _read_replacement_scope_rows(
     }
     if scheme_version is not None:
         params["scheme_version"] = scheme_version
-    return list(
-        connection.execute(
-            text(
-                "SELECT id, run_id, backtest_run_id, scheme_version, scheme_id, "
-                "target_tenor, horizon, predict_date, feature_date, target_date, "
-                "predicted_direction, backtest_actual_direction "
-                "FROM t_scheme_predictions "
-                "WHERE scheme_id = :scheme_id "
-                "AND target_tenor = :target_tenor AND horizon = :horizon"
-                + version_filter
-                + " ORDER BY target_date, predict_date, id"
-            ),
-            params,
-        ).mappings()
-    )
+    with _dashboard_sql_budget():
+        return list(
+            connection.execute(
+                text(
+                    "SELECT id, run_id, backtest_run_id, scheme_version, scheme_id, "
+                    "target_tenor, horizon, predict_date, feature_date, target_date, "
+                    "predicted_direction, backtest_actual_direction "
+                    "FROM t_scheme_predictions "
+                    "WHERE scheme_id = :scheme_id "
+                    "AND target_tenor = :target_tenor AND horizon = :horizon"
+                    + version_filter
+                    + " ORDER BY target_date, predict_date, id"
+                ),
+                params,
+            ).mappings()
+        )
 
 
 def _read_replacement_source_runs(
@@ -382,12 +402,13 @@ def _read_replacement_source_runs(
             "prediction_phase, predict_date, data_snapshot_id, records_written "
             "FROM t_scheme_runs WHERE run_id IN :run_ids ORDER BY run_id"
         ).bindparams(bindparam("run_ids", expanding=True))
-        live_runs = list(
-            connection.execute(
-                statement,
-                {"run_ids": sorted(projection.source_live_run_ids)},
-            ).mappings()
-        )
+        with _dashboard_sql_budget():
+            live_runs = list(
+                connection.execute(
+                    statement,
+                    {"run_ids": sorted(projection.source_live_run_ids)},
+                ).mappings()
+            )
     backtest_runs: list[Mapping[str, Any]] = []
     if projection.source_backtest_run_ids:
         statement = text(
@@ -397,12 +418,13 @@ def _read_replacement_source_runs(
             "FROM t_backtest_runs "
             "WHERE id IN :run_ids ORDER BY id"
         ).bindparams(bindparam("run_ids", expanding=True))
-        backtest_runs = list(
-            connection.execute(
-                statement,
-                {"run_ids": sorted(projection.source_backtest_run_ids)},
-            ).mappings()
-        )
+        with _dashboard_sql_budget():
+            backtest_runs = list(
+                connection.execute(
+                    statement,
+                    {"run_ids": sorted(projection.source_backtest_run_ids)},
+                ).mappings()
+            )
     backtest_predictions: list[Mapping[str, Any]] = []
     if projection.source_backtest_run_ids:
         statement = text(
@@ -411,12 +433,13 @@ def _read_replacement_source_runs(
             "FROM t_backtest_predictions WHERE run_id IN :run_ids "
             "ORDER BY target_tenor, horizon, target_date, predict_date, id"
         ).bindparams(bindparam("run_ids", expanding=True))
-        backtest_predictions = list(
-            connection.execute(
-                statement,
-                {"run_ids": sorted(projection.source_backtest_run_ids)},
-            ).mappings()
-        )
+        with _dashboard_sql_budget():
+            backtest_predictions = list(
+                connection.execute(
+                    statement,
+                    {"run_ids": sorted(projection.source_backtest_run_ids)},
+                ).mappings()
+            )
     return live_runs, backtest_runs, backtest_predictions
 
 
@@ -431,23 +454,10 @@ def read_bounded_source_rows(
     """读取至多 ``cap`` 行；超限时失败而不是截断事实。"""
     execution_params = dict(params)
     execution_params["dashboard_source_limit"] = cap + 1
-    request_context = current_http_request_context()
-    if request_context is not None:
-        request_context.failure_stage = "dashboard_query"
-        request_context.require_remaining("dashboard_query")
-        db_started_at = request_context.clock()
-    else:
-        db_started_at = None
-    try:
+    with _dashboard_sql_budget():
         rows = list(
             connection.execute(statement, execution_params).mappings().all()
         )
-    finally:
-        if request_context is not None and db_started_at is not None:
-            request_context.db_seconds += max(
-                0.0,
-                request_context.clock() - db_started_at,
-            )
     if len(rows) > cap:
         raise DashboardDataError(
             "dashboard source row limit exceeded: "

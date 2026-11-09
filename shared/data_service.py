@@ -281,8 +281,6 @@ def _read_long_from_db(
     engine=None,
     end_date: Optional[str] = None,
 ) -> pd.DataFrame:
-    own_engine = engine is None
-    engine = engine or create_sqlalchemy_engine()
     codes = [str(code).strip() for code in indicator_codes if str(code).strip()]
     if not codes:
         return pd.DataFrame(columns=list(columns))
@@ -297,6 +295,9 @@ def _read_long_from_db(
     if end_date is not None:
         sql += " AND rdate <= %s"
         params = (*params, str(end_date))
+    own_engine = engine is None
+    if own_engine:
+        engine = create_sqlalchemy_engine()
     try:
         return pd.read_sql(sql, engine, params=params)
     finally:

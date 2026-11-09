@@ -295,3 +295,12 @@ def test_database_config_rejects_non_private_environment_file(
 
     with pytest.raises(RuntimeError, match="private regular file"):
         DatabaseConfig.from_env()
+
+
+def test_empty_factor_selection_needs_no_database_configuration(monkeypatch):
+    from shared.data_service import read_daily_long_from_db
+
+    _clear_database_environment(monkeypatch)
+    frame = read_daily_long_from_db(iter(["", "  "]), "api_wind_daily")
+    assert frame.empty
+    assert list(frame.columns) == ["rdate", "indicators_code", "indicators_value"]
