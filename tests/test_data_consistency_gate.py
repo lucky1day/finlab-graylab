@@ -1044,6 +1044,121 @@ def test_completeness_keeps_drift_when_other_authority_is_missing() -> None:
     ]
 
 
+def _single_segment_snapshot(*, live_covers_key: bool) -> DatabaseSnapshot:
+    """回测源有一行未发布，其业务键是否由 live 事实覆盖由参数决定。"""
+    published_source = {
+        "run_id": 7,
+        "scheme_id": "segment",
+        "target_tenor": "5Y",
+        "horizon": 1,
+        "predict_date": "2026-05-19",
+        "feature_date": "2026-05-19",
+        "target_date": "2026-05-20",
+        "label": 1,
+        "predicted_direction": 1,
+    }
+    unpublished_source = {
+        **published_source,
+        "predict_date": "2026-06-11",
+        "feature_date": "2026-06-10",
+        "target_date": "2026-06-11",
+        "label": -1,
+    }
+    backtest_product = {
+        "id": 1,
+        "run_id": None,
+        "backtest_run_id": 7,
+        "scheme_version": "exact-a",
+        "scheme_id": "segment",
+        "target_tenor": "5Y",
+        "horizon": 1,
+        "predict_date": "2026-05-19",
+        "feature_date": "2026-05-19",
+        "target_date": "2026-05-20",
+        "predicted_direction": 1,
+        "backtest_actual_direction": 1,
+    }
+    live_product = {
+        **backtest_product,
+        "id": 2,
+        "run_id": 11,
+        "backtest_run_id": None,
+        "predict_date": "2026-06-11",
+        "feature_date": "2026-06-10",
+        "target_date": "2026-06-11",
+        "predicted_direction": 1,
+        "backtest_actual_direction": None,
+    }
+    return DatabaseSnapshot(
+        registry_rows=(
+            {
+                "scheme_id": "segment__h1__5Y",
+                "base_scheme_id": "segment",
+                "horizon": 1,
+                "task_type": "T+1",
+                "runtime_type": "blackbox_v2",
+                "frequency": "daily",
+                "target_tenor": "5Y",
+                "status": "active",
+            },
+        ),
+        prediction_rows=(
+            (backtest_product, live_product)
+            if live_covers_key
+            else (backtest_product,)
+        ),
+        actual_rows=(),
+        live_runs=(
+            (
+                {
+                    "reference_id": 11,
+                    "scheme_id": "segment",
+                    "scheme_version": "exact-a",
+                    "status": "success",
+                    "predict_date": "2026-06-11",
+                },
+            )
+            if live_covers_key
+            else ()
+        ),
+        backtest_runs=(
+            {
+                "reference_id": 7,
+                "scheme_id": "segment",
+                "status": "success",
+                "summary": {"persisted_prediction_count": 2},
+            },
+        ),
+        calendar_rows=_calendar_rows(date(2026, 5, 1), date(2026, 7, 31)),
+        digest=f"single-segment-{live_covers_key}",
+        backtest_prediction_rows=(published_source, unpublished_source),
+    )
+
+
+def test_unpublished_backtest_source_key_is_satisfied_by_live_fact() -> None:
+    errors, details = validate_snapshot_completeness(
+        _single_segment_snapshot(live_covers_key=True),
+        display_until="2026-06-30",
+    )
+
+    assert errors == []
+    assert details["authority_gaps"] == []
+    assert details["backtest_source_live_covered_count"] == 1
+
+
+def test_unpublished_backtest_source_key_without_any_fact_is_missing() -> None:
+    errors, details = validate_snapshot_completeness(
+        _single_segment_snapshot(live_covers_key=False),
+        display_until="2026-06-30",
+    )
+
+    assert errors == [
+        "missing product predictions from backtest run 7: "
+        "[('5Y', 1, '2026-06-11')]"
+    ]
+    assert details["backtest_source_live_covered_count"] == 0
+
+
 def test_unresolved_live_run_is_not_mislabeled_as_extra_fact() -> None:
     registry = {
         "scheme_id": "calendar_gap__h1__5Y",

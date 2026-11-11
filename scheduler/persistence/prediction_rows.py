@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Iterable, Mapping
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
@@ -16,8 +16,6 @@ from shared.blackbox_v2.contracts import REQUEST_FIELDS, request_from_mapping
 _PredictionBusinessKey = tuple[str, str, int, str]
 
 _BLACKBOX_BACKTEST_START_DATE = "2025-01-01"
-
-_BLACKBOX_LIVE_TARGET_START_DATE = "2026-06-01"
 
 
 def _mysql_utc_datetime(value: datetime | None) -> datetime | None:
@@ -126,9 +124,28 @@ def _prepare_blackbox_backtest_fact_rows_conn(
     if require_source_request:
         predict_dates = [str(row.get("predict_date")) for row in source_rows]
         target_dates = [str(row.get("target_date")) for row in source_rows]
+        # 覆盖上界是操作员给定的 --predict-date（最新数据日），不再固定为实盘起点；
+        # 旧摘要中的 2026-06-01 仍是合法的已持久化上界。
+        target_date_before = str(summary.get("target_date_before") or "")
+        try:
+            canonical_before = date.fromisoformat(target_date_before).isoformat()
+        except ValueError:
+            canonical_before = None
+        if canonical_before != target_date_before:
+            raise ValueError(
+                "Blackbox activation backtest target_date_before is invalid"
+            )
+        if not (
+            _BLACKBOX_BACKTEST_START_DATE
+            < target_date_before
+            and max(predict_dates) < target_date_before
+        ):
+            raise ValueError(
+                "Blackbox activation backtest coverage exceeds target_date_before"
+            )
         expected_coverage = {
             "backtest_start_date": _BLACKBOX_BACKTEST_START_DATE,
-            "target_date_before": _BLACKBOX_LIVE_TARGET_START_DATE,
+            "target_date_before": target_date_before,
             "request_count": len(source_rows),
             "actual_predict_date_min": min(predict_dates),
             "actual_predict_date_max": max(predict_dates),

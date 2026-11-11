@@ -141,7 +141,14 @@ def validate_snapshot_completeness(
     source_by_backtest_run: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
     for row in snapshot.backtest_prediction_rows:
         source_by_backtest_run[int(row["run_id"])].append(row)
+    # 单一结果段：业务键只需一条产品事实；live 已覆盖的回测源键不再要求发布。
+    live_product_keys = {
+        _product_business_key(row)
+        for row in product_rows
+        if row.get("run_id") is not None
+    }
     backtest_expected = 0
+    backtest_live_covered = 0
     for run in snapshot.backtest_runs:
         run_id = int(run["reference_id"])
         source_rows = source_by_backtest_run.get(run_id, [])
@@ -184,11 +191,18 @@ def validate_snapshot_completeness(
             (product_scheme_id, str(run["scheme_id"])) in compatible_pairs
             for product_scheme_id in product_scheme_ids
         )
-        missing = (
-            []
+        unpublished = (
+            set()
             if is_approved_cross_source
-            else sorted(set(source_index) - set(product_index))
+            else set(source_index) - set(product_index)
         )
+        live_covered = {
+            key
+            for key in unpublished
+            if (str(run["scheme_id"]), *key) in live_product_keys
+        }
+        backtest_live_covered += len(live_covered)
+        missing = sorted(unpublished - live_covered)
         extra = sorted(set(product_index) - set(source_index))
         if missing:
             errors.append(
@@ -371,6 +385,7 @@ def validate_snapshot_completeness(
     return errors, {
         "expected_live_fact_count": live_expected,
         "expected_backtest_fact_count": backtest_expected,
+        "backtest_source_live_covered_count": backtest_live_covered,
         "observed_product_fact_count": len(product_rows),
         "authority_gaps": sorted(authority_gaps),
         "mature_actual_missing_count": mature_actual_missing,
