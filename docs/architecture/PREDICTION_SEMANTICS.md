@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：算法、平台、回测、API 和前端开发人员
-本文是平台关于 `predict_date` / `feature_date` / `target_date` 与灰度实盘阶段的强制语义。前端、后端、回测、SOP、方案文档和测试用例必须使用同一套术语；如与旧文档冲突，以本文为准，并回写对应文档。
+本文是平台关于 `predict_date` / `feature_date` / `target_date` 与结果分区的强制语义。前端、后端、回测、SOP、方案文档和测试用例必须使用同一套术语；如与旧文档冲突，以本文为准，并回写对应文档。
 
 Source-backed 方案还必须遵守 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md)。日期字段映射是平台适配，不是修改原始算法时间窗口、测试区间或 batch/PIT 口径的许可。
 
@@ -25,7 +25,7 @@ Source-backed 方案还必须遵守 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORI
 | `feature_date` | 特征基准日 / 数据截止日 / 预测站位日；统一展示时间轴，模型只能使用该日及以前允许可见的数据 | 是 |
 | `target_date` | 验证目标日，用于解释预测对象、业务去重和 actual join | 是 |
 
-`feature_date` 是平台、业务和前端唯一标准数据截止字段。`anchor_date` 只允许作为方案内部算法变量或历史审计 extra 保留；任何对外语义、前端展示、灰度规则、回测规则都不得依赖 `anchor_date`。如果 `extra` 同时保留 `anchor_date`，它必须等于 `feature_date`。
+`feature_date` 是平台、业务和前端唯一标准数据截止字段。`anchor_date` 只允许作为方案内部算法变量或历史审计 extra 保留；任何对外语义、前端展示、补跑规则、回测规则都不得依赖 `anchor_date`。如果 `extra` 同时保留 `anchor_date`，它必须等于 `feature_date`。
 
 ### 1.1 日期、交易日与周键的权威来源
 
@@ -56,17 +56,34 @@ Source-backed 方案还必须遵守 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORI
 上游/平台对账的输入 vintage 归因及不重跑历史边界见[源算法保真](SOURCE_ALGORITHM_FIDELITY.md#0-运行时责任)。
 自然运行使用本机当前且通过 ready 校验的 generation；平台注册日历由调用方只读数据库连接捕获。
 
-## 2. 三种运行口径
+## 2. 结果分区与来源
 
-| 口径 | run `prediction_phase` | `predict_date` | `feature_date` | `target_date` | 写库位置 |
-|------|--------------------|----------------|----------------|---------------|----------|
-| 历史回测 | 不写入 run phase | `T` | `T` | `T + horizon` | 证据写 `t_backtest_*`；首次激活发布到 `t_scheme_predictions` |
-| 灰度实盘 | `gray_live` | `T + 1` | `T` | `T + horizon` | `t_scheme_predictions` |
-| 正式实盘 | `scheduled_live` | `T + 1` | `T` | `T + horizon` | `t_scheme_predictions` |
+### 2.0 唯一结果分区（公开口径）
+
+每条产品事实只有一个结果分区，**只由 `feature_date`（特征基准日）决定**：
+
+| `feature_date` | 结果分区 |
+|---|---|
+| `< 2026-06-01` | `backtest` / 回测 |
+| `>= 2026-06-01` | `live` / 实盘 |
+
+- 数据库列 `t_scheme_predictions.result_segment` 由 MySQL 按上表自动计算（VIRTUAL 生成列，migration 027），程序不能写入；
+  后端展示函数 `dashboard_result_source` 使用同一分界，二者由测试锁定为同一常量。
+- Dashboard、统计、排行、gate 完整性校验与运维排查一律使用这个分区，不再区分"灰度实盘"与"正式实盘"。
+- 方案的**上线日期**唯一来源是 Registry `deployed_at`（首次激活日，精确到日；同 ID 修订不改变，迁移方案保留原上线日）。
+
+### 2.0.1 来源（仅审计）
+
+| 来源 | 识别方式 | 常见 `predict_date` | 用途 |
+|---|---|---|---|
+| 入库回测发布 | `backtest_run_id` 非空 | `T`（等于 `feature_date`） | 追溯产生该事实的 immutable 回测证据 |
+| 实盘运行 | `run_id` 非空；run `prediction_phase` 为 `scheduled_live`（自然调度）或 `gray_live`（漏跑补跑） | 日频通常为 `T + 1` | 追溯产生该事实的运行记录 |
+
+来源字段只用于审计与问题定位，**不参与**结果分区、统计、去重、gate 判定或入库步骤。同一业务键
+（`scheme_id + target_tenor + horizon + target_date`）只能有一条产品事实，先发布者保留（insert-only）。
+因此实盘分区中由入库回测发布的记录，其预测日等于特征日；由自然调度产生的记录，预测日通常为下一交易日。
 
 表中的 `T + 1` / `T + horizon` 是日频示意，不是所有任务的自然日公式；周、月与周期任务按 §4 的日历语义生成三日期。
-
-灰度实盘也属于实盘观察区。它与正式实盘的区别不是预测日期公式，而是来源阶段：灰度通常是方案部署前后的受控补齐或观察，正式实盘是 scheduler 在真实时钟自然触发。
 
 ### 2.1 原始 benchmark 的 T 对齐规则
 
@@ -79,7 +96,7 @@ Source-backed 方案还必须遵守 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORI
 ```text
 原始算法 benchmark.T = 平台 feature_date
 历史回测 predict_date = feature_date = T
-日频灰度/正式实盘 predict_date = 按调度规则发出日, feature_date = T
+日频实盘（自然调度/补跑） predict_date = 按调度规则发出日, feature_date = T
 ```
 
 解读既有 Native source benchmark 时，逐样本核验以 `feature_date + target_date + target_tenor + horizon + benchmark_role` 为主键；周频方案还必须包含或可唯一映射 `feature_week_id`，月频方案还必须包含或可唯一映射 `feature_month_id + target_month_id`。`benchmark_role` 表示该行所属的可比较执行口径（如 source-original 历史段或 source-compatible extension），不是 original/current 文件来源；文件来源应由 `original_backtest_summary.json` / `current_backtest_summary.json` 的 provenance 表达。`predict_date` 只用于校验信号发出时点：历史回测要求 `predict_date == feature_date`，灰度/正式实盘要求 `predict_date` 是站在 `feature_date` 后按调度规则应发出的日期。
@@ -99,21 +116,18 @@ legacy/core 的 `current_date`、`date` 或 `predict_date` 不一定对应同名
 [源算法保真](SOURCE_ALGORITHM_FIDELITY.md#3-source-口径分类)。已退役算法的具体窗口案例从 Git 追溯，
 不构成重跑历史的授权。
 
-## 3. 灰度实盘规则
+## 3. 补跑规则（修复漏跑）
 
-灰度实盘用于补齐从 `gray_target_start` 到正式部署前的实盘观察序列。Blackbox V2 方案的 `gray_target_start` 当前由平台统一为 `2026-06-01`（`harness/signal_gap_plan.py` 的 `PLATFORM_LIVE_TARGET_START_DATE`，回测发布的 `target_date_before` 同值）；如需按方案区分，须先改代码再改本文。
+`signal-gap-fill` 只用于补齐方案上线后本应由自然调度发出、但因故障漏跑的点，不再作为入库步骤。
+它只写 `target_date >= 2026-06-01`（`harness/signal_gap_plan.py` 的 `PLATFORM_LIVE_TARGET_START_DATE`）且尚无产品事实的业务键，run 标记为 `prediction_phase = gray_live`。补跑必须满足：
 
-灰度补齐必须满足：
-
-1. 灰度 run 必须标识为 `prediction_phase = gray_live`；产品事实行不重复保存 phase。
-2. 记录的 `predict_date` 仍是应当发出信号的调度日，日频通常为 `T + 1`。
-3. `feature_date` 必须是 `T`，所有输入 artifact、辅助输入映射和模型训练窗口都不得越过 `feature_date`。
-4. 当前数据库在事后补齐时可能已经拥有 `T+1` 或更晚的数据；补齐逻辑必须显式按 `feature_date` 约束输入，不能只依赖当前 DB 最新状态。
-5. 如源表提供 `create_time` 或等价 as-of 字段，灰度补齐应进一步证明数据在预期发出时点可见；没有该证据时，不得把灰度样本宣称为 point-in-time 绩效，只能称为灰度实盘观察。
+1. 记录的 `predict_date` 是本应发出信号的调度日，日频通常为 `T + 1`；`feature_date` 必须是 `T`。
+2. 所有输入 artifact、辅助输入映射和模型训练窗口都不得越过 `feature_date`；数据库在事后可能已有更晚的数据，补跑逻辑必须显式按 `feature_date` 截止，不能依赖当前最新状态。
+3. 如源表提供 `create_time` 或等价 as-of 字段，应进一步证明数据在预期发出时点可见；没有该证据时只能称为事后补跑，不宣称 point-in-time 绩效。
 
 ## 4. 正式实盘规则
 
-正式实盘 run 必须标识为 `prediction_phase = scheduled_live`；产品事实行不重复保存 phase。正式实盘起点来自方案激活并由 scheduler 自然成功发出的第一条记录，不能由灰度 target 起点反推。
+自然调度 run 标识为 `prediction_phase = scheduled_live`（仅审计）；产品事实行不重复保存 phase。方案上线日期以 Registry `deployed_at` 为准（§2.0），首条自然运行记录只证明调度已挂载。
 
 正式实盘同样只能使用 `feature_date = T` 及以前可见的数据。日频工作日早盘预测的典型形态是：
 
@@ -188,7 +202,7 @@ target_date  = T + horizon
 权威，只能通过 Harness 的精确兼容清单绑定完整旧事实摘要、日期差异摘要和纠正版身份，在只读验收中显式标为
 `legacy_migration`；这不改变旧行的原始来源、三日期或 insert-only 边界，也不为新事实提供例外。
 
-当方案已有灰度实盘观察区时，历史回测 runner 必须按 `target_date < gray_target_start` 截断，避免同一 target 同时由 backtest 和 live 区间解释。日频、周频和月频都使用同一条 target 边界；月频仍按自然月 15 号的触发语义计算三日期，不能用 `predict_date` 或 `feature_date` 替代 `target_date` 判断物化分区。该边界与 §7 的页面展示分区独立，展示调整不重算、搬移或改写既有事实。
+入库回测一次覆盖 `2025-01-01` 至操作时给定的最新可用数据日，激活时把全部结果发布为产品事实；之后由自然调度续写。结果分区一律按 §2.0 的 `feature_date` 规则判定，回测覆盖到分界日之后不构成违规。与已存在产品事实相同业务键的回测行保持原事实不变（insert-only），不重算、搬移或改写既有事实。
 
 `target_date` 是回测明细的必填事实字段。runner 的回测证据指标按 `target_date` 确定月份，Dashboard 则按 §7 的 `feature_date` 展示月份；如果 `t_backtest_predictions` 明细缺 `target_date`，必须 fail-closed。禁止用 `predict_date`、`feature_date`、月份字段或旧 `monthly_metrics` 表推断、替代或回填 `target_date`。
 
@@ -198,33 +212,19 @@ target_date  = T + horizon
 ### 5.1 已批准的 source-original batch reproduction 例外
 
 历史 source-original 例外不改变三日期、业务键或公开分区：回测仍保留 `predict_date=feature_date`，
-`target_date` 由对应任务日历确定，并排除 `target_date >= gray_target_start` 的区间。
+`target_date` 由对应任务日历确定；该历史例外当时按 `target_date < 2026-06-01` 截断，保留原样，不扩展到新方案。
 跨入 live target 的原始 benchmark 行只能作为 source evidence，不能当作 live 真值或要求实时结果贴合。
 例外适用身份、算法保真证据与历史保护见
 [源算法保真](SOURCE_ALGORITHM_FIDELITY.md#61-历史-batch-例外的保留范围)，不授权恢复旧 runner 或重跑已发布事实。
 
-### 5.2 历史批次与灰度区间批次
+### 5.2 入库完整性
 
-新方案先明确 exact version、输入来源和 lineage、`gray_target_start` 及应有 Request 集合。
-本机历史与灰度绑定同一 exact version 和可核验的输入 lineage，保持两个独立证据边界；
-各机使用自己的输入，两侧 target 必须零重叠。
+新方案先明确 exact version、输入来源和 lineage 及应有 Request 集合。每条 Request 必须由权威任务日历生成自己的
+`predict_date`、`feature_date`、`target_date`，输入不能越过对应 `feature_date`。固定未来 `source_end`、未来 test window、
+全局 selector/calibration 或跨样本未来状态不属于 live-safe 交付；算法内部性质由上游保证，平台验证自身输入和 Result 边界。
 
-| 分区 | 结果语义 |
-|---|---|
-| `target_date < gray_target_start` | 持久化历史回测，保存新的 immutable canonical backtest 证据 |
-| `target_date >= gray_target_start` 且在正式调度接管前应当发出 | 受控补齐为 `gray_live`，保留本应发出的三日期 |
-| 已有有效业务键 | 保留原事实；区间入口整组拒绝，单日入口按其完整结果跳过规则处理 |
-
-“一次灰度 batch”只适用于既有区间入口支持且满足 live-safe 前提的交付。支持范围、命令、
-输入冻结与原子提交要求只在[平台 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#6-灰度区间批量物化)维护；
-其它情况使用既有单日入口，不能为省进程启动扩展新框架或放宽输入校验。
-每条 Request 必须由权威任务日历生成自己的 `predict_date`、`feature_date`、`target_date`，
-输入不能越过对应 `feature_date`。固定未来 `source_end`、未来 test window、全局 selector/calibration
-或跨样本未来状态不能作为 live-safe batch；算法内部性质由上游保证，平台验证自身输入和 Result 边界。
-
-完整性验收以应有业务键集合为准，不只看行数：历史全部早于灰度起点，灰度覆盖接管前所有应发点，
-两侧 target 交集为空，三日期、方向、exact version 与标准 Result 一致，已有事实与其它方案不变。
-不得因 target 尚未到验证日而遗漏已经应发出的预测，也不为跨批复用临时结果增加生命周期状态。
+完整性验收以应有业务键集合为准，不只看行数：每个应有业务键恰好有一条产品事实（不论来源），三日期、方向、
+exact version 与标准 Result 一致，已有事实与其它方案不变。不得因 target 尚未到验证日而遗漏已经应发出的预测。
 
 ## 6. 指标统计口径
 
@@ -271,7 +271,7 @@ Dashboard V7 以 `feature_date`（特征基准日）统一确定筛选、区间�
 
 顶部时间筛选使用 `YYYY-MM-DD`，首尾日均包含，不顺延到交易日；默认覆盖当前结果口径下全部可展示历史，范围边界包括待验证记录。任务矩阵、方案排行及区间指标只统计所选日级范围。选中方案详情的月度表、趋势和月历则展示该范围触及的完整自然月，并继续应用同一 source 条件。例如选择 5 月 20 日至 6 月 10 日，区间排行只计算这些日期，五月和六月详情分别展示整月记录；不得把整月详情计数反馈为区间排行。页面明确区分“区间统计”和“整月详情”，方案详情不展示技术分界提示条。无数据的 active 方案仍保留原有可见性。
 
-每日/周度验证表同时显示“特征基准日”“预测日”“目标日/目标周期”：特征基准日解释归属和统计范围，预测日解释信号发出时点，目标日/周期解释预测对象及验证结果。actual join、业务去重及 §5 的 `gray_target_start` 物化边界仍使用底层 `target_date`，不会随展示轴变化。例如特征基准日为 5 月 29 日、预测日为 6 月 1 日、目标日为 6 月 5 日的记录，展示在五月回测段，仍按 6 月 5 日关联实际结果；页面分类不能证明它由历史回测或自然调度产生。
+每日/周度验证表同时显示“特征基准日”“预测日”“目标日/目标周期”：特征基准日解释归属和统计范围，预测日解释信号发出时点，目标日/周期解释预测对象及验证结果。actual join 与业务去重使用底层 `target_date`，不会随展示轴变化。例如特征基准日为 5 月 29 日、预测日为 6 月 1 日、目标日为 6 月 5 日的记录，展示在五月回测段，仍按 6 月 5 日关联实际结果；结果分区不能证明它由历史回测或自然调度产生。
 
 实现见[Dashboard 编排](../../backend/factor_lab_dashboard.py)，公共合同见[Dashboard 测试](../../tests/test_dashboard_builder.py)与[独立数据一致性对账](../../tests/test_data_consistency_gate.py)。
 
