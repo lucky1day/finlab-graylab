@@ -7,6 +7,7 @@ import os
 import re
 import select
 import stat
+import sys
 from datetime import date
 from dataclasses import fields, is_dataclass
 from getpass import getuser
@@ -38,6 +39,22 @@ from shared.input_artifacts import create_input_engine
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+BACKTEST_GATE_TIMEOUT_SEC = 7200
+_API_PORT_BY_TARGET = {"aliyun-gray": 8100, "mac3-production": 8101}
+
+
+def _default_api_base_url() -> str:
+    """按部署目标推导本机后端地址；目标未设置时拒绝猜测端口。"""
+    target = os.environ.get("BFL_DEPLOYMENT_TARGET", "")
+    port = _API_PORT_BY_TARGET.get(target)
+    if port is None:
+        print(
+            "error: --api-base-url is required unless BFL_DEPLOYMENT_TARGET is "
+            "one of: " + ", ".join(sorted(_API_PORT_BY_TARGET)),
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    return f"http://127.0.0.1:{port}"
 
 
 class _StoreOnce(argparse.Action):
@@ -188,7 +205,7 @@ def _build_parser() -> argparse.ArgumentParser:
     rebuild.add_argument("--predict-date", required=True)
     rebuild.add_argument("--expected-scheme-version", required=True)
     rebuild.add_argument("--approved-by", required=True)
-    rebuild.add_argument("--project-root", type=Path, default=Path.cwd())
+    rebuild.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
 
     gate_parser = subparsers.add_parser("gate")
     gate_subparsers = gate_parser.add_subparsers(dest="gate_name", required=True)
@@ -213,7 +230,11 @@ def _build_parser() -> argparse.ArgumentParser:
             ),
         )
         item.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
-        item.add_argument("--timeout-sec", type=int, default=600)
+        item.add_argument(
+            "--timeout-sec",
+            type=int,
+            default=BACKTEST_GATE_TIMEOUT_SEC if gate_name == "backtest" else 600,
+        )
         if gate_name == "backtest":
             item.add_argument(
                 "--operator",
@@ -226,7 +247,11 @@ def _build_parser() -> argparse.ArgumentParser:
         if gate_name in {"dashboard", "data-consistency"}:
             item.add_argument(
                 "--api-base-url",
-                default="http://127.0.0.1:8100",
+                default=None,
+                help=(
+                    "default derived from BFL_DEPLOYMENT_TARGET "
+                    "(aliyun-gray=8100, mac3-production=8101)"
+                ),
             )
             item.add_argument(
                 "--api-prefix",
@@ -306,11 +331,13 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         if len(set(scheme_ids)) != len(scheme_ids):
             raise SystemExit("HTTP reconciliation scheme ids must not be repeated")
         scheme_id = scheme_ids[0]
+        api_base_url = args.api_base_url or _default_api_base_url()
         session_token = _read_dashboard_session(
             session_file=args.session_file,
             session_fd=args.session_fd,
         )
     else:
+        api_base_url = GateContext.api_base_url
         scheme_ids = ()
         scheme_id = args.scheme_id
         session_token = None
@@ -340,11 +367,7 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         ),
         persist_backtest=bool(getattr(args, "persist", False)),
         backtest_start_date=backtest_start_date,
-        api_base_url=getattr(
-            args,
-            "api_base_url",
-            "http://127.0.0.1:8100",
-        ),
+        api_base_url=api_base_url,
         api_prefix=getattr(args, "api_prefix", ""),
         dashboard_scheme_ids=scheme_ids,
         dashboard_session_token=session_token,
@@ -360,8 +383,6 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
             raise ValueError("Native validation gates are retired; W4 remains on its fixed version")
         from harness.blackbox_v2.gates import BlackboxBacktestGate
 
-        if args.gate_name != "backtest":
-            raise ValueError(f"unsupported Blackbox V2 gate: {args.gate_name}")
         gate = BlackboxBacktestGate()
     return gate.run(ctx)
 

@@ -306,7 +306,7 @@ def _validate_public_entry(args: argparse.Namespace) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("origin")
+    parser.add_argument("origin", nargs="?", default=PUBLIC_ORIGIN)
     parser.add_argument("--scheme-id", action="append", required=True)
     session = parser.add_mutually_exclusive_group(required=True)
     session.add_argument("--session-file", type=Path)

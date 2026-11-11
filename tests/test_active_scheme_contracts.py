@@ -1,16 +1,16 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
-import yaml
-
-from scheduler.discovery import discover_schemes
+from scheduler.discovery import blackbox_deliveries, discover_schemes
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCHEMES_ROOT = PROJECT_ROOT / "schemes"
+MATRIX_PATH = PROJECT_ROOT / "deploy" / "scheme_deployment_matrix_v1.json"
 
 
 class ActiveSchemeContractTests(unittest.TestCase):
@@ -24,20 +24,12 @@ class ActiveSchemeContractTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     discover_schemes(schemes_root)
 
-    def test_all_active_scheme_configs_have_runnable_platform_contracts(self) -> None:
-        configs = [
-            config
-            for config in discover_schemes(SCHEMES_ROOT)
-            if config.status == "active"
-        ]
-        active_dirs = {
-            path.parent.name
-            for path in SCHEMES_ROOT.glob("*/config.yaml")
-            if yaml.safe_load(path.read_text(encoding="utf-8")).get("status")
-            == "active"
-        }
-
-        self.assertEqual({config.scheme_id for config in configs}, active_dirs)
+    def test_all_matrix_scheme_configs_have_runnable_platform_contracts(self) -> None:
+        # Registry（而非 config.status）决定是否在线，故按部署矩阵成员覆盖全部方案目录。
+        matrix = json.loads(MATRIX_PATH.read_text(encoding="utf-8"))
+        matrix_ids = set(matrix["schemes"])
+        configs = discover_schemes(SCHEMES_ROOT)
+        self.assertEqual({config.scheme_id for config in configs}, matrix_ids)
 
         for config in configs:
             with self.subTest(scheme_id=config.scheme_id):
@@ -46,20 +38,21 @@ class ActiveSchemeContractTests(unittest.TestCase):
                 self.assertTrue(config.tenors)
                 self.assertGreater(config.horizon, 0)
                 if config.runtime_type == "blackbox_v2":
-                    self.assertIsNotNone(config.delivery_script)
-                    self.assertIsNotNone(config.delivery_metadata)
-                    self.assertTrue(config.delivery_script.is_file())
-                    self.assertTrue(config.delivery_metadata.is_file())
+                    deliveries = blackbox_deliveries(config)
+                    self.assertTrue(deliveries)
+                    for delivery in deliveries:
+                        self.assertTrue(delivery.script_path.is_file())
+                        self.assertTrue(delivery.metadata_path.is_file())
                     self.assertEqual(config.contract_version, "1.0")
 
 
 def test_native_inventory_matches_fixed_w4_policy() -> None:
-    from harness.contracts.onboarding_policy import load_onboarding_policy
     from scheduler.discovery import load_scheme_config
+    from shared.task_specs import load_legacy_native_scheme_ids
 
     native_ids = {
         path.parent.name
         for path in SCHEMES_ROOT.glob("*/config.yaml")
         if load_scheme_config(path).runtime_type == "native_adapter"
     }
-    assert set(load_onboarding_policy(PROJECT_ROOT).legacy_native_scheme_ids) == native_ids
+    assert set(load_legacy_native_scheme_ids(PROJECT_ROOT)) == native_ids

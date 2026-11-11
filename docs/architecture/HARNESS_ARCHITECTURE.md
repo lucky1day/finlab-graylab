@@ -11,8 +11,7 @@
 
 | 模块 | 职责 | 边界 |
 |---|---|---|
-| `harness.contracts.onboarding_policy` | 加载 W4 存量清单，供公共集合合同检查 | 不提供 Native 版本准入 |
-| `harness.contracts.import_rules` | 静态扫描生产包的分层依赖 | 不证明运行期 I/O 或操作权限 |
+| `tests.support.import_rules` | 测试侧静态扫描生产包的分层依赖 | 不证明运行期 I/O 或操作权限 |
 | `shared.blackbox_v2.intake` | 两文件交付入库 | 只准备 canonical，不等于数据库激活；写入的 `status: paused`/`version_status: draft` 不参与 exact，运行期由数据库生命周期覆盖 |
 | `harness.blackbox_v2.gates` | 回测前复验交付安全边界；执行批量 Request、校验 Result 并保存 exact、输入和环境证据 | 必须 persist，只经 `backtests.repository` 写 `t_backtest_*`；不额外运行 predict 冒烟 |
 | `harness.gates.activate_gate` 的严格身份入口与 `harness.blackbox_v2.activation` | 核对成功回测与当前 canonical，调用首次或修订生命周期事务 | 不读取、不修改 config 状态；不用技术验证替代操作授权 |

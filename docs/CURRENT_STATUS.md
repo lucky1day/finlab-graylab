@@ -47,7 +47,7 @@
 
 ## 方案范围与一致性
 
-- 2026-11-097Y T+5 入库后，两端看板各159个target，含9个仅在Mac运行的W4历史展示身份。部署矩阵覆盖Mac155个base/159个target、ECS146个base/150个target。三套周频与7Y T+5均已按本机exact激活；配置范围仍不等同Writer资格，以canonical lifecycle、[部署矩阵](../deploy/scheme_deployment_matrix_v1.json)及Registry/version共同核定。W4不部署ECS、不参与跨端预测比较；旧110/121/144/146/155条目均为带日期历史基线。
+- 2026-11-09 7Y T+5 入库后，两端看板各159个target，含9个仅在Mac运行的W4历史展示身份。部署矩阵覆盖Mac155个base/159个target、ECS146个base/150个target。三套周频与7Y T+5均已按本机exact激活；配置范围仍不等同Writer资格，以canonical lifecycle、[部署矩阵](../deploy/scheme_deployment_matrix_v1.json)及Registry/version共同核定。W4不部署ECS、不参与跨端预测比较；旧110/121/144/146/155条目均为带日期历史基线。
 - Phase 1：21 个（2026-10-21 闭环）。Phase 2：80 个；73 个无增量方案同输入探针为 55 逐位相同、17 架构末位差异、1 架构差异放大（`weekly_10y_d_overlay_0529`），方向 0 不一致；7 个 liwei 增量方案回测方向一致、两端状态 `preds` 逐位相同，已激活并重建缓存。
 - 输入：两端 DataBridge 以五文件 SHA256 与 `business_digest` 判定一致（不以原始表全表哈希为准；实时行情不进入 DataBridge）。
 - 历史账本：2026-10-24 以 Mac 为准对齐 ECS 的预测、回测、指标、版本与注册表；两端预测 25,799 行、回测 152 条 / 明细 23,713 行内容哈希相同。历史预测与回测冻结，不重跑、不回填、不覆盖；再次对齐须用户授权。

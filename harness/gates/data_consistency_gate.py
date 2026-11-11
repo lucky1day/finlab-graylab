@@ -196,6 +196,33 @@ def _merge_subresult_error(
     return merged
 
 
+_EVIDENCE_LOADERS = (
+    ("legacy_migrations", load_legacy_prediction_migrations),
+    ("corrected_exact", load_legacy_corrected_exact_evidence),
+    ("legacy_lineages", load_legacy_backtest_lineages),
+    ("historical_references", load_historical_backtest_references),
+    ("unversioned_facts", load_unversioned_backtest_facts),
+    ("legacy_native_ids", load_legacy_native_scheme_ids),
+)
+_COMPLETENESS_EVIDENCE = (
+    "legacy_migrations",
+    "corrected_exact",
+    "historical_references",
+)
+_LINEAGE_EVIDENCE = (
+    *_COMPLETENESS_EVIDENCE,
+    "legacy_lineages",
+    "unversioned_facts",
+    "legacy_native_ids",
+)
+
+
+def _missing_evidence(
+    load_errors: Mapping[str, str], required: Sequence[str]
+) -> list[str]:
+    return [load_errors[name] for name in required if name in load_errors]
+
+
 class DataConsistencyGate(Gate):
     """独立对账预测、Actual 与 Dashboard Summary/Detail。"""
 
@@ -253,22 +280,33 @@ class DataConsistencyGate(Gate):
                 monotonic=self._monotonic,
             )
             _remaining_budget(deadline, self._monotonic)
-            legacy_migrations = load_legacy_prediction_migrations(
-                PROJECT_ROOT
+            root = ctx.project_root
+            loaded: dict[str, Any] = {}
+            load_errors: dict[str, str] = {}
+            for label, loader in _EVIDENCE_LOADERS:
+                try:
+                    loaded[label] = loader(root)
+                except Exception as exc:
+                    load_errors[label] = (
+                        f"{label} evidence unavailable: {type(exc).__name__}"
+                    )
+            legacy_migrations = loaded.get("legacy_migrations")
+            corrected_exact_evidence = loaded.get("corrected_exact")
+            legacy_backtest_lineages = loaded.get("legacy_lineages")
+            historical_references = loaded.get("historical_references")
+            unversioned_backtest_facts = loaded.get("unversioned_facts")
+            legacy_native_ids = loaded.get("legacy_native_ids")
+            completeness_missing = _missing_evidence(
+                load_errors, _COMPLETENESS_EVIDENCE
             )
-            corrected_exact_evidence = (
-                load_legacy_corrected_exact_evidence(PROJECT_ROOT)
-            )
-            legacy_backtest_lineages = load_legacy_backtest_lineages(
-                PROJECT_ROOT
-            )
-            historical_references = load_historical_backtest_references(
-                PROJECT_ROOT
-            )
-            unversioned_backtest_facts = load_unversioned_backtest_facts(
-                PROJECT_ROOT
+            lineage_missing = _missing_evidence(
+                load_errors, _LINEAGE_EVIDENCE
             )
             try:
+                if completeness_missing:
+                    raise DataConsistencyAuthorityUnavailable(
+                        "; ".join(completeness_missing)
+                    )
                 completeness_errors, completeness_details = (
                     validate_snapshot_completeness(
                         snapshot,
@@ -301,6 +339,10 @@ class DataConsistencyGate(Gate):
                 completeness = _subresult("FAILED", [str(exc)])
 
             try:
+                if lineage_missing:
+                    raise DataConsistencyAuthorityUnavailable(
+                        "; ".join(lineage_missing)
+                    )
                 lineage_errors, lineage_details = validate_snapshot_lineage(
                     snapshot,
                     historical_references=historical_references,
@@ -329,16 +371,20 @@ class DataConsistencyGate(Gate):
                 lineage = _subresult("FAILED", [str(exc)])
 
             try:
+                if lineage_missing:
+                    raise DataConsistencyAuthorityUnavailable(
+                        "; ".join(lineage_missing)
+                    )
                 validated_facts = validate_and_join_facts(
                     snapshot,
                     display_until=display_until,
-                    legacy_native_scheme_ids=load_legacy_native_scheme_ids(
-                        PROJECT_ROOT
-                    ),
+                    legacy_native_scheme_ids=legacy_native_ids,
                     historical_references=historical_references,
                     legacy_migrations=legacy_migrations,
                     corrected_exact_evidence=corrected_exact_evidence,
                 )
+            except DataConsistencyAuthorityUnavailable:
+                pass  # 缺失证据已由 lineage 子结果以 BLOCKED 报告
             except DataConsistencyError as exc:
                 lineage = _merge_subresult_error(lineage, str(exc), "FAILED")
 
