@@ -157,7 +157,7 @@ Dashboard 后端拆分（sql/rules/payload/service）等工作区中进行中的
 - 删除 017 账本 5 张表、`t_harness_runs`、`t_harness_gate_results`、`t_backtest_reproduction_checks`、`v_latest_backtest_run`；
 - 删除 `t_scheme_runs` 上 9 个未用列（`schedule_item_id`、`attempt_no`、`trigger_origin`、`queued_at`、`failure_code`、`execution_token`、`process_id`、`process_group_id`、`harness_run_id`）及其外键、CHECK 和索引。
 
-`t_input_artifacts` 与 `t_scheme_run_log` 仍有代码读写，不在本次范围（前者随 D3 处理）。
+`t_input_artifacts` 与 `t_scheme_run_log` 仍有代码读写，不在本次范围（前者仍被 DataConsistency 血缘检查读取）。
 
 **本机验证（一次性 MySQL 8.4）：**
 
@@ -192,4 +192,11 @@ ECS 读回尚未取得。
 **兼容性：** 上一个 release 的运行时代码不读写被删除的对象，可以作为回退目标。但旧 release 的 `apply_migrations` 不认识 026 历史，回退后不要用它执行迁移。
 
 **2026-11-11 更正：** 早先审查把配置文件中的 `status: paused` 当成"不调度、不展示"，这是错误判断。Blackbox 方案以数据库 Registry 为准。判断方案是否在用，必须读两端 Registry 与预测事实，不能只看配置文件。
+
+## 9. D3 历史替代层退役（2026-11-11）
+
+- **前提核实：** 读回两端，`liwei_0616_5y01_full_oos_k3_div_k10_bbv2` 在 `t_scheme_predictions` 中没有任何事实（ECS 仅剩 80 条无事实的 run 记录）。原方案名下有完整 115 条实盘与自有成功回测 run，替代投影在每次请求中都返回 None，实际未生效。因此**无需写任何生产数据**。
+- **代码删除：** 删除 backend 替代投影、harness 快照中的同类投影、一次性清理工具（`history_cleanup` 与脚本，2026-09-17 已执行），净删约 3200 行。`legacy_prediction_migration` 与 compatibility JSON 保留：DataConsistency 与 Dashboard Gate 仍用它认可 liwei 5Y/h5 的 live-only 范围。
+- **展示等价验证：** 将 Mac3 生产数据只读导出到一次性 MySQL，新旧代码分别构建 Summary（159 方案）与 636 个 Detail（每方案最近两个月 × all/backtest），去掉 `snapshot_id`/`generated_at` 后逐字节一致。DataConsistency 完整性与血缘检查在新旧代码下结果一致。
+- **既有问题（与本次无关，删除前后相同）：** 在 Mac3 数据副本上，completeness 有 1 个错误、25 个 authority gap；lineage 对 `three_y_t5_xgb_fxlead_b8_v2`（exact `dc4e944f5aec`）报 legacy backtest lineage evidence drift。需另行核查。
 
