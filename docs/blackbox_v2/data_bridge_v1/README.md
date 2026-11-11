@@ -59,7 +59,7 @@ producer 独立校验五文件的 schema、freshness、cutoff 和完整性，达
 
 升级前四文件 receipt 仅供 `legacy_v1` 存量读取，`algorithm_managed` 必须等待五文件 ready generation；五文件发布失败不得破坏旧完整 current。历史运行的输入身份由已保存证据追溯，不能将“保留 current”理解成允许任意版本复用。
 
-算法按平台传入的 `--data-dir` 读取；文件字段、周键、Request 截止和输入不同代时的比较规则以[上游交付 SOP 第 4—5 节](../../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md#4-databridge-五文件输入)为准。源周历只读导出路径为 `/api/export/tables/api_wind_date/csv/`，正式算法不得绕过快照自行下载。
+算法按平台传入的 `--data-dir` 读取；文件字段、周键、Request 截止和输入不同代时的比较规则以[上游交付 SOP 第 3—4 节](../../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md#4-输入数据)为准。源周历只读导出路径为 `/api/export/tables/api_wind_date/csv/`，正式算法不得绕过快照自行下载。
 
 ## 样例用途与限制
 
