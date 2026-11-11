@@ -20,7 +20,8 @@
 | `BFL_DEPLOYMENT_TARGET` | `aliyun-gray` | `mac3-production` |
 | current / previous release（2026-11-09 7Y T+5 入库后） | `11c5a7eb` / `0e13a39c` | 同左 |
 | Dashboard Backend 进程 cwd（2026-11-09 7Y T+5 入库后） | `11c5a7eb` | 同左 |
-| schema | 025 | 025 |
+| schema（2026-11-11 迁移 026 后） | 026 | 026 |
+| 预安装未激活的候选 release（2026-11-11） | `6b2797e7`（archive `1fb2455e…00ef`） | 同左 |
 | 调度控制面 | 5 个 systemd timer（DataBridge、日/周/月预测、Actuals） | launchd：同样 5 项 + 公网 Backend 与反向隧道 |
 | 部署矩阵配置范围（按期限计，含暂停项） | 150 | 159（150 + 9个W4） |
 
@@ -62,6 +63,7 @@
 ## 保留身份与恢复证据
 
 - W4 Native 与 Blackbox 的保护原则见[根规范](../AGENTS.md)，迁移边界见[算法保真](architecture/SOURCE_ALGORITHM_FIDELITY.md)。
+- 2026-11-11 两端以候选 release `6b2797e7` 执行 migration 026：删除 017 账本 5 张表、`t_harness_runs`、`t_harness_gate_results`、`t_backtest_reproduction_checks`、`v_latest_backtest_run` 及 `t_scheme_runs` 9 个未用列。执行前备份：ECS `/var/lib/bond-factor-lab/deployment-backups/migration-026-20261111T112954Z/`（sha256 `8b25bf19…`），Mac `runtime/backups/migration-026-20261111T113341Z/`（sha256 `cf35eec8…`）。执行后历史 1..26 全部 APPLIED，`t_scheme_runs` 行数不变（ECS 15901 / Mac 9533）；运行中的 `11c5a7eb` 代码不引用被删对象，两端 Dashboard 构建正常。候选激活与 Backend 重启待执行；旧 release 的 `apply_migrations` 不认识 026，不得再用。
 - `t_scheme_predictions.confidence` 与 `t_backtest_predictions.confidence` 已由 migration 025 删除。禁止回滚到仍读写 confidence、依赖已删临时身份或要求旧 Native 接管状态的 release；恢复按[部署手册](../deploy/README.md)核验权限、输入/状态和 Writer。
 - 2026-09-17 按用户确认的“保留最新正确结果、不保留旧审计历史”，已删除 live-only 方案 `liwei_0616_5y01_full_oos_k3_div_k10` 的 333 条旧回测（ID `9433`—`9765`）及其 run；live 事实保留。
 - 2026-09-24 旧 Mac3 MySQL 非正常重启后以 `innodb_force_recovery=6` 导出重建；逐表行数一致不单独证明崩溃前全部提交无损。见[恢复记录](/Users/macstudio0/bond-factor-lab-production/runtime/recovery/mysql-20260924/README.md)。
