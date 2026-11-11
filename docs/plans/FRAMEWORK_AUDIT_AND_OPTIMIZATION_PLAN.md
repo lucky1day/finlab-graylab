@@ -200,7 +200,10 @@ ECS 读回尚未取得。
 - **展示等价验证：** 将 Mac3 生产数据只读导出到一次性 MySQL，新旧代码分别构建 Summary（159 方案）与 636 个 Detail（每方案最近两个月 × all/backtest），去掉 `snapshot_id`/`generated_at` 后逐字节一致。DataConsistency 完整性与血缘检查在新旧代码下结果一致。
 - **既有问题（与本次无关，删除前后相同）：** 在 Mac3 数据副本上，completeness 有 1 个错误、25 个 authority gap；lineage 对 `three_y_t5_xgb_fxlead_b8_v2`（exact `dc4e944f5aec`）报 legacy backtest lineage evidence drift。需另行核查。
 
-## 10. 待决：分界日后的产品回测（2026-11-11 发现）
+## 10. 结果分区统一（2026-11-11 用户决定并已实施）
 
-两端各有 32 个方案（主要为 2026-11-08 前后入库的 v8 与 yield 系列）以**回测**身份发布了 `target_date >= 2026-06-01` 的产品事实（每方案约 108 条，至 2026-11-06），同一目标日没有 `gray_live` 行。这与 PREDICTION_SEMANTICS §5 和平台 SOP 的规则（分界日后以 `gray_live` 补齐）不一致，页面会把这些方案的 6–11 月显示为"回测"。改正会改变前端分区展示，需业务决定；SOP 按正确规则书写，新入库须遵守。另：`tests/test_active_scheme_contracts.py` 以 config `status == active` 选方案，Registry 已生效但 config 仍为 paused 的方案未被覆盖。
-
+- 唯一结果分区：`feature_date < 2026-06-01` 为回测，否则为实盘；migration 027 新增 VIRTUAL 生成列 `t_scheme_predictions.result_segment`，与后端展示函数同一常量（测试锁定）。来源字段（`backtest_run_id`/`run_id`/`prediction_phase`）只作审计。
+- 上线日期唯一来源为 Registry `deployed_at`（精确到日）。
+- 入库改为一次回测到最新数据日 + 激活 + 少量衔接补齐，不再从 2026-06-01 做 gray_live 补缺；DataConsistency 完整性改为"每个应有业务键恰好一条产品事实（不论来源）"。
+- 原记录的"32 个方案以回测身份发布分界日后事实"在新模型下合规，无需处理；run 205 的 completeness 误报随之消除。
+- 遗留：`tests/test_active_scheme_contracts.py` 以 config `status == active` 选方案，未覆盖 Registry 已生效但 config 仍为 paused 的方案。
