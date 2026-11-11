@@ -112,11 +112,7 @@ body 完成前中断，必须在 JSON 解析和认证 Service 之前拒绝；完
 | POST | `/api/auth/update-profile` | 已登录，本人资料 |
 | GET | `/api/admin/users` | admin，用户列表 |
 | POST | `/api/admin/users` | admin，创建用户 |
-| POST | `/api/admin/users/change-username` | admin，改登录名 |
-| POST | `/api/admin/users/change-role` | admin，改角色 |
 | POST | `/api/admin/users/reset-password` | admin，重置目标密码 |
-| POST | `/api/admin/users/change-status` | admin，停用/恢复 |
-| POST | `/api/admin/users/update-profile` | admin，目标资料 |
 | POST | `/api/admin/users/edit` | admin，原子编辑资料/权限/状态，不接收密码 |
 
 状态码：200 成功、201 创建成功、400 请求长度或策略输入非法、401 无有效会话、403 权限不足、408 请求体未完成、

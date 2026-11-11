@@ -39,6 +39,14 @@ def _account(engine, *, role="user", protected=False):
     return service, user, token
 
 
+def _edit(service, token, target, request_id, **changes):
+    """通过唯一的管理员编辑入口提交完整表单，仅覆盖指定字段。"""
+    form = {field: getattr(target, field) for field in (
+        "username", "full_name", "organization_name", "role", "status")}
+    form.update(changes)
+    return service.edit_user(token, user_id=target.id, request_id=request_id, **form)
+
+
 def _audit(engine, request_id):
     with engine.connect() as connection:
         rows = connection.execute(text("""
@@ -60,9 +68,7 @@ def test_single_field_changes_preserve_unsubmitted_fields_and_revoke_sessions(
     if field == "username":
         value = "renamed_" + uuid.uuid4().hex[:16]
     request_id = uuid.uuid4().hex
-    updated = getattr(service, "change_" + field)(
-        actor_token, user_id=target.id, request_id=request_id, **{field: value},
-    )
+    updated = _edit(service, actor_token, target, request_id, **{field: value})
     assert getattr(updated, field) == value
     for untouched in {"username", "role", "status", "full_name", "organization_name"} - {field}:
         assert getattr(updated, untouched) == getattr(target, untouched)
@@ -74,7 +80,7 @@ def test_single_field_changes_preserve_unsubmitted_fields_and_revoke_sessions(
 
     # 恢复账户不会恢复已经撤销的会话。
     if field == "status":
-        service.change_status(actor_token, user_id=target.id, status="active", request_id=uuid.uuid4().hex)
+        _edit(service, actor_token, updated, uuid.uuid4().hex, status="active")
         with pytest.raises(AuthError, match="not_authenticated"):
             service.authenticate(target_token)
 
@@ -102,12 +108,11 @@ def test_combined_edit_and_noop_keep_atomic_audit_and_revocation_contract(mysql_
     new_token = service.login(username, "Example123").token
     noop_request = uuid.uuid4().hex
     service.edit_user(actor_token, request_id=noop_request, **kwargs)
-    service.change_role(actor_token, user_id=target.id, role="admin", request_id=noop_request)
     assert _audit(mysql_test_engine, noop_request) == []
     assert service.authenticate(new_token).id == target.id
 
 
-@pytest.mark.parametrize("entry", ["combined", "self", "admin"])
+@pytest.mark.parametrize("entry", ["combined", "self"])
 def test_profile_only_updates_keep_sessions_and_protected_admin_rules(mysql_test_engine, entry):
     service, actor, token = _account(mysql_test_engine, role="admin", protected=True)
     request_id = uuid.uuid4().hex
@@ -115,10 +120,8 @@ def test_profile_only_updates_keep_sessions_and_protected_admin_rules(mysql_test
     if entry == "combined":
         service.edit_user(token, user_id=actor.id, username=actor.username,
                           role="admin", status="active", **kwargs)
-    elif entry == "self":
-        service.update_own_profile(token, **kwargs)
     else:
-        service.update_user_profile(token, user_id=actor.id, **kwargs)
+        service.update_own_profile(token, **kwargs)
     assert service.authenticate(token).full_name == "Updated"
     assert _audit(mysql_test_engine, request_id)[0][0] == "user_profile_changed"
     _, other_admin, other_token = _account(mysql_test_engine, role="admin")
@@ -135,13 +138,12 @@ def test_profile_only_updates_keep_sessions_and_protected_admin_rules(mysql_test
 
     before = protected_state()
     for acting_token in (token, other_token):
-        for method, values in [("change_role", {"role": "user"}),
-                               ("edit_user", {"username": actor.username, "full_name": "Rejected",
-                                              "organization_name": None, "role": "user", "status": "active"})]:
+        for values in [{"role": "user"},
+                       {"username": actor.username, "full_name": "Rejected",
+                        "organization_name": None, "role": "user", "status": "active"}]:
             rejected_request = uuid.uuid4().hex
             with pytest.raises(AuthError, match="protected_admin"):
-                getattr(service, method)(acting_token, user_id=actor.id,
-                                          request_id=rejected_request, **values)
+                _edit(service, acting_token, actor, rejected_request, **values)
             assert _audit(mysql_test_engine, rejected_request) == []
             assert protected_state() == before
             assert service.authenticate(acting_token).status == "active"
@@ -180,7 +182,7 @@ def test_concurrent_admin_disabling_cannot_commit_both_accounts_disabled(mysql_t
     def disable(token, target):
         barrier.wait()
         try:
-            service.change_status(token, user_id=target.id, status="disabled", request_id=uuid.uuid4().hex)
+            _edit(service, token, target, uuid.uuid4().hex, status="disabled")
             return True
         except AuthError as error:
             assert error.error_code in {"not_authenticated", "last_active_admin"}

@@ -319,22 +319,6 @@ class AuthService:
         except IntegrityError as exc:
             raise AuthError("username_taken", 409) from exc
 
-    def change_username(
-        self,
-        token: str | None,
-        *,
-        user_id: int,
-        username: str,
-        request_id: str,
-    ) -> AuthUser:
-        normalized = normalize_username(username)
-        return self._mutate_user(
-            token,
-            user_id=user_id,
-            request_id=request_id,
-            changes={"username": normalized},
-        )
-
     def update_own_profile(
         self,
         token: str | None,
@@ -362,42 +346,6 @@ class AuthService:
                 connection,
                 actor=user,
                 target=user,
-                changes={
-                    "full_name": normalized_full_name,
-                    "organization_name": normalized_organization,
-                },
-                request_id=request_id,
-                now=now,
-            )
-
-    def update_user_profile(
-        self,
-        token: str | None,
-        *,
-        user_id: int,
-        full_name: str | None,
-        organization_name: str | None,
-        request_id: str,
-    ) -> AuthUser:
-        token_hash = _session_token_hash(token)
-        normalized_full_name = _profile_value(
-            full_name,
-            max_length=FULL_NAME_MAX_LENGTH,
-        )
-        normalized_organization = _profile_value(
-            organization_name,
-            max_length=ORGANIZATION_NAME_MAX_LENGTH,
-        )
-        now = self._now()
-        with self._engine.begin() as connection:
-            actor = self._lock_admin(connection, token_hash, now)
-            target = repository.lock_user_by_id(connection, user_id)
-            if target is None:
-                raise AuthError("user_not_found", 404)
-            return self._apply_user_changes_locked(
-                connection,
-                actor=actor,
-                target=target,
                 changes={
                     "full_name": normalized_full_name,
                     "organization_name": normalized_organization,
@@ -478,40 +426,6 @@ class AuthService:
         updated = repository.lock_user_by_id(connection, target.id)
         assert updated is not None
         return updated
-
-    def change_role(
-        self,
-        token: str | None,
-        *,
-        user_id: int,
-        role: str,
-        request_id: str,
-    ) -> AuthUser:
-        if role not in {"admin", "user"}:
-            raise AuthError("invalid_role", 400)
-        return self._mutate_user(
-            token,
-            user_id=user_id,
-            request_id=request_id,
-            changes={"role": role},
-        )
-
-    def change_status(
-        self,
-        token: str | None,
-        *,
-        user_id: int,
-        status: str,
-        request_id: str,
-    ) -> AuthUser:
-        if status not in {"active", "disabled"}:
-            raise AuthError("invalid_status", 400)
-        return self._mutate_user(
-            token,
-            user_id=user_id,
-            request_id=request_id,
-            changes={"status": status},
-        )
 
     def _mutate_user(
         self,
