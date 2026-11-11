@@ -12,14 +12,6 @@ from harness.http_target import validate_api_target
 from harness.result import Evidence, GateResult, GateStatus, redact_gate_result
 from scheduler.discovery import load_scheme_config
 from scheduler.repository import registry_scheme_id
-from shared.historical_reference_compatibility import (
-    load_historical_backtest_references,
-)
-from shared.legacy_prediction_migration import (
-    load_legacy_corrected_exact_evidence,
-    load_legacy_prediction_migrations,
-)
-from shared.legacy_backtest_lineage import load_legacy_backtest_lineages
 from shared.unversioned_backtest_facts import load_unversioned_backtest_facts
 from shared.task_specs import load_legacy_native_scheme_ids
 from harness.gates.consistency.common import (
@@ -36,8 +28,6 @@ from harness.gates.consistency.common import (
     MONTHLY_ROW_FIELDS,
     PROJECT_ROOT,
     SHANGHAI_TIMEZONE,
-    _LegacyBacktestLineageMatch,
-    _LegacyMigrationMatch,
     _actual_selector,
     _backtest_source_key,
     _canonical_json_sha256,
@@ -55,24 +45,13 @@ from harness.gates.consistency.common import (
     _remaining_budget,
     _required_text,
     _source,
-    _source_registry_scope_status,
 )
 from harness.gates.consistency.frozen_calendar import (
     _FrozenCalendar,
     _next_month_anchor,
     _validate_task_date_contract,
 )
-from harness.gates.consistency.legacy import (
-    _legacy_backtest_lineage_evidence,
-    _legacy_comparison_identity,
-    _legacy_fact,
-    _legacy_fact_sort_key,
-    _legacy_migration_evidence,
-    _resolve_legacy_backtest_lineage_matches,
-    _resolve_legacy_migration_matches,
-)
 from harness.gates.consistency.completeness import (
-    _validated_live_only_baselines,
     validate_snapshot_completeness,
 )
 from harness.gates.consistency.lineage import validate_snapshot_lineage
@@ -116,8 +95,6 @@ __all__ = [
     "PROJECT_ROOT",
     "SHANGHAI_TIMEZONE",
     "_FrozenCalendar",
-    "_LegacyBacktestLineageMatch",
-    "_LegacyMigrationMatch",
     "_actual_selector",
     "_backtest_source_key",
     "_canonical_json_sha256",
@@ -134,11 +111,6 @@ __all__ = [
     "_is_snapshot_id",
     "_iso_date",
     "_json_mapping",
-    "_legacy_backtest_lineage_evidence",
-    "_legacy_comparison_identity",
-    "_legacy_fact",
-    "_legacy_fact_sort_key",
-    "_legacy_migration_evidence",
     "_next_month_anchor",
     "_optional_positive_int",
     "_positive_int",
@@ -155,13 +127,9 @@ __all__ = [
     "_read_versions",
     "_remaining_budget",
     "_required_text",
-    "_resolve_legacy_backtest_lineage_matches",
-    "_resolve_legacy_migration_matches",
     "_snapshot_digest",
     "_source",
-    "_source_registry_scope_status",
     "_validate_task_date_contract",
-    "_validated_live_only_baselines",
     "aggregate_display_facts",
     "build_representation_facts",
     "validate_and_join_facts",
@@ -197,21 +165,10 @@ def _merge_subresult_error(
 
 
 _EVIDENCE_LOADERS = (
-    ("legacy_migrations", load_legacy_prediction_migrations),
-    ("corrected_exact", load_legacy_corrected_exact_evidence),
-    ("legacy_lineages", load_legacy_backtest_lineages),
-    ("historical_references", load_historical_backtest_references),
     ("unversioned_facts", load_unversioned_backtest_facts),
     ("legacy_native_ids", load_legacy_native_scheme_ids),
 )
-_COMPLETENESS_EVIDENCE = (
-    "legacy_migrations",
-    "corrected_exact",
-    "historical_references",
-)
 _LINEAGE_EVIDENCE = (
-    *_COMPLETENESS_EVIDENCE,
-    "legacy_lineages",
     "unversioned_facts",
     "legacy_native_ids",
 )
@@ -290,30 +247,16 @@ class DataConsistencyGate(Gate):
                     load_errors[label] = (
                         f"{label} evidence unavailable: {type(exc).__name__}"
                     )
-            legacy_migrations = loaded.get("legacy_migrations")
-            corrected_exact_evidence = loaded.get("corrected_exact")
-            legacy_backtest_lineages = loaded.get("legacy_lineages")
-            historical_references = loaded.get("historical_references")
             unversioned_backtest_facts = loaded.get("unversioned_facts")
             legacy_native_ids = loaded.get("legacy_native_ids")
-            completeness_missing = _missing_evidence(
-                load_errors, _COMPLETENESS_EVIDENCE
-            )
             lineage_missing = _missing_evidence(
                 load_errors, _LINEAGE_EVIDENCE
             )
             try:
-                if completeness_missing:
-                    raise DataConsistencyAuthorityUnavailable(
-                        "; ".join(completeness_missing)
-                    )
                 completeness_errors, completeness_details = (
                     validate_snapshot_completeness(
                         snapshot,
                         display_until=display_until,
-                        historical_references=historical_references,
-                        legacy_migrations=legacy_migrations,
-                        corrected_exact_evidence=corrected_exact_evidence,
                     )
                 )
                 completeness_authority_gaps = completeness_details.get(
@@ -345,10 +288,6 @@ class DataConsistencyGate(Gate):
                     )
                 lineage_errors, lineage_details = validate_snapshot_lineage(
                     snapshot,
-                    historical_references=historical_references,
-                    legacy_migrations=legacy_migrations,
-                    corrected_exact_evidence=corrected_exact_evidence,
-                    legacy_backtest_lineages=legacy_backtest_lineages,
                     unversioned_backtest_facts=unversioned_backtest_facts,
                 )
                 lineage_authority_gaps = lineage_details.get(
@@ -379,9 +318,6 @@ class DataConsistencyGate(Gate):
                     snapshot,
                     display_until=display_until,
                     legacy_native_scheme_ids=legacy_native_ids,
-                    historical_references=historical_references,
-                    legacy_migrations=legacy_migrations,
-                    corrected_exact_evidence=corrected_exact_evidence,
                 )
             except DataConsistencyAuthorityUnavailable:
                 pass  # 缺失证据已由 lineage 子结果以 BLOCKED 报告

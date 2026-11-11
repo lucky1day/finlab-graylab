@@ -566,35 +566,6 @@ def _read_references(
                 **dict(row),
                 "reference_id": int(row[column]),
             }
-    if table != "t_backtest_runs" or not result:
-        return result
-    source_ids = sorted({str(row["scheme_id"]) for row in result.values()})
-    registry_scopes: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for source_chunk in _chunks(source_ids):
-        for registry_row in _execute_budgeted(
-            connection,
-            text(
-                "SELECT base_scheme_id, target_tenor, horizon, status "
-                "FROM t_scheme_registry "
-                "WHERE base_scheme_id IN :scheme_ids"
-            ).bindparams(bindparam("scheme_ids", expanding=True)),
-            {"scheme_ids": list(source_chunk)},
-            deadline=deadline,
-            monotonic=monotonic,
-        ).mappings():
-            registry_scopes[str(registry_row["base_scheme_id"])].append(
-                {
-                    "target_tenor": str(registry_row["target_tenor"]),
-                    "horizon": int(registry_row["horizon"]),
-                    "status": str(registry_row["status"]),
-                }
-            )
-    for row in result.values():
-        scheme_id = str(row["scheme_id"])
-        row["source_registry_scopes"] = sorted(
-            registry_scopes.get(scheme_id, []),
-            key=lambda item: (item["target_tenor"], item["horizon"]),
-        )
     return result
 
 

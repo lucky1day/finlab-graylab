@@ -143,7 +143,6 @@ def _validate_task_date_contract(
     is_live: bool,
     calendar: _FrozenCalendar,
     business_key: tuple[str, str, int, str],
-    allow_legacy_target_date: bool = False,
 ) -> None:
     """按冻结日历独立核对每个任务族的三日期业务语义。"""
     try:
@@ -167,9 +166,7 @@ def _validate_task_date_contract(
                 feature_date,
                 horizon,
             )
-            if target_date != expected_target and not (
-                task_type == "T+5" and allow_legacy_target_date
-            ):
+            if target_date != expected_target:
                 raise DataConsistencyError(
                     f"daily target_date must be trading-day horizon "
                     f"{expected_target}, got {target_date}"

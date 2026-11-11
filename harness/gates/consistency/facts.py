@@ -3,11 +3,6 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any, Mapping, Sequence
 
-from shared.historical_reference_compatibility import HistoricalBacktestReference
-from shared.legacy_prediction_migration import (
-    LegacyCorrectedExactEvidence,
-    LegacyPredictionMigration,
-)
 from shared.task_specs import runtime_task_contract
 from harness.gates.consistency.common import (
     ConsistencyFact,
@@ -20,18 +15,15 @@ from harness.gates.consistency.common import (
     _direction,
     _display_month,
     _iso_date,
-    _json_mapping,
     _optional_positive_int,
     _positive_int,
     _required_text,
     _source,
-    _source_registry_scope_status,
 )
 from harness.gates.consistency.frozen_calendar import (
     _FrozenCalendar,
     _validate_task_date_contract,
 )
-from harness.gates.consistency.legacy import _resolve_legacy_migration_matches
 
 
 def validate_and_join_facts(
@@ -39,23 +31,9 @@ def validate_and_join_facts(
     *,
     display_until: str,
     legacy_native_scheme_ids: frozenset[str] = frozenset(),
-    historical_references: frozenset[
-        HistoricalBacktestReference
-    ] = frozenset(),
-    legacy_migrations: frozenset[
-        LegacyPredictionMigration
-    ] = frozenset(),
-    corrected_exact_evidence: frozenset[
-        LegacyCorrectedExactEvidence
-    ] = frozenset(),
 ) -> list[ConsistencyFact]:
     """独立校验产品事实并按任务规则关联已发布或 live Actual。"""
     calendar = _FrozenCalendar.from_rows(snapshot.calendar_rows)
-    legacy_matches = _resolve_legacy_migration_matches(
-        snapshot,
-        legacy_migrations,
-        corrected_exact_evidence,
-    )
     registry_by_scope: dict[tuple[str, str, int], Mapping[str, Any]] = {}
     for row in snapshot.registry_rows:
         scope = (
@@ -111,14 +89,6 @@ def validate_and_join_facts(
     }
     backtest_runs = {
         int(row["reference_id"]): row for row in snapshot.backtest_runs
-    }
-    versions = {
-        (str(row["scheme_id"]), str(row["scheme_version"])): row
-        for row in snapshot.version_rows
-    }
-    compatible_pairs = {
-        (item.prediction_scheme_id, item.backtest_source_scheme_id)
-        for item in historical_references
     }
     business_keys: set[tuple[str, str, int, str]] = set()
     facts: list[ConsistencyFact] = []
@@ -191,39 +161,11 @@ def validate_and_join_facts(
             backtest_run = backtest_runs[backtest_run_id]
             source_scheme_id = str(backtest_run.get("scheme_id") or "")
             if source_scheme_id != scheme_id:
-                if (scheme_id, source_scheme_id) not in compatible_pairs:
-                    raise DataConsistencyError(
-                        "prediction references another scheme's backtest run: "
-                        f"{business_key!r}"
-                    )
-                source_scope_status = _source_registry_scope_status(
-                    backtest_run,
-                    target_tenor=target_tenor,
-                    horizon=horizon,
+                raise DataConsistencyError(
+                    "prediction references another scheme's backtest run: "
+                    f"{business_key!r}"
                 )
-                source_summary = _json_mapping(
-                    backtest_run.get("summary"), field="backtest summary"
-                )
-                source_exact = str(
-                    source_summary.get("scheme_version") or ""
-                )
-                source_version = versions.get(
-                    (source_scheme_id, source_exact)
-                )
-                if (
-                    source_scope_status != "archived"
-                    or source_version is None
-                    or source_version.get("status") != "retired"
-                    or backtest_run.get("status") != "success"
-                    or not backtest_run.get("code_hash")
-                    or not backtest_run.get("config_hash")
-                    or not backtest_run.get("input_artifact_hash")
-                ):
-                    raise DataConsistencyError(
-                        "historical cross-scheme reference lacks retired source evidence: "
-                        f"{business_key!r}"
-                    )
-            elif backtest_run.get("status") not in {None, "success"}:
+            if backtest_run.get("status") not in {None, "success"}:
                 raise DataConsistencyError(
                     f"prediction references non-success backtest run: {business_key!r}"
                 )
@@ -239,11 +181,6 @@ def validate_and_join_facts(
                     f"backtest prediction must have predict_date=feature_date: {business_key!r}"
                 )
 
-        legacy_match = (
-            legacy_matches.get(backtest_run_id)
-            if backtest_run_id is not None
-            else None
-        )
         _validate_task_date_contract(
             task_type=str(registry["task_type"]),
             horizon=horizon,
@@ -253,10 +190,6 @@ def validate_and_join_facts(
             is_live=live_run_id is not None,
             calendar=calendar,
             business_key=business_key,
-            allow_legacy_target_date=(
-                legacy_match is not None
-                and business_key in legacy_match.mismatch_business_keys
-            ),
         )
 
         if feature_date < HISTORY_START_DATE or predict_date > display_until:

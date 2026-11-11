@@ -3,46 +3,25 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any, Iterable, Mapping
 
-from shared.historical_reference_compatibility import HistoricalBacktestReference
-from shared.legacy_prediction_migration import (
-    LegacyCorrectedExactEvidence,
-    LegacyPredictionMigration,
-)
-from shared.legacy_backtest_lineage import LegacyBacktestLineage
 from shared.unversioned_backtest_facts import UnversionedBacktestFacts
 from shared.prediction_context import LIVE_PREDICTION_PHASES
 from harness.gates.consistency.common import (
     DataConsistencyError,
     DatabaseSnapshot,
+    _canonical_json_sha256,
+    _direction,
     _is_sha256,
     _is_snapshot_id,
+    _iso_date,
+    _positive_int,
     _json_mapping,
-    _product_business_key,
     _required_text,
 )
-from harness.gates.consistency.legacy import (
-    _legacy_backtest_lineage_evidence,
-    _legacy_migration_evidence,
-    _resolve_legacy_backtest_lineage_matches,
-    _resolve_legacy_migration_matches,
-    _unversioned_facts_sha256,
-)
-from harness.gates.consistency.completeness import _validated_live_only_baselines
 
 
 def validate_snapshot_lineage(
     snapshot: DatabaseSnapshot,
     *,
-    historical_references: frozenset[HistoricalBacktestReference],
-    legacy_migrations: frozenset[
-        LegacyPredictionMigration
-    ] = frozenset(),
-    corrected_exact_evidence: frozenset[
-        LegacyCorrectedExactEvidence
-    ] = frozenset(),
-    legacy_backtest_lineages: frozenset[
-        LegacyBacktestLineage
-    ] = frozenset(),
     unversioned_backtest_facts: frozenset[
         UnversionedBacktestFacts
     ] = frozenset(),
@@ -50,27 +29,6 @@ def validate_snapshot_lineage(
     """核对产品事实引用的 exact、run、版本与输入工件血缘。"""
     errors: list[str] = []
     authority_gaps: set[str] = set()
-    legacy_matches = _resolve_legacy_migration_matches(
-        snapshot,
-        legacy_migrations,
-        corrected_exact_evidence,
-    )
-    legacy_lineage_matches = _resolve_legacy_backtest_lineage_matches(
-        snapshot,
-        legacy_backtest_lineages,
-    )
-    registry_scopes = {
-        (str(row["base_scheme_id"]), str(row["target_tenor"]), int(row["horizon"]))
-        for row in snapshot.registry_rows
-    }
-    referenced_backtest_scopes = {
-        (str(row["scheme_id"]), str(row["target_tenor"]), int(row["horizon"]))
-        for row in snapshot.prediction_rows
-        if row.get("backtest_run_id") is not None
-    }
-    live_only_keys, _ = _validated_live_only_baselines(
-        snapshot, legacy_migrations, registry_scopes - referenced_backtest_scopes
-    )
     versions = {
         (str(row["scheme_id"]), str(row["scheme_version"])): row
         for row in snapshot.version_rows
@@ -86,13 +44,8 @@ def validate_snapshot_lineage(
         (str(row["base_scheme_id"]), str(row["target_tenor"]), int(row["horizon"])): row
         for row in snapshot.registry_rows
     }
-    compatibility = {
-        (item.prediction_scheme_id, item.backtest_source_scheme_id)
-        for item in historical_references
-    }
     checked_artifacts: set[str] = set()
     checked_versions: set[tuple[str, str]] = set()
-    legacy_fact_count = 0
 
     def validate_version(
         identity: tuple[str, str],
@@ -116,16 +69,10 @@ def validate_snapshot_lineage(
         for field in ("code_hash", "config_hash", "manifest_hash"):
             value = version.get(field)
             if value in {None, ""}:
-                if not (
-                    field == "manifest_hash"
-                    and identity in legacy_live_only_versions
-                    and runtime_type == "native_adapter"
-                    and version.get("status") == "retired"
-                ):
-                    authority_gaps.add(
-                        f"version lineage is missing: scheme_id={identity[0]} "
-                        f"exact={identity[1]} field={field}"
-                    )
+                authority_gaps.add(
+                    f"version lineage is missing: scheme_id={identity[0]} "
+                    f"exact={identity[1]} field={field}"
+                )
             elif not _is_sha256(value):
                 errors.append(
                     f"version lineage hash invalid: scheme_id={identity[0]} "
@@ -144,27 +91,6 @@ def validate_snapshot_lineage(
                     f"exact={identity[1]}"
                 )
 
-    candidate_live_only_versions = {
-        (str(row["scheme_id"]), str(row["scheme_version"]))
-        for row in snapshot.prediction_rows
-        if _product_business_key(row) in live_only_keys.get(
-            (str(row["scheme_id"]), str(row["target_tenor"]), int(row["horizon"])),
-            frozenset(),
-        )
-    }
-    legacy_live_only_versions = {
-        identity
-        for identity in candidate_live_only_versions
-        if all(
-            _product_business_key(row) in live_only_keys.get(
-                (str(row["scheme_id"]), str(row["target_tenor"]), int(row["horizon"])),
-                frozenset(),
-            )
-            for row in snapshot.prediction_rows
-            if (str(row["scheme_id"]),
-                str(row["scheme_version"])) == identity
-        )
-    }
     unversioned_backtest_rows: dict[
         tuple[str, str, int], list[Mapping[str, Any]]
     ] = defaultdict(list)
@@ -174,23 +100,6 @@ def validate_snapshot_lineage(
         if registry_row is None:
             continue
         backtest_run_id = row.get("backtest_run_id")
-        legacy_match = (
-            legacy_matches.get(int(backtest_run_id))
-            if backtest_run_id is not None
-            else None
-        )
-        if (
-            legacy_match is not None
-            and not row.get("scheme_version")
-            and scope
-            == (
-                legacy_match.entry.prediction_scheme_id,
-                legacy_match.entry.target_tenor,
-                legacy_match.entry.horizon,
-            )
-        ):
-            legacy_fact_count += 1
-            continue
         if backtest_run_id is not None and not str(
             row.get("scheme_version") or ""
         ).strip():
@@ -232,18 +141,9 @@ def validate_snapshot_lineage(
                 artifact_id = str(run.get("input_artifact_id") or "")
                 artifact = artifacts.get(artifact_id)
                 if not artifact_id or artifact is None:
-                    if not (
-                        not artifact_id
-                        and version_runtime == "native_adapter"
-                        and version is not None
-                        and version.get("status") == "retired"
-                        and _product_business_key(row) in live_only_keys.get(
-                            scope, frozenset()
-                        )
-                    ):
-                        authority_gaps.add(
-                            f"live run input artifact is missing: run_id={row['run_id']}"
-                        )
+                    authority_gaps.add(
+                        f"live run input artifact is missing: run_id={row['run_id']}"
+                    )
                 elif artifact_id not in checked_artifacts:
                     checked_artifacts.add(artifact_id)
                     if (
@@ -260,9 +160,6 @@ def validate_snapshot_lineage(
             run = backtest_runs.get(int(row["backtest_run_id"]))
             if run is None:
                 continue
-            legacy_lineage = legacy_lineage_matches.get(
-                int(row["backtest_run_id"])
-            )
             source_scheme_id = str(run.get("scheme_id") or "")
             summary = _json_mapping(run.get("summary"), field="backtest summary")
             source_exact = str(summary.get("scheme_version") or "")
@@ -271,7 +168,7 @@ def validate_snapshot_lineage(
                     errors.append(
                         f"backtest exact drift: run_id={row['backtest_run_id']}"
                     )
-            elif (scope[0], source_scheme_id) not in compatibility:
+            else:
                 errors.append(
                     f"unapproved backtest lineage source: prediction={scope[0]} "
                     f"source={source_scheme_id}"
@@ -279,23 +176,13 @@ def validate_snapshot_lineage(
             source_identity = (source_scheme_id, source_exact)
             source_version = versions.get(source_identity)
             validate_version(source_identity, source_version)
-            if (
-                source_scheme_id != scope[0]
-                and source_version is not None
-                and source_version.get("status") != "retired"
-            ):
-                errors.append(
-                    "historical backtest source exact is not retired: "
-                    f"scheme_id={source_scheme_id} exact={source_exact}"
-                )
             for field in ("code_hash", "config_hash"):
                 value = run.get(field)
                 if value in {None, ""}:
-                    if legacy_lineage is None:
-                        authority_gaps.add(
-                            "backtest lineage is missing: "
-                            f"run_id={row['backtest_run_id']} field={field}"
-                        )
+                    authority_gaps.add(
+                        "backtest lineage is missing: "
+                        f"run_id={row['backtest_run_id']} field={field}"
+                    )
                 elif not _is_sha256(value):
                     errors.append(
                         f"backtest lineage hash invalid: run_id={row['backtest_run_id']} "
@@ -308,11 +195,10 @@ def validate_snapshot_lineage(
                     )
             manifest_hash = summary.get("manifest_hash")
             if manifest_hash in {None, ""}:
-                if legacy_lineage is None:
-                    authority_gaps.add(
-                        "backtest lineage is missing: "
-                        f"run_id={row['backtest_run_id']} field=manifest_hash"
-                    )
+                authority_gaps.add(
+                    "backtest lineage is missing: "
+                    f"run_id={row['backtest_run_id']} field=manifest_hash"
+                )
             elif not _is_sha256(manifest_hash):
                 errors.append(
                     f"backtest lineage hash invalid: run_id={row['backtest_run_id']} "
@@ -327,11 +213,10 @@ def validate_snapshot_lineage(
                 )
             input_identity = run.get("input_artifact_hash")
             if input_identity in {None, ""}:
-                if legacy_lineage is None:
-                    authority_gaps.add(
-                        f"backtest input identity is missing: "
-                        f"run_id={row['backtest_run_id']}"
-                    )
+                authority_gaps.add(
+                    f"backtest input identity is missing: "
+                    f"run_id={row['backtest_run_id']}"
+                )
             elif _is_snapshot_id(input_identity):
                 if (
                     summary.get("data_snapshot_id") != input_identity
@@ -363,11 +248,6 @@ def validate_snapshot_lineage(
         "backtest_run_count": len(backtest_runs),
         "input_artifact_count": len(artifacts),
         "authority_gaps": sorted(authority_gaps),
-        "legacy_migration_fact_count": legacy_fact_count,
-        "legacy_migrations": _legacy_migration_evidence(legacy_matches),
-        "legacy_backtest_lineages": _legacy_backtest_lineage_evidence(
-            legacy_lineage_matches
-        ),
     }
 
 
@@ -417,3 +297,37 @@ def _judge_unversioned_backtest_facts(
         )
     return covered
 
+
+
+def _product_fact(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "scheme_id": _required_text(row.get("scheme_id"), field="scheme_id"),
+        "target_tenor": _required_text(
+            row.get("target_tenor"), field="target_tenor"
+        ),
+        "horizon": _positive_int(row.get("horizon"), field="horizon"),
+        "predict_date": _iso_date(row.get("predict_date"), field="predict_date"),
+        "feature_date": _iso_date(row.get("feature_date"), field="feature_date"),
+        "target_date": _iso_date(row.get("target_date"), field="target_date"),
+        "predicted_direction": _direction(
+            row.get("predicted_direction"), field="predicted_direction"
+        ),
+        "actual_direction": _direction(
+            row.get("backtest_actual_direction"),
+            field="backtest actual direction",
+        ),
+    }
+
+
+def _unversioned_facts_sha256(rows: Iterable[Mapping[str, Any]]) -> str:
+    """exact 为空的回测产品事实的规范摘要，与冻结清单的生成口径一致。"""
+    facts = sorted(
+        (_product_fact(row) for row in rows),
+        key=lambda fact: (
+            fact["target_tenor"],
+            fact["horizon"],
+            fact["target_date"],
+            fact["predict_date"],
+        ),
+    )
+    return _canonical_json_sha256(facts)
