@@ -152,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
             fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w") as handle:
                 json.dump(template, handle)
+            env["DAILY_0629_SOURCE_PYTHON"] = "/Users/macstudio0/miniconda3/envs/forecast_env/bin/python"  # 沙箱 HOME 与生产用户不同，显式指定
             env.update({"BFL_SOURCE_DB_CONFIG_ROOT": str(source_dir), "BFL_SOURCE_DB_CONFIG_PATH": str(target)})
         refresh_date = subprocess.run(
             [SERVICE_PY, "-I", "-B", "-c", "import json,sys;print(json.load(open(sys.argv[1]))['refresh_date'])", str(sandbox / "data-bridge/refresh/state.json")],
