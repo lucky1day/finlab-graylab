@@ -25,7 +25,7 @@ from scheduler.process_control import (
     ProcessGroupTerminationError,
     ProcessRegistrationCleanupError,
     ProcessStartGuard,
-    capture_new_session_process_group,
+    start_process_group,
     require_process_start_guard,
     terminate_process_group as _terminate_process_group,
 )
@@ -862,82 +862,18 @@ def _run_process_group(
     cancellation_event: threading.Event | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """启动独立进程组，timeout 时清理 conda wrapper 及其子进程。"""
-    guard_context = (
-        process_start_guard
-        if process_start_guard is not None
-        else nullcontext()
+    process, process_group_id = start_process_group(
+        cmd,
+        process_start_guard=process_start_guard,
+        process_started=process_started,
+        process_fence=process_fence,
+        cancellation_event=cancellation_event,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
-    process_start_completed = False
-    unconfirmed_cleanup_error: ProcessRegistrationCleanupError | None = None
-    try:
-        with guard_context:
-            if cancellation_event is not None and cancellation_event.is_set():
-                raise RuntimeError("Native process start was cancelled")
-            if process_fence is not None:
-                process_fence()
-            process = subprocess.Popen(
-                cmd,
-                cwd=cwd,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-            )
-            process_group_id: int | None = None
-            try:
-                process_group_id = capture_new_session_process_group(
-                    process
-                )
-                if process_started is not None:
-                    process_started(process.pid, process_group_id)
-                if (
-                    cancellation_event is not None
-                    and cancellation_event.is_set()
-                ):
-                    raise RuntimeError("Native process was cancelled")
-                if process_fence is not None:
-                    process_fence()
-            except BaseException as registration_error:
-                termination = _terminate_process_group(
-                    process,
-                    process_group_id=process_group_id,
-                )
-                if not termination.confirmed_gone:
-                    unconfirmed_cleanup_error = (
-                        ProcessRegistrationCleanupError(
-                            registration_error=registration_error,
-                            termination=termination,
-                        )
-                    )
-                    raise unconfirmed_cleanup_error from registration_error
-                raise
-            process_start_completed = True
-    except BaseException as guard_exit_error:
-        if (
-            unconfirmed_cleanup_error is not None
-            and guard_exit_error is not unconfirmed_cleanup_error
-        ):
-            raise unconfirmed_cleanup_error from guard_exit_error
-        if process_start_completed:
-            termination = _terminate_process_group(
-                process,
-                process_group_id=process_group_id,
-            )
-            if not termination.confirmed_gone:
-                raise ProcessRegistrationCleanupError(
-                    registration_error=guard_exit_error,
-                    termination=termination,
-                ) from guard_exit_error
-        raise
-    if not process_start_completed:
-        if unconfirmed_cleanup_error is not None:
-            raise unconfirmed_cleanup_error
-        raise RuntimeError(
-            "process_start_guard suppressed a process-start failure"
-        )
-    if process_group_id is None:
-        raise AssertionError("process group was not captured")
     deadline = time.monotonic() + timeout
     try:
         while True:

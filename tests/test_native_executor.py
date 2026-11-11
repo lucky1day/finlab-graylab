@@ -256,7 +256,7 @@ def test_native_process_group_is_terminated_on_interruption() -> None:
     with (
         patch("scheduler.executor.subprocess.Popen", return_value=process),
         patch(
-            "scheduler.executor.capture_new_session_process_group",
+            "scheduler.process_control.capture_new_session_process_group",
             return_value=4321,
         ),
         patch(

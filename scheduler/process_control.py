@@ -7,7 +7,9 @@ import signal
 import subprocess
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
+from typing import Any, Callable, ContextManager
 
 
 @dataclass(frozen=True)
@@ -149,6 +151,95 @@ def capture_new_session_process_group(
         # ``start_new_session=True`` 令新进程成为 session/group leader，
         # 因此即便极短进程已退出，初始 PGID 仍确定等于其 PID。
         return process_id
+
+
+def start_process_group(
+    command: list[str],
+    *,
+    process_start_guard: ContextManager[object] | None,
+    process_started: Callable[[int, int], None] | None = None,
+    process_fence: Callable[[], None] | None = None,
+    cancellation_event: threading.Event | None = None,
+    **popen_kwargs: Any,
+) -> tuple[subprocess.Popen[Any], int]:
+    """在启动 guard 内启动独立进程组并完成登记；登记失败时确认整个组已退出。
+
+    Native 与 Blackbox 两个执行器共用本函数，保证启动、取消与清理语义一致。
+    无法确认清理时抛出 ``ProcessRegistrationCleanupError``，供调用方 poison 批次。
+    """
+    guard_context = (
+        process_start_guard
+        if process_start_guard is not None
+        else nullcontext()
+    )
+    process_start_completed = False
+    unconfirmed_cleanup_error: ProcessRegistrationCleanupError | None = None
+    try:
+        with guard_context:
+            if cancellation_event is not None and cancellation_event.is_set():
+                raise RuntimeError("Native process start was cancelled")
+            if process_fence is not None:
+                process_fence()
+            process = subprocess.Popen(
+                command,
+                start_new_session=True,
+                **popen_kwargs,
+            )
+            process_group_id: int | None = None
+            try:
+                process_group_id = capture_new_session_process_group(
+                    process
+                )
+                if process_started is not None:
+                    process_started(process.pid, process_group_id)
+                if (
+                    cancellation_event is not None
+                    and cancellation_event.is_set()
+                ):
+                    raise RuntimeError("Native process was cancelled")
+                if process_fence is not None:
+                    process_fence()
+            except BaseException as registration_error:
+                termination = terminate_process_group(
+                    process,
+                    process_group_id=process_group_id,
+                )
+                if not termination.confirmed_gone:
+                    unconfirmed_cleanup_error = (
+                        ProcessRegistrationCleanupError(
+                            registration_error=registration_error,
+                            termination=termination,
+                        )
+                    )
+                    raise unconfirmed_cleanup_error from registration_error
+                raise
+            process_start_completed = True
+    except BaseException as guard_exit_error:
+        if (
+            unconfirmed_cleanup_error is not None
+            and guard_exit_error is not unconfirmed_cleanup_error
+        ):
+            raise unconfirmed_cleanup_error from guard_exit_error
+        if process_start_completed:
+            termination = terminate_process_group(
+                process,
+                process_group_id=process_group_id,
+            )
+            if not termination.confirmed_gone:
+                raise ProcessRegistrationCleanupError(
+                    registration_error=guard_exit_error,
+                    termination=termination,
+                ) from guard_exit_error
+        raise
+    if not process_start_completed:
+        if unconfirmed_cleanup_error is not None:
+            raise unconfirmed_cleanup_error
+        raise RuntimeError(
+            "process_start_guard suppressed a process-start failure"
+        )
+    if process_group_id is None:
+        raise AssertionError("process group was not captured")
+    return process, process_group_id
 
 
 def terminate_process_group(
