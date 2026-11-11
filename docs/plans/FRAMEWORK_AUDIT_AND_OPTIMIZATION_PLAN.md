@@ -140,6 +140,7 @@ Dashboard 后端拆分（sql/rules/payload/service）等工作区中进行中的
 - 3E 不改名：authority 层参数确实只在 legacy manifest 下生效，改名收益有限。
 - `process_started`/`process_fence` 仅测试传入，但它们是进程生命周期测试的接缝，暂不删除。
 
+| 2026-11-11 | 3D' Dashboard 后端 | `52426ba2` | 从 semantics 拆出 `factor_lab_dashboard_validation.py`（611 行），从 builder 拆出 `_dto.py`、`_encoding.py`；136 个顶层块逐字节一致；用相同合成数据（1 万事实）在基线 `d9a28960` 与当前代码上各生成响应，结构化比对仅随机 `snapshot_id`（`uuid4`）不同。生产名单读取、诊断 LRU、`_build_summary/_build_detail` 因测试补丁点或模块状态保留原位 |
 | 2026-11-11 | CI | `7990a6b4` | 新增未定义名检查（可拦截 `456f0215` 那类 NameError）和定时入口启动冒烟；release job 改为构建两次比对 sha256。job 名称不变 |
 
 经评估不做的项（附证据）：
