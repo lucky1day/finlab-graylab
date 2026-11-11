@@ -826,7 +826,6 @@ def activate_blackbox_revision(
         scheme_id=cfg.scheme_id,
     ):
         with engine.begin() as conn:
-            lock_clause = " FOR UPDATE" if _dialect_name(conn) != "sqlite" else ""
             preflight = _read_blackbox_revision_activation_preflight_conn(
                 conn,
                 cfg,

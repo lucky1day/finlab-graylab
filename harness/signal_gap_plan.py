@@ -42,7 +42,6 @@ from shared.period_average_buckets import period_anchor_dates
 from shared.task_specs import (
     ALLOWED_FREQUENCIES,
     PERIOD_AVERAGE_TASK_TYPES,
-    TASK_COMBINATIONS,
     load_legacy_native_scheme_ids,
     runtime_task_contract,
 )

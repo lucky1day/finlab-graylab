@@ -5,7 +5,6 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from pathlib import Path
 from functools import partial
 
 from backtests.blackbox_v2 import merge_blackbox_historical_outputs, run_blackbox_historical_backtest
