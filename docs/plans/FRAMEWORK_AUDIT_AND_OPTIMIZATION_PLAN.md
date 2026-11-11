@@ -140,4 +140,11 @@ Dashboard 后端拆分（sql/rules/payload/service）等工作区中进行中的
 - 3E 不改名：authority 层参数确实只在 legacy manifest 下生效，改名收益有限。
 - `process_started`/`process_fence` 仅测试传入，但它们是进程生命周期测试的接缝，暂不删除。
 
-下一批候选（同样满足第 1 节约束）：3B `_fs`/`_digest` 公共工具（各处实现语义有细微差异，需逐处比对）；3F 测试共享 schema 夹具；`migrations/runner.py` 与 `scripts/apply_migrations.py` 中的未使用 import 需确认没有外部通过模块属性引用后再清理。`architecture/parity/five_y_factor_rule_online_v1.md` 等确认结案后再处理。
+| 2026-11-11 | CI | `7990a6b4` | 新增未定义名检查（可拦截 `456f0215` 那类 NameError）和定时入口启动冒烟；release job 改为构建两次比对 sha256。job 名称不变 |
+
+经评估不做的项（附证据）：
+
+- **3B 公共工具合并：** `_iso_date` 5 份、`_canonical_json` 3 份互不相同，`_is_sha256` 4 份有 2 种语义，`_fsync_directory` 3 份有 2 种。完全相同的只有几行，合并收益小于语义误合的风险。
+- **3F 共享 schema 夹具：** `t_scheme_registry` 的 6 份测试 DDL 是 6 种不同列集合（各测试只建所需列），其他表也类似。统一需要改写各测试的造数，暂缓。
+- **migrations/runner 与 intake 的"未使用"导入：** `scripts/apply_migrations.py` 通过 `globals()[handler_name]` 动态分派 16 个恢复函数，pyflakes 报的是误报；intake 按 B09 决定保留导出接口；runner 是迁移门面，生产机运维工具可能直接导入。不清理。
+- **`scheduler/persistence/predictions.py` 的 gray gap 拆分：** 测试在该模块上替换 10 个 gray gap 辅助函数，辅助函数又依赖模块内私有读写函数，拆出会形成循环导入并使补丁静默失效。这是写库路径，不做纯搬迁。
