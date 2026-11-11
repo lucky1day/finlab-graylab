@@ -18,9 +18,9 @@
 | 项目 | ECS 灰度 | Mac |
 |---|---|---|
 | `BFL_DEPLOYMENT_TARGET` | `aliyun-gray` | `mac3-production` |
-| current / previous release（2026-11-11 迁移 026 后） | `6b2797e7` / `11c5a7eb` | 同左 |
-| Dashboard Backend 进程 cwd（2026-11-11 读回） | `6b2797e7` | 同左 |
-| schema（2026-11-11 迁移 026 后） | 026 | 026 |
+| current / previous release（2026-11-11 迁移 027 后） | `9b89fb38` / `6b2797e7` | 同左 |
+| Dashboard Backend 进程 cwd（2026-11-11 读回） | `9b89fb38` | 同左 |
+| schema（2026-11-11 迁移 027 后） | 027 | 027 |
 | 调度控制面 | 5 个 systemd timer（DataBridge、日/周/月预测、Actuals） | launchd：同样 5 项 + 公网 Backend 与反向隧道 |
 | 部署矩阵配置范围（按期限计，含暂停项） | 150 | 159（150 + 9个W4） |
 
@@ -63,6 +63,7 @@
 
 - W4 Native 与 Blackbox 的保护原则见[根规范](../AGENTS.md)，迁移边界见[算法保真](architecture/SOURCE_ALGORITHM_FIDELITY.md)。
 - 2026-11-11 两端以候选 release `6b2797e7` 执行 migration 026：删除 017 账本 5 张表、`t_harness_runs`、`t_harness_gate_results`、`t_backtest_reproduction_checks`、`v_latest_backtest_run` 及 `t_scheme_runs` 9 个未用列。执行前备份：ECS `/var/lib/bond-factor-lab/deployment-backups/migration-026-20261111T112954Z/`（sha256 `8b25bf19…`），Mac `runtime/backups/migration-026-20261111T113341Z/`（sha256 `cf35eec8…`）。执行后历史 1..26 全部 APPLIED，`t_scheme_runs` 行数不变（ECS 15901 / Mac 9533）；运行中的 `11c5a7eb` 代码不引用被删对象，两端 Dashboard 构建正常。随后两端以同一 archive `1fb2455e…00ef` 激活 `6b2797e7` 并重启 Backend；读回进程 cwd 为新 release、健康 ok、匿名 Dashboard 401，Mac 公网首页 200、launchd 漂移审计 ok。首次自然运行为 2026-11-11 23:45 Actuals 与 2026-11-12 07:03 日频预测，待观察。previous `11c5a7eb` 的 `apply_migrations` 不认识 026，回退后不得用它执行迁移。
+- 2026-11-11 晚两端以同一 archive（sha256 `895b5e2b…8010`）部署 release `9b89fb38`：先执行 migration 027（新增 VIRTUAL 生成列 `t_scheme_predictions.result_segment` 与索引 `idx_scheme_result_segment`；结果分区只由 `feature_date` 决定，分界 2026-06-01，回测 34889 / 实盘 11456（ECS）与 11501（Mac），规则不一致 0 条），再激活并重启 Backend。执行前备份 `t_schema_migrations` 与 `t_scheme_predictions` 结构：ECS `deployment-backups/migration-027-20261111T150459Z/`（sha256 `55034dbf…8608`），Mac `runtime/backups/migration-027-20261111T150548Z/`（sha256 `11566273…6320`）。同一生产库上新旧代码各构建 Dashboard 摘要与 159 份 Detail 逐字节一致；读回 Backend 进程 cwd 为新 release、健康 ok、匿名 Dashboard 401，Mac 公网首页 200、launchd 漂移审计 ok。该 release 含：删除历史替代层与 DataBridge 旧格式 current 兼容、`three_y_t5_xgb_fxlead_b8_v2` 血缘证据重定基线、入库一次回测到最新数据日（取消 gray_live 补缺）。首次自然运行为 2026-11-11 23:45 Actuals 与 2026-11-12 07:03 日频预测，待观察；previous `6b2797e7` 与 027 兼容可回退，更早的 `11c5a7eb` 目录仍在，可按清理规则删除。
 - 2026-11-11 清理：两端只保留 current `6b2797e7` 与 previous `11c5a7eb` 两个 release 目录（ECS 删 21 个、Mac 删 19 个，清单见 ECS `deployment-backups/release-cleanup-20261111.txt` 与 Mac `runtime/backups/release-cleanup-20261111.txt`；源码 archive 仍在 `source-releases`）。ECS 删除 `liwei_0616_5y01_full_oos_k3_div_k10_bbv2`、`liwei_0616_cons_sda_k3_div_k10_bbv2` 两个迁移临时 ID 的 159 条无事实 run 及 159 条 run log（备份 `deployment-backups/bbv2-orphan-runs-20261111T140608Z/`）。删除前后 ECS Dashboard 构建字节数一致（318916）。
 - `t_scheme_predictions.confidence` 与 `t_backtest_predictions.confidence` 已由 migration 025 删除。禁止回滚到仍读写 confidence、依赖已删临时身份或要求旧 Native 接管状态的 release；恢复按[部署手册](../deploy/README.md)核验权限、输入/状态和 Writer。
 - 2026-09-17 按用户确认的“保留最新正确结果、不保留旧审计历史”，已删除 live-only 方案 `liwei_0616_5y01_full_oos_k3_div_k10` 的 333 条旧回测（ID `9433`—`9765`）及其 run；live 事实保留。
