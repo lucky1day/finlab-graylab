@@ -25,7 +25,6 @@ Blackbox 上游算法人员按[交付 SOP](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_
 
 不得通过复用旧 ID、复制 `predict.py + core/` 或修改 Native 白名单，把新算法伪装成存量维护。
 
-<a id="可复用测试矩阵"></a>
 
 ## 入库相关验证
 

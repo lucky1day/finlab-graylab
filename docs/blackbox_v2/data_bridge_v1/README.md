@@ -67,4 +67,4 @@ producer 独立校验五文件的 schema、freshness、cutoff 和完整性，达
 
 运行期文件位置与 Git 边界见[data/data_bridge/README.md](../../../data/data_bridge/README.md)。
 
-平台输入实现变更后，按[公共验证矩阵](../../onboarding/README.md#可复用测试矩阵)检查 DataBridge 合同；真实发布仍须有目标机 producer-ready 证据，样例测试通过不能替代。
+平台输入实现变更后，按[公共验证矩阵](../../development/TEST_MATRIX.md)检查 DataBridge 合同；真实发布仍须有目标机 producer-ready 证据，样例测试通过不能替代。

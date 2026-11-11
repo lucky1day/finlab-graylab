@@ -101,7 +101,7 @@ legacy/core 的 `current_date`、`date` 或 `predict_date` 不一定对应同名
 
 ## 3. 灰度实盘规则
 
-灰度实盘用于补齐从方案级 `gray_target_start` 到正式部署前的实盘观察序列。每个方案必须在生命周期证据中登记自己的灰度起点和正式调度起点，不能把任一历史批次日期写成全局常量。
+灰度实盘用于补齐从 `gray_target_start` 到正式部署前的实盘观察序列。Blackbox V2 方案的 `gray_target_start` 当前由平台统一为 `2026-06-01`（`harness/signal_gap_plan.py` 的 `PLATFORM_LIVE_TARGET_START_DATE`，回测发布的 `target_date_before` 同值）；如需按方案区分，须先改代码再改本文。
 
 灰度补齐必须满足：
 

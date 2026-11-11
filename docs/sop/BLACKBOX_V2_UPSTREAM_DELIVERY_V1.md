@@ -91,7 +91,7 @@ python -I {scheme_id}.py backtest --requests <requests.csv> --data-dir <dir> --o
 | 项目 | 规定 |
 |---|---|
 | Python 与主要包 | Python 3.13.12；numpy 2.3.5、pandas 2.3.3、scipy 1.16.3、scikit-learn 1.8.0、lightgbm 4.6.0、xgboost 3.1.3、catboost 1.2.8、joblib 1.5.3、pyarrow 23.0.0、shap 0.50.0、numba 0.63.1、numexpr 2.14.1、bottleneck 1.4.2、boruta 0.4.3、openpyxl 3.1.5（Linux 与 macOS 两台主机版本一致；不得安装其他包） |
-| 时限 | `predict` 3600 秒，`backtest` 14400 秒；平台可为单次调用设更短期限 |
+| 时限 | `predict` 3600 秒；`backtest` 硬上限 14400 秒，但平台入库回测按 **7200 秒**执行，完整历史区间须在 7200 秒内完成 |
 | 内存 | 整个进程组 RSS 64 GiB |
 | 线程 | `OMP_NUM_THREADS` 等数值库线程变量为 8，不保证独占 8 核 |
 | 输出 | `--output` ≤ 50 MiB；`stdout`+`stderr` 合计 ≤ 5 MiB |
@@ -170,7 +170,7 @@ python -I {scheme_id}.py backtest --requests selftest/requests.csv --data-dir se
 再用同一份真实 DataBridge 五文件数据（文件名同上）完成：
 
 1. 同一单条 `predict` 连续运行三次，结果一致。
-2. 完整历史区间一次 `backtest`，连续运行三次结果一致，且在第 3 节时限内完成。
+2. 完整历史区间一次 `backtest`，连续运行三次结果一致，且每次都在 7200 秒内完成（留出余量，建议自测机上不超过 3600 秒）。
 3. 将同一批 Request 乱序、取子集运行，按 `request_id` 比较，结果与完整批次一致；抽取首、中、末三条单独 `predict`，结果与批次一致。
 4. 在截止键之后追加若干合法未来行，已有 Request 的结果不变。
 5. 构造非法输入（缺字段、多字段、非法日期、重复 `request_id`、不存在的截止键），确认非 0 退出、`stderr` 有原因、`stdout` 为空、无输出文件。
