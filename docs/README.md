@@ -12,6 +12,7 @@
 | 接收或修订算法 | [入库导航](onboarding/README.md) → Blackbox 上游/平台 SOP → [接管清单](blackbox_v2/PRODUCTION_READINESS.md) |
 | 维护 W4 固定版本运行 | [W4 运行维护](sop/NATIVE_V1_MAINTENANCE_SOP.md) → 调度治理；不进入 Native 版本修订、准入或再激活 |
 | 修改平台实现 | [代码架构](architecture/CODE_ARCHITECTURE.md) → [共享契约](architecture/SCHEME_CONTRACT.md) → 对应运行时合同 |
+| 框架治理与重构 | [框架治理计划](plans/FRAMEWORK_AUDIT_AND_OPTIMIZATION_PLAN.md)（约束、批次与暂缓项）→ 代码架构 |
 | 判断算法改动或迁移边界 | [源算法保真](architecture/SOURCE_ALGORITHM_FIDELITY.md) → 入库导航中的适用流程 |
 | 检查日期、历史缺口或指标 | [预测语义](architecture/PREDICTION_SEMANTICS.md) → [平台入库 SOP](sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)的补缺步骤 |
 | 发布、晋级或恢复 | [当前状态](CURRENT_STATUS.md) → [部署访问](operations/DEPLOYMENT_ACCESS.md) → [部署手册](../deploy/README.md) → [调度治理](architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md) |

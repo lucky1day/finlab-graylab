@@ -51,7 +51,7 @@
   - DataBridge gate 状态机写在 `scripts/refresh_data_bridge_current.py`；
   - 持久化层硬编码了 `t1_daily`/`t5_daily`；
   - 月度入口 `run_close_predictions` 先完整跑一遍发现和预检，再调用 launchd 入口重跑一遍。
-- **文档：** 已被取代的草案（`DETERMINISM_HOTFIX_ACTIVATION_DRAFT`、`architecture/parity/`）仍在树中；`CURRENT_STATUS.md` 已演变为发布日志；`TODO.md` 中有过期的观察项。
+- **文档：** 已被取代的草案 `DETERMINISM_HOTFIX_ACTIVATION_DRAFT` 仍在树中（已删除）；`architecture/parity/five_y_factor_rule_online_v1.md` 写着“待落补丁”，需要确认是否已结案后再处理；`CURRENT_STATUS.md` 已演变为发布日志；`TODO.md` 中有过期的观察项。
 
 ## 4. 可直接实施的批次（满足第 1 节约束）
 
