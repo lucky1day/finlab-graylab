@@ -189,5 +189,5 @@ Harness 的固定 Gate 分派和状态重建命令由现有 CLI 直接编排，�
 
 [tests/test_architecture_boundaries.py](../../tests/test_architecture_boundaries.py)调用该扫描器检查当前仓库及违规样例。
 Blackbox 两文件、Metadata、输入与 Result 由 Intake、持久化回测及执行边界校验；W4 的输入、执行器、
-source isolation 和动态加载保护按[公共验证矩阵](../onboarding/README.md#可复用测试矩阵)选择，不能以静态扫描替代。
+source isolation 和动态加载保护按[公共验证矩阵](../development/TEST_MATRIX.md)选择，不能以静态扫描替代。
 本地测试通过只证明所检查的边界；远端 CI 是否运行及结果须查实际配置与执行记录。

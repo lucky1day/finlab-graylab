@@ -11,7 +11,7 @@
 | 了解部署与剩余工作 | [当前状态](CURRENT_STATUS.md) → [待办](TODO.md)；现场可能已变化，操作前重新读回 |
 | 接收或修订算法 | [入库导航](onboarding/README.md) → Blackbox 上游/平台 SOP → [接管清单](blackbox_v2/PRODUCTION_READINESS.md) |
 | 维护 W4 固定版本运行 | [W4 运行维护](sop/NATIVE_V1_MAINTENANCE_SOP.md) → 调度治理；不进入 Native 版本修订、准入或再激活 |
-| 修改平台实现 | [代码架构](architecture/CODE_ARCHITECTURE.md) → [共享契约](architecture/SCHEME_CONTRACT.md) → 对应运行时合同 |
+| 修改平台实现 | [代码架构](architecture/CODE_ARCHITECTURE.md) → [共享契约](architecture/SCHEME_CONTRACT.md) → 对应运行时合同 → [测试矩阵](development/TEST_MATRIX.md)选择检查 |
 | 框架治理与重构 | [框架治理计划](plans/FRAMEWORK_AUDIT_AND_OPTIMIZATION_PLAN.md)（约束、批次与暂缓项）→ 代码架构 |
 | 判断算法改动或迁移边界 | [源算法保真](architecture/SOURCE_ALGORITHM_FIDELITY.md) → 入库导航中的适用流程 |
 | 检查日期、历史缺口或指标 | [预测语义](architecture/PREDICTION_SEMANTICS.md) → [平台入库 SOP](sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)的补缺步骤 |
@@ -39,8 +39,9 @@
 | [预测语义](architecture/PREDICTION_SEMANTICS.md) | 三日期、日历、事实键、Actual、分区和统计定义 |
 | [源算法保真](architecture/SOURCE_ALGORITHM_FIDELITY.md) | L0/L1/L2、历史口径、迁移等价与旧依赖退役边界 |
 | [Harness 架构](architecture/HARNESS_ARCHITECTURE.md) | Blackbox 验证、命令作用域与事务边界 |
-| [入库导航](onboarding/README.md) | 场景选择、阅读顺序及公共验证入口 |
-| [平台入库 SOP](sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md) | canonical、回测、激活、补缺及状态重建的操作步骤 |
+| [入库导航](onboarding/README.md) | 场景选择、阅读顺序及入库相关验证 |
+| [平台开发测试矩阵](development/TEST_MATRIX.md) | 按平台代码改动类型选择的公共合同测试 |
+| [平台入库 SOP](sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md) | Intake 到自然运行观察的端到端操作步骤、同 ID 修订、补缺及状态重建 |
 | [W4 运行维护 SOP](sop/NATIVE_V1_MAINTENANCE_SOP.md) | 固定版本运行检查、故障定位、调度恢复与依赖保护 |
 | [Blackbox 生产准备](blackbox_v2/PRODUCTION_READINESS.md) | 生产接管前的证据清单，不代替操作步骤 |
 | [部署访问](operations/DEPLOYMENT_ACCESS.md) | 主机角色、固定地址/Origin、SSH/转发、生产路径及只读连接方法 |
@@ -66,7 +67,7 @@
 2. **作用域与完成标准**：强制规则写明适用条件、动作或禁止事项、检查入口和通过条件；建议、示例与待验证观点明确标识，不混写为强制要求。文档与实现冲突时先查业务决定、机器合同及现场证据；涉及业务或操作语义的未决调整先确认，不能自动把当前代码当成正确合同。
 3. **事实与证据**：主机地址归部署访问，带核验时间的运行事实归当前状态，未完成工作归 TODO。通用合同不记录批次 run/generation 或临时授权。任务完成后删除无价值流水；仍解释业务选择或用于审计、恢复、来源追溯的决定与证据，保留适用范围及可定位索引，不退回当前操作入口。
 4. **维护责任与触发**：变更实施者同步更新权威正文及受影响引用，评审者按本节验收。实际变更、重复误判或验证反馈触发修正、替换或退役；不为假设问题追加禁令，不把本轮授权写成永久权限。
-5. **工具与限制**：关键不变量优先复用[现有测试与校验器](onboarding/README.md#可复用测试矩阵)，文档解释边界和证据含义；没有对应检查时如实记录缺口，不宣称已自动保障，也不为每句话新增框架。凭据、全量输入和临时报告不进入 Git。
+5. **工具与限制**：关键不变量优先复用[现有测试与校验器](development/TEST_MATRIX.md)，文档解释边界和证据含义；没有对应检查时如实记录缺口，不宣称已自动保障，也不为每句话新增框架。凭据、全量输入和临时报告不进入 Git。
 6. **实际验收**：先检查文件/锚点/反链、根规范与局部指令的作用域；再从根入口沿受影响任务实际阅读，确认能找到前置条件、操作入口、通过条件、失败恢复及证据。链接存在不等于可读取或可执行；外置证据需区分本机可读、目标机只读路径与当前不可访问，不能将路径存在标为内容已核验。上游原件另核验字节未改，运行状态不能因文档整理标为完成。
 
 工具的指令加载机制以 [AGENTS.md 配置指南](https://learn.chatgpt.com/docs/agent-configuration/agents-md)和 [CLAUDE.md 组织指南](https://code.claude.com/docs/en/memory#write-effective-instructions)为准；不要把链接的专题正文当成已加载指令，也不要把旧 worktree 的根规范套到当前 checkout。

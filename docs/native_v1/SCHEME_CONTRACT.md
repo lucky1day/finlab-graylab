@@ -22,7 +22,7 @@ schemes/{scheme_id}/
 
 ## 2. config.yaml
 
-完整字段类型与枚举由[配置 Schema](../../shared/scheme_config_schema.py)校验；运行发现与身份测试见[验证矩阵](../onboarding/README.md#可复用测试矩阵)。运行核验须保留以下兼容语义，不能因字段值合法就改变现有身份：
+完整字段类型与枚举由[配置 Schema](../../shared/scheme_config_schema.py)校验；运行发现与身份测试见[验证矩阵](../development/TEST_MATRIX.md)。运行核验须保留以下兼容语义，不能因字段值合法就改变现有身份：
 
 - `runtime_type=native_adapter`；历史 `input_source` 缺省解释为 `legacy_db`。
 - task、horizon、tenors 和 frequency 保持既有口径；历史周/月 `6/30` 只供存量兼容，不作为新方案模板。

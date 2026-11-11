@@ -101,7 +101,7 @@ canonical 配置、数据库生命周期、部署和自然调度是不同状态�
 
 ## 8. 接口验证入口
 
-身份、配置和 discovery 改动按[公共验证矩阵](../onboarding/README.md#可复用测试矩阵)选择配置与 active discovery 合同；
+身份、配置和 discovery 改动按[公共验证矩阵](../development/TEST_MATRIX.md)选择配置与 active discovery 合同；
 标准输出按对应 Native/Blackbox 合同验证。接口测试不能替代算法保真、当前 exact 入库证据或现场生产观察。
 Gate 的实现与审计留证见[Harness 架构](HARNESS_ARCHITECTURE.md)，算法内部与包装迁移责任见
 [源算法保真](SOURCE_ALGORITHM_FIDELITY.md)。
