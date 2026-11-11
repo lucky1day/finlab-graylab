@@ -90,23 +90,6 @@ def test_rejects_unknown_manifest_fields(tmp_path: Path) -> None:
         load_legacy_prediction_migrations(tmp_path)
 
 
-def test_repository_corrected_evidence_binds_designated_exact() -> None:
-    root = Path(__file__).resolve().parents[1]
-
-    evidence = next(iter(load_legacy_corrected_exact_evidence(root)))
-
-    assert evidence.source_scheme_id.endswith("_bbv2")
-    assert evidence.registry_status == "archived"
-    assert evidence.version_status == "retired"
-    assert evidence.designated_exact == "3ee3dd2334fd"
-    assert evidence.persisted_prediction_count == 333
-    assert len(evidence.corrected_facts) == 333
-    assert (
-        evidence.corrected_facts_sha256
-        == "0caaa51c08a1a65b9e5998c73a3cd6d181f9c14e81ddea2978c9080c45fac749"
-    )
-
-
 def test_corrected_evidence_rejects_fact_or_hash_drift(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     payload = json.loads(

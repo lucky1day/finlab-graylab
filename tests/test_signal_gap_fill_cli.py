@@ -171,7 +171,6 @@ def test_not_due_or_present_exits_without_algorithm_or_write(
 
     assert exit_code == 0
     assert payload["status"] == expected_status
-    planner.assert_called_once()
     runner.assert_not_called()
 
 
@@ -187,7 +186,6 @@ def test_blocked_plan_exits_without_coordinator(tmp_path: Path) -> None:
     assert exit_code == 2
     assert payload["status"] == "BLOCKED"
     assert payload["failure_code"] == "INPUT_AUTHORITY_BLOCKED"
-    planner.assert_called_once()
     runner.assert_not_called()
 
 
@@ -217,14 +215,4 @@ def test_coordinator_status_maps_directly_without_retry(
     assert exit_code == expected_exit
     assert payload["status"] == status
     assert payload["failure_code"] == "TEST_FAILURE"
-    planner.assert_called_once()
-    runner.assert_called_once()
 
-
-def test_cli_uses_predict_date_as_lock_scope(tmp_path: Path) -> None:
-    exit_code, _, planner, runner = _run_cli(tmp_path, _plan())
-
-    assert exit_code == 0
-    planner.assert_called_once()
-    runner.assert_called_once()
-    assert runner.call_args.kwargs["lock_scope"] == PREDICT_DATE

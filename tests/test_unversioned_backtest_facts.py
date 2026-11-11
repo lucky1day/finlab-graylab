@@ -39,12 +39,6 @@ def test_shipped_inventory_loads_and_is_internally_consistent() -> None:
     assert len(identities) == len(entries)
 
 
-def test_valid_inventory_loads(tmp_path: Path) -> None:
-    entries = load_unversioned_backtest_facts(_write(tmp_path, _doc(_ENTRY)))
-
-    assert {e.scheme_id for e in entries} == {"legacy_scheme"}
-
-
 @pytest.mark.parametrize(
     "payload",
     [

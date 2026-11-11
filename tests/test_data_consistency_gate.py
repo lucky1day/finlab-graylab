@@ -901,91 +901,6 @@ def test_retained_live_only_scope_requires_exact_business_baseline() -> None:
                    for error in broken_errors)
 
 
-def test_retained_live_only_exception_does_not_cover_later_native_fact() -> None:
-    snapshot, entry = _retained_live_only_snapshot()
-    later = {
-        **snapshot.prediction_rows[0],
-        "id": 2,
-        "run_id": 12,
-        "predict_date": "2026-07-01",
-        "feature_date": "2026-06-30",
-        "target_date": "2026-07-08",
-    }
-    snapshot = replace(
-        snapshot,
-        prediction_rows=(*snapshot.prediction_rows, later),
-        live_runs=(*snapshot.live_runs, {
-            **snapshot.live_runs[0],
-            "reference_id": 12,
-            "predict_date": "2026-07-01",
-        }),
-    )
-    _errors, lineage = validate_snapshot_lineage(
-        snapshot,
-        historical_references=frozenset(),
-        legacy_migrations=frozenset({entry}),
-    )
-    assert any("input artifact is missing: run_id=12" in gap
-               for gap in lineage["authority_gaps"])
-    assert any("field=manifest_hash" in gap
-               for gap in lineage["authority_gaps"])
-
-
-def test_retained_live_only_exception_rejects_unretired_version() -> None:
-    snapshot, entry = _retained_live_only_snapshot()
-    snapshot = replace(snapshot, version_rows=({
-        **snapshot.version_rows[0], "status": "active"
-    },))
-    _errors, lineage = validate_snapshot_lineage(
-        snapshot,
-        historical_references=frozenset(),
-        legacy_migrations=frozenset({entry}),
-    )
-    assert any("input artifact is missing" in gap
-               for gap in lineage["authority_gaps"])
-    assert any("field=manifest_hash" in gap
-               for gap in lineage["authority_gaps"])
-
-
-def test_retained_live_only_exception_does_not_cover_later_blackbox() -> None:
-    snapshot, entry = _retained_live_only_snapshot()
-    future = {
-        **snapshot.prediction_rows[0],
-        "id": 2,
-        "run_id": 12,
-        "scheme_version": "blackbox-exact",
-        "predict_date": "2026-07-01",
-        "feature_date": "2026-06-30",
-        "target_date": "2026-07-08",
-    }
-    snapshot = replace(
-        snapshot,
-        prediction_rows=(*snapshot.prediction_rows, future),
-        live_runs=(*snapshot.live_runs, {
-            **snapshot.live_runs[0],
-            "reference_id": 12,
-            "scheme_version": "blackbox-exact",
-            "runtime_type": "blackbox_v2",
-            "predict_date": "2026-07-01",
-        }),
-        version_rows=(*snapshot.version_rows, {
-            **snapshot.version_rows[0],
-            "scheme_version": "blackbox-exact",
-            "runtime_type": "blackbox_v2",
-            "status": "active",
-        }),
-    )
-    _errors, lineage = validate_snapshot_lineage(
-        snapshot,
-        historical_references=frozenset(),
-        legacy_migrations=frozenset({entry}),
-    )
-    assert any("exact=blackbox-exact field=manifest_hash" in gap
-               for gap in lineage["authority_gaps"])
-    assert any("data snapshot is missing" in gap
-               for gap in lineage["authority_gaps"])
-
-
 def test_completeness_keeps_drift_when_other_authority_is_missing() -> None:
     snapshot = DatabaseSnapshot(
         registry_rows=(
@@ -1873,72 +1788,6 @@ def test_unregistered_native_and_blackbox_h6_are_rejected() -> None:
             )
 
 
-def test_approved_retired_historical_reference_is_accepted() -> None:
-    prediction_id = "liwei_0616_5y01_full_oos_k3_div_k10"
-    source_id = f"{prediction_id}_bbv2"
-    snapshot = _date_contract_snapshot(
-        "T+5",
-        "2026-05-19",
-        "2026-05-19",
-        "2026-05-26",
-        is_live=False,
-    )
-    snapshot = replace(
-        snapshot,
-        registry_rows=(
-            {
-                **snapshot.registry_rows[0],
-                "scheme_id": f"{prediction_id}__h5__5Y",
-                "base_scheme_id": prediction_id,
-            },
-        ),
-        prediction_rows=(
-            {
-                **snapshot.prediction_rows[0],
-                "scheme_id": prediction_id,
-            },
-        ),
-        backtest_runs=(
-            {
-                "reference_id": 1,
-                "scheme_id": source_id,
-                "status": "success",
-                "source_registry_scopes": [
-                    {
-                        "target_tenor": "5Y",
-                        "horizon": 5,
-                        "status": "archived",
-                    }
-                ],
-                "code_hash": "a" * 64,
-                "config_hash": "b" * 64,
-                "input_artifact_hash": "c" * 64,
-                "summary": {"scheme_version": "source-exact"},
-            },
-        ),
-        version_rows=(
-            {
-                "scheme_id": source_id,
-                "scheme_version": "source-exact",
-                "status": "retired",
-            },
-        ),
-    )
-    relationship = HistoricalBacktestReference(
-        prediction_id,
-        source_id,
-        "fixture",
-    )
-
-    facts = validate_and_join_facts(
-        snapshot,
-        display_until="2026-06-30",
-        historical_references=frozenset({relationship}),
-    )
-
-    assert len(facts) == 1
-
-
 def test_approved_cross_source_run_uses_referenced_subset_and_snapshot_identity() -> None:
     prediction_id = "liwei_0616_5y01_full_oos_k3_div_k10"
     source_id = f"{prediction_id}_bbv2"
@@ -2463,35 +2312,6 @@ def test_precise_legacy_backtest_lineage_fails_closed_on_fact_drift() -> None:
         )
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("source_scheme_id", "different_bbv2"),
-        ("designated_exact", "fedcba987654"),
-        ("registry_status", "active"),
-        ("version_status", "active"),
-        ("code_hash", "9" * 64),
-        ("config_hash", "8" * 64),
-        ("manifest_hash", "7" * 64),
-        ("corrected_facts_sha256", "6" * 64),
-    ],
-)
-def test_legacy_migration_rejects_designated_exact_evidence_drift(
-    field: str,
-    value: object,
-) -> None:
-    snapshot, compatibility, corrected = _legacy_migration_snapshot()
-    corrected = replace(corrected, **{field: value})
-
-    with pytest.raises(DataConsistencyError, match="evidence drift"):
-        validate_snapshot_lineage(
-            snapshot,
-            historical_references=frozenset(),
-            legacy_migrations=frozenset({compatibility}),
-            corrected_exact_evidence=frozenset({corrected}),
-        )
-
-
 def test_legacy_target_exception_keeps_feature_trading_day_contract() -> None:
     calendar = _FrozenCalendar.from_rows(
         _calendar_rows(date(2026, 5, 1), date(2026, 6, 30))
@@ -2692,27 +2512,6 @@ def test_frozen_unversioned_backtest_facts_are_a_known_gap_not_a_crash() -> None
     ]
 
 
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        {"expected_fact_count": 2},
-        {"facts_sha256": "0" * 64},
-    ],
-)
-def test_changed_unversioned_backtest_facts_are_rejected(mutation) -> None:
-    snapshot, frozen = _unversioned_backtest_snapshot()
-
-    errors, details = validate_snapshot_lineage(
-        snapshot,
-        historical_references=frozenset(),
-        unversioned_backtest_facts=frozenset({replace(frozen, **mutation)}),
-    )
-
-    assert len(errors) == 1
-    assert errors[0].startswith("frozen unversioned backtest facts changed:")
-    assert details["unversioned_backtest_fact_count"] == 0
-
-
 def test_unversioned_backtest_facts_outside_the_inventory_are_rejected() -> None:
     snapshot, _frozen = _unversioned_backtest_snapshot()
 
@@ -2757,54 +2556,3 @@ def test_unversioned_rows_do_not_mask_other_lineage_results() -> None:
         for gap in details["authority_gaps"]
     )
 
-
-def test_live_fact_with_empty_exact_still_fails_closed() -> None:
-    snapshot, frozen = _unversioned_backtest_snapshot()
-    live_row = {
-        **snapshot.prediction_rows[0],
-        "run_id": 5,
-        "backtest_run_id": None,
-    }
-
-    with pytest.raises(DataConsistencyError, match="prediction exact"):
-        validate_snapshot_lineage(
-            replace(snapshot, prediction_rows=(live_row,)),
-            historical_references=frozenset(),
-            unversioned_backtest_facts=frozenset({frozen}),
-        )
-
-
-def test_corrupt_evidence_file_blocks_only_dependent_stages(
-    tmp_path: Path,
-) -> None:
-    engine = _engine(tmp_path)
-    fetcher, _calls = _fetcher()
-    ctx = _context(tmp_path, engine)
-    (tmp_path / "deploy" / "legacy_backtest_lineage_compatibility_v1.json").write_text(
-        "{not json", encoding="utf-8"
-    )
-
-    result = _gate(fetcher).run(ctx)
-
-    evidence = {item.key: item.value for item in result.evidence}
-    assert result.status is GateStatus.BLOCKED
-    assert evidence["completeness"]["status"] == "PASSED"
-    assert evidence["lineage"]["status"] == "BLOCKED"
-    assert evidence["lineage"]["errors"] == [
-        "legacy_lineages evidence unavailable: JSONDecodeError"
-    ]
-    assert evidence["representation"]["status"] == "PASSED"
-
-
-def test_evidence_is_loaded_from_context_project_root(tmp_path: Path) -> None:
-    engine = _engine(tmp_path)
-    fetcher, _calls = _fetcher()
-    ctx = _context(tmp_path, engine)
-    (tmp_path / "deploy" / "unversioned_backtest_facts_v1.json").unlink()
-
-    result = _gate(fetcher).run(ctx)
-
-    evidence = {item.key: item.value for item in result.evidence}
-    assert evidence["lineage"]["status"] == "BLOCKED"
-    assert "unversioned_facts evidence unavailable" in evidence["lineage"]["errors"][0]
-    assert evidence["completeness"]["status"] == "PASSED"

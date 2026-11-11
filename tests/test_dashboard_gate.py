@@ -727,81 +727,37 @@ def test_dashboard_gate_batch_preserves_one_scheme_failure(
     assert not result.passed
 
 
+@pytest.mark.parametrize("leak", ["payload_echo", "probe_error", "unexpected_error"])
 def test_dashboard_gate_redacts_session_echoes_from_result(
     tmp_path: Path,
-) -> None:
-    from harness.gates.dashboard_gate import DashboardGate
-
-    _write_config(tmp_path, tenors=("5Y",))
-    token = "never_write_this_session_token"
-    payload = _payload(tenors=("5Y",))
-    payload["snapshot_id"] = token
-    payload["schemes"][0]["owner"] = f"reflected-{token}"
-    ctx = replace(
-        _context(tmp_path),
-        dashboard_session_token=token,
-    )
-    result = DashboardGate(
-        fetcher=lambda _url, **_kwargs: (
-            payload,
-            200,
-            {
-                "request_id": token,
-                "fetched_at": "2026-09-16T01:02:03+00:00",
-            },
-        )
-    ).run(ctx)
-
-    serialized = repr(result)
-    assert token not in serialized
-    assert "[redacted-session]" in serialized
-
-
-def test_dashboard_gate_redacts_session_echo_from_probe_error(
-    tmp_path: Path,
+    leak: str,
 ) -> None:
     from harness.gates.dashboard_gate import ApiProbeError, DashboardGate
 
     _write_config(tmp_path, tenors=("5Y",))
     token = "never_write_this_session_token"
-    ctx = replace(
-        _context(tmp_path),
-        dashboard_session_token=token,
-    )
+    ctx = replace(_context(tmp_path), dashboard_session_token=token)
 
-    def fail(_url: str, **_kwargs):
-        raise ApiProbeError(
-            "unsafe server response",
-            status_code=500,
-            error_summary=f"reflected-{token}",
-            request_id=token,
-        )
+    def fetcher(_url: str, **_kwargs):
+        if leak == "probe_error":
+            raise ApiProbeError(
+                "unsafe server response",
+                status_code=500,
+                error_summary=f"reflected-{token}",
+                request_id=token,
+            )
+        if leak == "unexpected_error":
+            raise RuntimeError(f"unexpected reflected value: {token}")
+        payload = _payload(tenors=("5Y",))
+        payload["snapshot_id"] = token
+        payload["schemes"][0]["owner"] = f"reflected-{token}"
+        return payload, 200, {
+            "request_id": token,
+            "fetched_at": "2026-09-16T01:02:03+00:00",
+        }
 
-    result = DashboardGate(fetcher=fail).run(ctx)
+    serialized = repr(DashboardGate(fetcher=fetcher).run(ctx))
 
-    serialized = repr(result)
-    assert token not in serialized
-    assert "[redacted-session]" in serialized
-
-
-def test_dashboard_gate_redacts_session_from_unexpected_fetcher_error(
-    tmp_path: Path,
-) -> None:
-    from harness.gates.dashboard_gate import DashboardGate
-
-    _write_config(tmp_path, tenors=("5Y",))
-    token = "never_write_this_session_token"
-    ctx = replace(
-        _context(tmp_path),
-        dashboard_session_token=token,
-    )
-
-    def fail(_url: str, **_kwargs):
-        raise RuntimeError(f"unexpected reflected value: {token}")
-
-    result = DashboardGate(fetcher=fail).run(ctx)
-
-    serialized = repr(result)
     assert token not in serialized
     assert "[redacted-session]" in serialized
 
@@ -906,24 +862,6 @@ def test_dashboard_session_can_be_read_from_private_file_or_fd(
             os.close(write_fd)
 
 
-def test_dashboard_session_fd_does_not_block_while_writer_remains_open() -> None:
-    from harness.cli import _read_dashboard_session
-
-    read_fd, write_fd = os.pipe()
-    try:
-        with pytest.raises(
-            SystemExit,
-            match="dashboard session fd is not ready or is incomplete",
-        ):
-            _read_dashboard_session(
-                session_file=None,
-                session_fd=read_fd,
-            )
-    finally:
-        os.close(read_fd)
-        os.close(write_fd)
-
-
 @pytest.mark.parametrize("blocking", [True, False])
 @pytest.mark.parametrize(
     "outcome", ["success", "incomplete", "partial", "eof", "invalid", "oversized"],
@@ -994,31 +932,25 @@ def test_dashboard_session_fd_never_changes_shared_flags_during_read(
             os.close(writer)
 
 
-def test_dashboard_session_file_rejects_public_permissions(
+@pytest.mark.parametrize(
+    ("kind", "match"),
+    [("public_file", "group/world"), ("fifo", "owned regular file")],
+)
+def test_dashboard_session_file_rejects_unsafe_path(
     tmp_path: Path,
+    kind: str,
+    match: str,
 ) -> None:
     from harness.cli import _read_dashboard_session
 
     session_path = tmp_path / "dashboard-session"
-    session_path.write_text("opaque_session_token\n", encoding="utf-8")
-    session_path.chmod(0o644)
+    if kind == "fifo":
+        os.mkfifo(session_path, mode=0o600)
+    else:
+        session_path.write_text("opaque_session_token\n", encoding="utf-8")
+        session_path.chmod(0o644)
 
-    with pytest.raises(SystemExit, match="group/world"):
-        _read_dashboard_session(
-            session_file=session_path.resolve(),
-            session_fd=None,
-        )
-
-
-def test_dashboard_session_file_rejects_non_regular_path(
-    tmp_path: Path,
-) -> None:
-    from harness.cli import _read_dashboard_session
-
-    session_path = tmp_path / "dashboard-session-pipe"
-    os.mkfifo(session_path, mode=0o600)
-
-    with pytest.raises(SystemExit, match="owned regular file"):
+    with pytest.raises(SystemExit, match=match):
         _read_dashboard_session(
             session_file=session_path.resolve(),
             session_fd=None,
