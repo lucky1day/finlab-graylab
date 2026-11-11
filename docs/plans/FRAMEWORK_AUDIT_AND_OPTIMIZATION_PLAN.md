@@ -97,9 +97,9 @@ Dashboard 后端拆分（sql/rules/payload/service）等工作区中进行中的
 | --- | --- | --- |
 | D1 | ~~迁移 026：删除 017 账本表和其他退役表~~ 代码已完成（`8d64fdde`），**生产执行待办**，见第 8 节 | 第 8 节 |
 | D2 | ~~迁移基线压缩~~ 已完成（`8d64fdde`，2026-11-11 用户授权） | — |
-| D3 | liwei_0616_5y01 历史替换落库，删除运行时投影和兼容层 | 历史数据变更授权、探测、恢复证据 |
+| D3 | liwei_0616_5y01 历史替代：该方案在两端每日运行（Mac 115 条预测，最新 2026-11-11），替代投影在每次 Dashboard 请求中生效。删除会改变页面展示的历史，属功能变更；保留，除非业务决定改为落库 | 业务决定 |
 | D4 | 删除 DataBridge v1/v2/四文件 current 分支和 v2 缓存兼容 | 核实两端 current/state 都是 v3 五文件 |
-| D5 | 下线 42 个 paused/draft 方案，之后删除 `deliveries:` 多期限写法 | 逐个确认 owner 和 Registry 状态 |
+| D5 | ~~下线 42 个 paused 方案~~ **撤销**：Blackbox 配置中的 `status: paused` 只是 Intake 初始声明，生效状态由数据库 Registry 决定（`lifecycle.resolve_database_lifecycle`）。2026-11-11 读回两端 Registry 159 个 target 全部 active，这 42 个方案均有生产预测（27 个在 11 月内有新预测，其余为周/月频）。`deliveries:` 多期限路径服务于运行中的 t1/t5，保留 | — |
 | D6 | `prediction_input_quality_v1.json`（1.7 万行，全部为 log_only）改为从 config 推导或删除 | 业务确认是否保留这项审计 |
 | D7 | 身份校验收敛为"一次预检加一次事务内复核"，合并 Native/Blackbox 结算；删除 capability 防护 | 确认治理意图；补"运行中 Registry 变更被拒绝"的事务测试 |
 | D8 | 失败归类统一（Native 未激活 skipped 与 Blackbox 未批准 failed）；预检失败改走专用 repository 入口 | 会改变 run 记录语义 |
@@ -190,4 +190,6 @@ ECS 读回尚未取得。
 7. **切换与更新状态：** 切换 current，并更新 `CURRENT_STATUS`（schema 改为 026，记录备份位置）。
 
 **兼容性：** 上一个 release 的运行时代码不读写被删除的对象，可以作为回退目标。但旧 release 的 `apply_migrations` 不认识 026 历史，回退后不要用它执行迁移。
+
+**2026-11-11 更正：** 早先审查把配置文件中的 `status: paused` 当成"不调度、不展示"，这是错误判断。Blackbox 方案以数据库 Registry 为准。判断方案是否在用，必须读两端 Registry 与预测事实，不能只看配置文件。
 
