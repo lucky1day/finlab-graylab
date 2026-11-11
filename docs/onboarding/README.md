@@ -28,13 +28,12 @@ Blackbox 上游算法人员按[交付 SOP](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_
 
 ## 入库相关验证
 
-仓库侧入库改动（新增 `schemes/{id}/`、部署矩阵与输入审计目录条目）提交前，在服务环境中从仓库根目录运行：
+仓库侧入库改动（新增 `schemes/{id}/` 与部署矩阵条目）提交前，在服务环境中从仓库根目录运行：
 
 | 验证目标 | 命令 | 通过标准 |
 |---|---|---|
 | canonical discovery、配置 Schema 与 exact 计算 | `python -B -m pytest -q tests/test_blackbox_v2_discovery.py tests/test_config_schema.py tests/test_active_scheme_contracts.py` | 全部通过 |
 | 部署矩阵覆盖全部方案、目标过滤 fail-closed | `python -B -m pytest -q tests/test_deployment_scope.py` | 全部通过 |
-| 输入审计目录绑定当前 exact 与脚本 SHA | `python -B -m pytest -q tests/test_prediction_input_quality.py` | 全部通过 |
 | 修改 Intake、Contract、回测或激活实现时 | `python -B -m pytest -q tests/test_blackbox_v2_intake.py tests/test_blackbox_v2_contracts.py tests/test_blackbox_v2_harness_gates.py tests/test_blackbox_activation.py` | 全部通过 |
 
 pytest 只保护公共合同，不替代目标环境的 exact 回测、激活、补缺与接管验收。修改平台其它代码时按

@@ -221,7 +221,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
 
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].predicted_direction, -1)
-        self.assertEqual(result[0].extra["input_quality"]["enforcement"], "log_only")
         self.assertTrue(ready.call_args.kwargs["require_fresh"])
         self.assertEqual(ready.call_args.kwargs["snapshot_date"], "2026-07-16")
         self.assertEqual(predict.call_args.kwargs["data_dir"], Path("/tmp/private-runtime-view"))

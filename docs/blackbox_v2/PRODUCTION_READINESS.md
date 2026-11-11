@@ -10,7 +10,7 @@
 | ✓ | 检查项 | 通过证据 | SOP |
 |---|---|---|---|
 | ☐ | 交付与 canonical | 两文件 Intake 通过；提交中的 canonical 即回测与激活使用的 exact | [3.1](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#31-intake)、[3.2](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#32-定稿-canonical-与部署清单) |
-| ☐ | 部署清单 | 部署矩阵含该方案及正确目标；输入审计目录绑定当前 exact 与脚本 SHA；入库相关测试通过 | [3.2](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#32-定稿-canonical-与部署清单) |
+| ☐ | 部署清单 | 部署矩阵含该方案及正确目标；入库相关测试通过 | [3.2](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#32-定稿-canonical-与部署清单) |
 | ☐ | release | 回测、激活、补缺均在同一已核准的不可变 release 中执行；current 已按授权切到包含该方案的 release | [3.3](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#33-候选-release-构建与安装) |
 | ☐ | 输入 | 本机 producer-ready generation 与匹配输入视图；方案流程未代建输入 | [DataBridge 契约](data_bridge_v1/README.md) |
 | ☐ | 回测证据 | 成功的 persisted run，exact、脚本校验策略、环境、generation 与 snapshot 与当前一致；覆盖到给定的最新数据日 | [3.4](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#34-持久化回测一次覆盖到最新数据日) |

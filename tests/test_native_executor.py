@@ -275,16 +275,12 @@ def test_native_process_group_is_terminated_on_interruption() -> None:
     terminate.assert_called_once_with(process, process_group_id=4321)
 
 
-def test_native_audit_timeout_keeps_full_original_model_budget(tmp_path, monkeypatch):
-    import subprocess
+def test_source_runtime_native_runs_one_process_with_full_budget(tmp_path):
     from contextlib import nullcontext
     from scheduler.executor import run_scheme_subprocess
-    monkeypatch.setenv('BFL_RUNTIME_ROOT',str(tmp_path/'runtime'))
     calls=[]
     def run(cmd,**kwargs):
         calls.append((cmd,kwargs))
-        if 'scheduler.native_input_audit_runner' in cmd:
-            raise subprocess.TimeoutExpired(cmd,kwargs['timeout'])
         return CompletedProcess(cmd,0,'[]','')
     with (
         patch('scheduler.executor.frozen_source_runtime_database_config',return_value=nullcontext(tmp_path/'source-db.json')),
@@ -292,14 +288,9 @@ def test_native_audit_timeout_keeps_full_original_model_budget(tmp_path, monkeyp
     ):
         result=run_scheme_subprocess('daily_1y_xgb_1y13_0629','2026-10-29',
                                      source_database_config=object(),timeout_sec=73)
-    assert result==[] and len(calls)==2
-    assert calls[0][1]['timeout']==30
-    assert calls[1][1]['timeout']==73
-    assert 'scheduler.scheme_runner' in calls[1][0]
-    import json
-    logfile=next((tmp_path/'runtime/logs/prediction-input-quality').glob('*.jsonl'))
-    event=json.loads(logfile.read_text())
-    assert event['status']=='check_timeout' and event['enforcement']=='log_only'
+    assert result==[] and len(calls)==1
+    assert calls[0][1]['timeout']==73
+    assert 'scheduler.scheme_runner' in calls[0][0]
 
 
 @pytest.mark.parametrize("owns_engine", [True, False])
@@ -356,7 +347,6 @@ def test_interrupted_execution_settles_its_run_and_preserves_interrupt(runtime_t
         patch.object(executor, "create_scheme_run", return_value=101),
         patch.object(executor, "run_configured_scheme", side_effect=interrupted),
         patch.object(executor, "fail_scheme_run_atomic") as settle,
-        patch.object(executor, "emit_prediction_audit"),
     ):
         with pytest.raises(KeyboardInterrupt) as caught:
             executor.execute_scheme(cfg, "2026-11-06", prediction_phase="scheduled_live")
@@ -368,6 +358,34 @@ def test_interrupted_execution_settles_its_run_and_preserves_interrupt(runtime_t
     assert settle.call_args.kwargs["scheme_id"] == "demo"
     assert settle.call_args.kwargs["run_date"] == "2026-11-06"
     assert settle.call_args.kwargs["error_message"] == "cancelled test execution"
+    engine.dispose.assert_called_once()
+
+
+@pytest.mark.parametrize("runtime_type", ["native_adapter", "blackbox_v2"])
+def test_model_failure_is_recorded_as_failed_run_with_its_error(runtime_type):
+    from scheduler import executor
+
+    cfg = SimpleNamespace(
+        scheme_id="demo", runtime_type=runtime_type, status="active",
+        scheme_version="exact", execution_timeout_sec=10,
+    )
+    engine = Mock()
+    with (
+        patch.object(executor, "scheduled_live_execution_configuration_error", return_value=None),
+        patch.object(executor, "create_engine_from_env", return_value=engine),
+        patch.object(executor, "read_blackbox_execution_approval", return_value=SimpleNamespace(executable=True)),
+        patch.object(executor, "_verify_scheme_activation", return_value=(True, "")),
+        patch.object(executor, "_active_registry_targets", return_value={("5Y", 1)}),
+        patch.object(executor, "create_scheme_run", return_value=101),
+        patch.object(executor, "run_configured_scheme", side_effect=ValueError("missing raw observation")),
+        patch.object(executor, "fail_scheme_run_atomic") as settle,
+    ):
+        result = executor.execute_scheme(cfg, "2026-11-06", prediction_phase="scheduled_live")
+
+    assert (result.status, result.records_written, result.run_id) == ("failed", 0, 101)
+    assert result.error_msg == "missing raw observation"
+    settle.assert_called_once()
+    assert settle.call_args.kwargs["error_message"] == "missing raw observation"
     engine.dispose.assert_called_once()
 
 

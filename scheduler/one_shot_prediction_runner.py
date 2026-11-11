@@ -914,13 +914,7 @@ def _execute_data_bridge_wave(
                 process_start_guard=process_start_guard,
             )
     elif gate_code is not None:
-        from shared.prediction_audit import emit_prediction_audit
         for cfg in candidates:
-            emit_prediction_audit(
-                'prediction_input_unavailable', scheme_id=cfg.scheme_id,
-                predict_date=predict_date, status='unavailable', gate_code=gate_code,
-                predicted_direction=None,
-            )
             _execute_candidate(
                 summary, cfg, predict_date=predict_date, algo_env=algo_env,
                 scheduled_control_plane=scheduled_control_plane,
