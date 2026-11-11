@@ -11,7 +11,6 @@ import time
 from collections import Counter
 from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Mapping, Sequence
 
@@ -84,12 +83,6 @@ from shared.source_runtime_database import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ALGO_ENV = "forecast_env"
-BLACKBOX_SNAPSHOT_MODE_FRESH = "fresh"
-BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF = "historical_as_of_replay"
-VALID_BLACKBOX_SNAPSHOT_MODES = {
-    BLACKBOX_SNAPSHOT_MODE_FRESH,
-    BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF,
-}
 TIMEOUT_OUTPUT_DRAIN_SEC = 1
 logger = logging.getLogger(__name__)
 PLATFORM_CONFIGURATION_ERROR_PREFIX = "platform configuration error:"
@@ -381,9 +374,6 @@ def run_configured_scheme(
     engine,
     algo_env: str,
     timeout_sec: int | None,
-    blackbox_snapshot_mode: str = BLACKBOX_SNAPSHOT_MODE_FRESH,
-    expected_generation_id: str | None = None,
-    expected_refresh_date: str | None = None,
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ProcessStartGuard | None = None,
@@ -394,8 +384,6 @@ def run_configured_scheme(
     process_start_guard = require_process_start_guard(
         process_start_guard
     )
-    if blackbox_snapshot_mode not in VALID_BLACKBOX_SNAPSHOT_MODES:
-        raise ValueError(f"unsupported Blackbox snapshot mode: {blackbox_snapshot_mode}")
     runtime_type = getattr(cfg, "runtime_type", "native_adapter")
     normalized_ephemeral_root = _normalize_ephemeral_native_runtime_root(
         ephemeral_native_runtime_root
@@ -408,10 +396,6 @@ def run_configured_scheme(
             "Native execution contract is only valid for native_adapter"
         )
     if runtime_type == "native_adapter":
-        if blackbox_snapshot_mode != BLACKBOX_SNAPSHOT_MODE_FRESH:
-            raise ValueError(
-                "historical Blackbox snapshot mode is not valid for native_adapter"
-            )
         if timeout_sec is None:
             raise ValueError(
                 "Native execution timeout must be resolved before dispatch"
@@ -443,11 +427,7 @@ def run_configured_scheme(
             "engine": engine,
             "algo_env": algo_env,
             "timeout_sec": timeout_sec,
-            "snapshot_mode": blackbox_snapshot_mode,
         }
-        if blackbox_snapshot_mode == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF:
-            blackbox_kwargs["expected_generation_id"] = expected_generation_id
-            blackbox_kwargs["expected_refresh_date"] = expected_refresh_date
         if process_started is not None:
             blackbox_kwargs["process_started"] = process_started
         if process_fence is not None:
@@ -471,9 +451,6 @@ def run_blackbox_scheme_subprocess(
     engine,
     algo_env: str,
     timeout_sec: int | None,
-    snapshot_mode: str = BLACKBOX_SNAPSHOT_MODE_FRESH,
-    expected_generation_id: str | None = None,
-    expected_refresh_date: str | None = None,
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ProcessStartGuard | None = None,
@@ -488,27 +465,16 @@ def run_blackbox_scheme_subprocess(
     process_start_guard = require_process_start_guard(
         process_start_guard
     )
-    if snapshot_mode not in VALID_BLACKBOX_SNAPSHOT_MODES:
-        raise ValueError(f"unsupported Blackbox snapshot mode: {snapshot_mode}")
-    if rebuild_state and (not getattr(cfg, "incremental_state", False)
-                          or snapshot_mode != BLACKBOX_SNAPSHOT_MODE_FRESH):
+    if rebuild_state and not getattr(cfg, "incremental_state", False):
         raise ValueError("state rebuild requires an incremental scheme and fresh trusted input")
     deliveries = blackbox_deliveries(cfg)
-    require_fresh = snapshot_mode == BLACKBOX_SNAPSHOT_MODE_FRESH
     snapshot = get_ready_blackbox_snapshot(
         snapshot_date=predict_date,
-        require_fresh=require_fresh,
+        require_fresh=True,
         factor_input_mode=getattr(cfg, "factor_input_mode", None) or "legacy_v1",
     )
 
     metadata = deliveries[0].metadata
-    if snapshot_mode == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF:
-        _validate_historical_snapshot(
-            snapshot,
-            predict_date=predict_date,
-            expected_generation_id=expected_generation_id,
-            expected_refresh_date=expected_refresh_date,
-        )
     calendar = get_calendar(engine)
     if metadata.task_type in PERIOD_AVERAGE_TASK_TYPES:
         feature_date = resolve_live_context(
@@ -585,7 +551,7 @@ def run_blackbox_scheme_subprocess(
         }
         state = state_binding_for_scheme(
             cfg, generation_id=snapshot.generation_id,
-            persistent=snapshot_mode == BLACKBOX_SNAPSHOT_MODE_FRESH,
+            persistent=True,
             rebuild=rebuild_state,
         )
         if state is not None:
@@ -616,21 +582,6 @@ def run_blackbox_scheme_subprocess(
             except ProcessGroupTerminationError:
                 runtime_view.mark_termination_uncertain()
                 raise
-            if snapshot_mode == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF:
-                extra = dict(record.extra or {})
-                extra.update(
-                    {
-                        "replay_semantics": "current_snapshot_as_of_not_historical_vintage",
-                        "backfill_mode": "post_deployment_live_safe_replay",
-                        "backfilled_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                        "data_generation_id": snapshot.generation_id,
-                        "source_refresh_date": snapshot.refresh_date,
-                        "daily_cutoff_key": cutoffs.daily_cutoff_key,
-                        "weekly_cutoff_key": cutoffs.weekly_cutoff_key,
-                        "monthly_cutoff_key": cutoffs.monthly_cutoff_key,
-                    }
-                )
-                record = replace(record, extra=extra)
             record = replace(record, extra={**(record.extra or {}),
                              'input_quality': quality_reports[delivery.script_path.name]})
             records.append(_project_blackbox_fact_horizon(record, cfg=cfg, metadata=metadata))
@@ -899,50 +850,6 @@ def _index_gray_replay_records(
     return indexed
 
 
-def _validate_historical_snapshot(
-    snapshot,
-    *,
-    predict_date: str,
-    expected_generation_id: str | None = None,
-    expected_refresh_date: str | None = None,
-) -> None:
-    generation_id = getattr(snapshot, "generation_id", None)
-    refresh_date = getattr(snapshot, "refresh_date", None)
-    if not isinstance(generation_id, str) or not generation_id.strip():
-        raise ValueError("historical Blackbox snapshot generation_id must be non-empty")
-    if not isinstance(refresh_date, str) or not refresh_date.strip():
-        raise ValueError("historical Blackbox snapshot refresh_date must be non-empty")
-    try:
-        canonical_predict_date = date.fromisoformat(predict_date).isoformat()
-        canonical_refresh_date = date.fromisoformat(refresh_date).isoformat()
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            "historical Blackbox snapshot dates must use canonical YYYY-MM-DD"
-        ) from exc
-    if canonical_predict_date != predict_date or canonical_refresh_date != refresh_date:
-        raise ValueError(
-            "historical Blackbox snapshot dates must use canonical YYYY-MM-DD"
-        )
-    if predict_date > refresh_date:
-        raise ValueError(
-            "historical Blackbox snapshot requires predict_date on or before "
-            "refresh_date: "
-            f"predict_date={predict_date}, refresh_date={refresh_date}"
-        )
-    if expected_generation_id is not None and generation_id != expected_generation_id:
-        raise ValueError(
-            "DataBridge current generation changed after historical replay "
-            "preflight: "
-            f"expected={expected_generation_id}, actual={generation_id}"
-        )
-    if expected_refresh_date is not None and refresh_date != expected_refresh_date:
-        raise ValueError(
-            "DataBridge current refresh_date changed after historical replay "
-            "preflight: "
-            f"expected={expected_refresh_date}, actual={refresh_date}"
-        )
-
-
 def _run_process_group(
     cmd: list[str],
     *,
@@ -1180,10 +1087,6 @@ def execute_scheme(
     scheduled_control_plane: str | None = None,
     scheduled_execution_context: object | None = None,
     scheduled_preflight_failure: str | None = None,
-    blackbox_snapshot_mode: str = BLACKBOX_SNAPSHOT_MODE_FRESH,
-    blackbox_expected_generation_id: str | None = None,
-    blackbox_expected_refresh_date: str | None = None,
-    blackbox_record_validator: Callable[[list[PredictionRecord]], None] | None = None,
     engine=None,
     canonical_config_trusted: bool = False,
     ephemeral_native_runtime_root: str | Path | None = None,
@@ -1311,10 +1214,6 @@ def execute_scheme(
                     run_kwargs["cancellation_event"] = cancellation_event
             if process_start_guard is not None:
                 run_kwargs["process_start_guard"] = process_start_guard
-            if blackbox_snapshot_mode != BLACKBOX_SNAPSHOT_MODE_FRESH:
-                run_kwargs["blackbox_snapshot_mode"] = blackbox_snapshot_mode
-                run_kwargs["expected_generation_id"] = blackbox_expected_generation_id
-                run_kwargs["expected_refresh_date"] = blackbox_expected_refresh_date
             with audit_run_context(run_id):
                 records = run_configured_scheme(cfg, predict_date, **run_kwargs)
             records_returned = len(records)
@@ -1344,8 +1243,6 @@ def execute_scheme(
             records = _normalize_live_records(records, prediction_phase=prediction_phase)
             _validate_live_record_dates(records, cfg=cfg, predict_date=predict_date, engine=engine)
             _validate_records_against_active_registry(records, cfg=cfg, active_targets=active_targets)
-            if blackbox_record_validator is not None:
-                blackbox_record_validator(records)
             if runtime_type == "blackbox_v2":
                 expected = len(active_targets)
                 if records_returned != expected:
