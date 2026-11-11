@@ -162,7 +162,8 @@ def main(argv: list[str] | None = None) -> int:
         cmd = [SERVICE_PY, "-B", "-m", "scheduler.launchd_prediction_runner", "--cadence", "daily", "--predict-date", args.predict_date, "--algo-env", "forecast_env"]
         for scheme_id in args.scheme_ids:
             cmd += ["--scheme-id", scheme_id]
-        runner = subprocess.Popen(cmd, env=env, cwd=release, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        runner_log = work / "runner.log"
+        runner = subprocess.Popen(cmd, env=env, cwd=release, stdout=subprocess.PIPE, stderr=runner_log.open("w"), text=True)
         while runner.poll() is None:
             time.sleep(3)
             failed = _sql(port, f"SELECT scheme_id, LEFT(error_message,200) FROM t_scheme_runs WHERE run_id>{base_run} AND status='failed'")
@@ -170,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
                 runner.kill()
                 for row in failed:
                     print("FAILED", *row, file=sys.stderr)
+                print("runner stderr tail:", *runner_log.read_text().splitlines()[-15:], sep="\n", file=sys.stderr)
                 return 1
 
         # 5) 逐条比对
