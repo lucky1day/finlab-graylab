@@ -78,6 +78,13 @@ Backend 交接时，短暂 HTTP 200 可能仍来自旧进程；先有界等待�
 release，再结合健康与资源读回判定。切换瞬间暂时没有 listener 应在此等待内处理，不以单次 PID
 读取失败代替整个新进程的就绪结果。
 
+**发布前实盘重放（Mac3 本机，可替代等待自然窗口）：** 候选 release 预安装后，用
+[`scripts/replay_live_prediction.py`](../scripts/replay_live_prediction.py) 在一次性 MySQL 中载入生产数据副本，
+以候选 release 的 `launchd_prediction_runner` 真实重跑某个已发生的日频预测日（如
+`--predict-date 2026-11-11 --scheme-id t5_daily --scheme-id v8_daily_3y_t5`），并与生产当日结果逐条比对
+（预测方向、特征日、预测日、exact、结果分区）；全部一致才通过，约 1 分钟。脚本只读生产库与 DataBridge current，
+所有写入都在临时目录与一次性库内，结束自动清理。它不替代 ECS 的自然运行证据。
+
 候选提交须先通过仓库四个独立必选任务：排除 MySQL marker 的 Python 公共合同、直接 Node 状态机、
 MySQL 8.4 disposable 集成合同，以及 release 内容/clean commit 确定性构建。任务缺依赖、被 skip 或没有
 实际执行均不构成绿色候选。公网正向验收使用 [`check_public_access.sh`](../scripts/check_public_access.sh)，
