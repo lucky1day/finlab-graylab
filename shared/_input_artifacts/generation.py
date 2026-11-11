@@ -22,6 +22,7 @@ from typing import (
 import pandas as pd
 
 from shared import data_service as _data_service
+from shared.platform_dates import DEFAULT_FACTOR_INPUT_MODE
 from shared.blackbox_v2.snapshot import (
     SNAPSHOT_FILENAMES,
     BlackboxSnapshot,
@@ -152,7 +153,7 @@ def get_ready_blackbox_snapshot(
     cache_root: str | Path = BLACKBOX_GENERATION_SNAPSHOT_ROOT,
     require_fresh: bool = False,
     expected_source_identity: Mapping[str, Any] | None = None,
-    factor_input_mode: str = "legacy_v1",
+    factor_input_mode: str = DEFAULT_FACTOR_INPUT_MODE,
 ) -> BlackboxSnapshot:
     """读取 producer 已发布的不可变快照；缺失时不代建、不修复。"""
     root = Path(cache_root)

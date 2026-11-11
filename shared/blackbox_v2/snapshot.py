@@ -14,6 +14,7 @@ from typing import Mapping
 
 import pandas as pd
 
+from shared.platform_dates import DEFAULT_FACTOR_INPUT_MODE
 from shared.data_bridge.validation import (
     EXPECTED_FILENAMES as SNAPSHOT_FILENAMES,
     FACTOR_CATALOG_COLUMNS,
@@ -62,7 +63,7 @@ class CutoffKeys:
 def compose_blackbox_input_bundle(
     base_snapshot: BlackboxSnapshot,
     *,
-    factor_input_mode: str = "legacy_v1",
+    factor_input_mode: str = DEFAULT_FACTOR_INPUT_MODE,
 ) -> BlackboxInputBundle:
     """将已含标准文件的 generation 快照交给运行视图。"""
     if not isinstance(base_snapshot, BlackboxSnapshot):

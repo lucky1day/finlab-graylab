@@ -70,6 +70,7 @@ from shared.prediction_context import (
     build_monthly_live_context,
     build_weekly_live_context,
 )
+from shared.platform_dates import DEFAULT_FACTOR_INPUT_MODE
 from shared.runtime_paths import resolve_runtime_state_path
 from shared.source_runtime_database import (
     SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV,
@@ -471,7 +472,7 @@ def run_blackbox_scheme_subprocess(
     snapshot = get_ready_blackbox_snapshot(
         snapshot_date=predict_date,
         require_fresh=True,
-        factor_input_mode=getattr(cfg, "factor_input_mode", None) or "legacy_v1",
+        factor_input_mode=getattr(cfg, "factor_input_mode", None) or DEFAULT_FACTOR_INPUT_MODE,
     )
 
     metadata = deliveries[0].metadata
@@ -511,7 +512,7 @@ def run_blackbox_scheme_subprocess(
     )
     input_bundle = compose_blackbox_input_bundle(
         snapshot,
-        factor_input_mode=getattr(cfg, "factor_input_mode", None) or "legacy_v1",
+        factor_input_mode=getattr(cfg, "factor_input_mode", None) or DEFAULT_FACTOR_INPUT_MODE,
     )
     blackbox_env = profile.conda_env if algo_env == DEFAULT_ALGO_ENV else algo_env
     profile = replace(
@@ -625,6 +626,11 @@ def _read_only_state_seed(
             ),
         )
     except Exception:
+        logger.warning(
+            "read-only state seed disabled: state root unresolved for %s",
+            cfg.scheme_id,
+            exc_info=True,
+        )
         return None
     path = (
         state_root
@@ -635,7 +641,14 @@ def _read_only_state_seed(
         return None
     try:
         cutoff = read_state_cutoff(path)
+    except FileNotFoundError:
+        return None
     except Exception:
+        logger.warning(
+            "read-only state seed disabled: unreadable state file %s",
+            path,
+            exc_info=True,
+        )
         return None
     if any(
         str(getattr(request, "feature_date", "")) < cutoff
@@ -699,7 +712,7 @@ def run_blackbox_gray_replay_batch(
 
     input_bundle = compose_blackbox_input_bundle(
         snapshot,
-        factor_input_mode=getattr(cfg, "factor_input_mode", None) or "legacy_v1",
+        factor_input_mode=getattr(cfg, "factor_input_mode", None) or DEFAULT_FACTOR_INPUT_MODE,
     )
     blackbox_env = (
         profile.conda_env if algo_env == DEFAULT_ALGO_ENV else algo_env

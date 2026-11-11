@@ -47,7 +47,6 @@ from shared.data_bridge.filesystem import (
     ensure_private_directory,
     _validate_publish_candidate,
     _copy_regular_file_no_follow,
-    _remove_private_debris_tree,
 )
 from shared.data_bridge.publication_manifest import (
     CURRENT_PUBLICATION_MANIFEST,
@@ -1212,43 +1211,6 @@ class DataBridgeStore:
                 self.previous_dir,
                 exc.errno,
             )
-
-    def cleanup_crash_debris(self) -> tuple[str, ...]:
-        """在外层 occurrence owner 下清理未发布 ``.current-next-*``。"""
-        ensure_private_directory(
-            self.data_root,
-            label="DataBridge data root",
-        )
-        ensure_private_directory(
-            self.runtime_root,
-            label="DataBridge runtime root",
-        )
-        removed: list[str] = []
-        with self.lock(exclusive=True):
-            candidates = sorted(
-                (
-                    entry
-                    for entry in self.data_root.iterdir()
-                    if entry.name.startswith(".current-next-")
-                ),
-                key=lambda entry: entry.name,
-            )
-            for entry in candidates:
-                if not re.fullmatch(
-                    r"\.current-next-[A-Za-z0-9_-]+",
-                    entry.name,
-                ):
-                    raise DataBridgeRefreshError(
-                        "DataBridge crash debris has an unsafe name"
-                    )
-                _remove_private_debris_tree(
-                    entry,
-                    label="DataBridge current-next crash debris",
-                )
-                removed.append(entry.name)
-            if removed:
-                _fsync_directory(self.data_root)
-        return tuple(removed)
 
     def recover(self, *, schema_path: str | Path) -> None:
         """按 state/current 完整发布身份恢复原子切换中断现场。"""

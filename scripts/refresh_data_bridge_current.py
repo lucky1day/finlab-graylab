@@ -126,9 +126,6 @@ def refresh_current(
                 config,
                 feature_date=expected_feature_date,
                 engine=engine,
-                allow_legacy_v1_period_fallback=(
-                    one_shot_publisher
-                ),
                 allow_producer_period_bootstrap=one_shot_publisher,
             )
         )

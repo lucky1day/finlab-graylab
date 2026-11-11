@@ -253,7 +253,6 @@ def resolve_databridge_continuity_authority(
     *,
     feature_date: str,
     connection: Any,
-    allow_legacy_v1_period_fallback: bool = False,
     allow_producer_period_bootstrap: bool = False,
 ) -> DataBridgeContinuityAuthority | None:
     """从现有 current 和 caller 只读连接解析下一轮连续性截止键。
@@ -265,8 +264,6 @@ def resolve_databridge_continuity_authority(
         str(feature_date)[:10]
     ).isoformat()
     kwargs: dict[str, object] = {}
-    if allow_legacy_v1_period_fallback:
-        kwargs["allow_legacy_v1_period_fallback"] = True
     if allow_producer_period_bootstrap:
         kwargs["allow_producer_period_bootstrap"] = True
     try:
@@ -353,7 +350,6 @@ def resolve_databridge_continuity_authority_from_engine(
     *,
     feature_date: str,
     engine: Any,
-    allow_legacy_v1_period_fallback: bool = False,
     allow_producer_period_bootstrap: bool = False,
 ) -> DataBridgeContinuityAuthority | None:
     """在单个 RR consistent snapshot 只读事务中解析 current authority。"""
@@ -371,8 +367,6 @@ def resolve_databridge_continuity_authority_from_engine(
         )
         try:
             kwargs: dict[str, object] = {}
-            if allow_legacy_v1_period_fallback:
-                kwargs["allow_legacy_v1_period_fallback"] = True
             if allow_producer_period_bootstrap:
                 kwargs["allow_producer_period_bootstrap"] = True
             return resolve_databridge_continuity_authority(
@@ -390,7 +384,6 @@ def resolve_stable_databridge_current_authority(
     *,
     feature_dates: Iterable[str],
     connection: Any,
-    allow_legacy_v1_period_fallback: bool = False,
     allow_producer_period_bootstrap: bool = False,
 ) -> StableDataBridgeCurrentAuthority:
     """校验 current，并用 caller Connection 冻结稳定发布与截止身份。"""
@@ -461,8 +454,6 @@ def resolve_stable_databridge_current_authority(
             for row in calendar.itertuples(index=False)
         }
     publication_manifest = current.publication_manifest
-    # allow_legacy_v1_period_fallback 仅为保持调用签名而保留：legacy v1 current
-    # 已在 check_current_dataset 处 fail-closed，此参数不再产生任何效果。
     producer_v3_period_bootstrap = (
         allow_producer_period_bootstrap
         and isinstance(publication_manifest, Mapping)
@@ -475,9 +466,9 @@ def resolve_stable_databridge_current_authority(
             feature_dates=normalized_dates,
             connection=connection,
             schema_path=config.schema_path,
-            # cutoffs 层的周期键向前承接同时服务 legacy v1 current 与 v3 producer
-            # bootstrap；后者是现行 one-shot publisher 链路，不能按 legacy 清理。
-            allow_legacy_v1_period_fallback=producer_v3_period_bootstrap,
+            # 周期键向前承接只在 v3 producer bootstrap（现行 one-shot publisher
+            # 链路）时启用；legacy v1 current 已在 check_current_dataset fail-closed。
+            allow_period_cutoff_carry_forward=producer_v3_period_bootstrap,
         )
     except ValueError as exc:
         raise DataBridgeCurrentInvalidError(

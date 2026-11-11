@@ -160,7 +160,7 @@ def _resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys(
     feature_dates: Iterable[str],
     connection: Any,
     schema_path: str | Path = BLACKBOX_SCHEMA_PATH,
-    allow_legacy_v1_period_fallback: bool = False,
+    allow_period_cutoff_carry_forward: bool = False,
 ) -> dict[str, _ResolvedBlackboxInputCutoffs]:
     """解析有效 cutoff，并保留 fallback 前的 source weekly/monthly key。"""
     normalized_dates = list(dict.fromkeys(
@@ -224,8 +224,8 @@ def _resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys(
         key_column="week_id",
         available_keys=snapshot_keys["week_id"],
         filename="weekly_output.csv",
-        allow_legacy_v1_period_fallback=(
-            allow_legacy_v1_period_fallback
+        allow_period_cutoff_carry_forward=(
+            allow_period_cutoff_carry_forward
         ),
     )
     monthly_by_date = _resolve_period_cutoffs_bulk(
@@ -234,8 +234,8 @@ def _resolve_blackbox_input_cutoffs_with_source_keys_bulk_from_keys(
         key_column="month_id",
         available_keys=snapshot_keys["month_id"],
         filename="monthly_output.csv",
-        allow_legacy_v1_period_fallback=(
-            allow_legacy_v1_period_fallback
+        allow_period_cutoff_carry_forward=(
+            allow_period_cutoff_carry_forward
         ),
     )
     resolved: dict[str, _ResolvedBlackboxInputCutoffs] = {}
@@ -396,7 +396,7 @@ def _resolve_period_cutoffs_bulk(
     key_column: str,
     available_keys: set[str],
     filename: str,
-    allow_legacy_v1_period_fallback: bool = False,
+    allow_period_cutoff_carry_forward: bool = False,
 ) -> dict[str, _ResolvedPeriodCutoff]:
     required = {key_column, "available_date"}
     if index.empty or not required.issubset(index.columns):
@@ -420,9 +420,9 @@ def _resolve_period_cutoffs_bulk(
             raise ValueError(f"platform as-of data has no {key_column} for {feature_date}")
         selected = latest
         if selected not in available_keys:
-            # 名称沿用 legacy，但这是通用的周期键向前承接：authority 层在 legacy v1
-            # current 与 v3 producer bootstrap 两种情形下都会打开，属于现行生产语义。
-            if allow_legacy_v1_period_fallback:
+            # 周期键向前承接：authority 层仅在 v3 producer bootstrap（现行 one-shot
+            # publisher 链路）时打开。
+            if allow_period_cutoff_carry_forward:
                 prior_keys = [
                     key for key in available_keys if key <= selected
                 ]

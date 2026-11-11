@@ -25,8 +25,6 @@ from scheduler.persistence.prediction_rows import (
 )
 
 
-BLACKBOX_REGISTRY_STATUSES = {"active", "paused", "archived"}
-
 _BLACKBOX_LIFECYCLE_LOCK_TIMEOUT_SEC = 5.0
 
 

@@ -10,6 +10,7 @@ import yaml
 
 from scheduler.deployment_scope import filter_schemes_for_configured_target
 from shared.blackbox_v2.versioning import compute_blackbox_config_hash
+from shared.platform_dates import DEFAULT_FACTOR_INPUT_MODE
 from shared.blackbox_v2.contracts import BlackboxDelivery, BlackboxMetadata
 from shared.scheme_config_schema import resolve_fact_horizon, validate_config
 from shared.versioning import (
@@ -247,7 +248,7 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
         environment_fingerprint=None,
         data_snapshot_id=None,
         input_source=str(raw["input_source"]),
-        factor_input_mode=str(raw.get("factor_input_mode", "legacy_v1")),
+        factor_input_mode=str(raw.get("factor_input_mode", DEFAULT_FACTOR_INPUT_MODE)),
         blackbox_metadata=None if multi else metadata,
         owner=metadata.owner,
         incremental_state=raw.get("incremental_state", False),

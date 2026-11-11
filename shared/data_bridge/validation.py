@@ -118,21 +118,6 @@ def validate_dataset(
     )
 
 
-def validate_legacy_four_file_dataset(
-    frames: Mapping[str, pd.DataFrame],
-    *,
-    schema_path: str | Path,
-    expected_daily_date: str | None = None,
-) -> ValidatedDataBridgeDataset:
-    """验证升级前四文件 current；仅供过渡读取和 continuity。"""
-    return _validate_dataset(
-        frames,
-        schema_path=schema_path,
-        filenames=LEGACY_FOUR_FILENAMES,
-        expected_daily_date=expected_daily_date,
-    )
-
-
 def _validate_dataset(
     frames: Mapping[str, pd.DataFrame],
     *,
@@ -436,19 +421,6 @@ def read_dataset_directory(
     return _read_dataset_directory(
         directory,
         filenames=EXPECTED_FILENAMES,
-        allowed_sidecar_filenames=allowed_sidecar_filenames,
-    )
-
-
-def read_legacy_four_file_directory(
-    directory: str | Path,
-    *,
-    allowed_sidecar_filenames: frozenset[str] = frozenset(),
-) -> dict[str, pd.DataFrame]:
-    """读取升级前四文件 current；只供过渡兼容与 continuity。"""
-    return _read_dataset_directory(
-        directory,
-        filenames=LEGACY_FOUR_FILENAMES,
         allowed_sidecar_filenames=allowed_sidecar_filenames,
     )
 

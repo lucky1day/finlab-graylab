@@ -206,8 +206,9 @@ def test_legacy_v1_four_file_current_fails_closed(tmp_path):
         check_current_dataset,
     )
     from shared.data_bridge.validation import (
+        LEGACY_FOUR_FILENAMES,
+        _validate_dataset,
         validate_dataset,
-        validate_legacy_four_file_dataset,
     )
 
     config = DataBridgeRefreshConfig(
@@ -217,9 +218,11 @@ def test_legacy_v1_four_file_current_fails_closed(tmp_path):
     )
     store = DataBridgeStore(data_root=config.data_root, runtime_root=config.runtime_root)
     frames = _bridge_frames(include_new_week=False)
-    legacy_digest = validate_legacy_four_file_dataset(
+    legacy_digest = _validate_dataset(
         {name: frame for name, frame in frames.items() if name != 'factor_catalog.csv'},
         schema_path=SCHEMA_PATH,
+        filenames=LEGACY_FOUR_FILENAMES,
+        expected_daily_date=None,
     ).business_digest
     candidate = tmp_path / 'candidate'
     candidate.mkdir()

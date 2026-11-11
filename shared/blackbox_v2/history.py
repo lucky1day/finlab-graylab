@@ -12,6 +12,7 @@ from shared.actual_facts import (
     read_week_calendar_rows,
     read_yield_rows,
 )
+from shared.platform_dates import BACKTEST_START_ISO
 from shared.blackbox_v2.contracts import (
     BlackboxMetadata,
     BlackboxRequest,
@@ -74,7 +75,7 @@ def build_historical_cases(
     engine,
     *,
     target_date_before: str,
-    predict_date_from: str = "2025-01-01",
+    predict_date_from: str = BACKTEST_START_ISO,
 ) -> list[HistoricalCase]:
     """按平台日期与 actual 事实生成当前快照 as-of 历史 Request。"""
     _validate_metadata_contract(metadata)

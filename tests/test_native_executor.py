@@ -443,3 +443,24 @@ def test_native_ipc_preserves_compatible_integer_representations(
     record, = run_native_stdout(**{field: value})
     assert getattr(record, field) == expected
     assert type(getattr(record, field)) is int
+
+
+def test_read_only_state_seed_logs_unreadable_state_and_returns_none(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    from scheduler import executor
+
+    monkeypatch.setenv("BFL_RUNTIME_ROOT", str(tmp_path))
+    cfg = SimpleNamespace(
+        incremental_state=True, scheme_id="s1", scheme_version="v1"
+    )
+    state_file = tmp_path / "blackbox-state" / "s1" / "v1.state"
+    state_file.parent.mkdir(parents=True)
+
+    assert executor._read_only_state_seed(cfg, []) is None
+    assert not caplog.records
+
+    state_file.write_bytes(b"corrupt")
+    with caplog.at_level("WARNING", logger=executor.logger.name):
+        assert executor._read_only_state_seed(cfg, []) is None
+    assert "unreadable state file" in caplog.text

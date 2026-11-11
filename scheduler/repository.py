@@ -25,12 +25,7 @@ from scheduler.persistence.connections import (
 )
 
 from scheduler.persistence.lifecycle import (
-    BLACKBOX_REGISTRY_STATUSES,
-    BlackboxActivationLockTimeout,
-    BlackboxExecutionApproval,
     BlackboxLifecycleIdentityAbsent,
-    BlackboxLifecycleState,
-    BlackboxRevisionActivationPreflight,
     _sync_scheme_registry_conn,
     activate_blackbox_initial,
     activate_blackbox_revision,

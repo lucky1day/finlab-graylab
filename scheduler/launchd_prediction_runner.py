@@ -1,6 +1,6 @@
 """由 launchd one-shot 启动的单批预测入口。
 
-本模块不保存 cron、ledger、occurrence 或 startup catch-up 状态。每次进程启动时
+本模块无常驻状态：每次进程启动时
 只做一次严格发现、按 active cadence 筛选、DataBridge Gate 校验和逐方案执行；跨 cadence 的
 互斥由 runtime 目录中的单一有界等待锁保证。
 """

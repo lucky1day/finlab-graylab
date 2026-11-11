@@ -6,11 +6,6 @@ import tempfile
 from pathlib import Path
 
 from shared.blackbox_v2._script_policy import (
-    ABSOLUTE_PATH_PATTERN,
-    FORBIDDEN_CALLS,
-    FORBIDDEN_IMPORT_ROOTS,
-    FORBIDDEN_QUALIFIED_CALLS,
-    RELATIVE_TRAVERSAL_PATTERN,
     SCRIPT_VALIDATOR_POLICY_DIGEST,
     validate_delivery_script,
 )

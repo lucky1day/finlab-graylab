@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import stat
 from pathlib import Path
 
@@ -240,35 +239,3 @@ def _copy_regular_file_no_follow(
             f"candidate file changed while copying: {source_path.name}"
         )
     return str(destination_path)
-
-
-def _remove_private_debris_tree(path: Path, *, label: str) -> None:
-    try:
-        root_info = path.lstat()
-    except FileNotFoundError:
-        return
-    if stat.S_ISLNK(root_info.st_mode):
-        raise DataBridgeRefreshError(f"{label} must not be a symlink")
-    if not stat.S_ISDIR(root_info.st_mode):
-        raise DataBridgeRefreshError(f"{label} must be a directory")
-    for current_root, directory_names, filenames in os.walk(
-        path,
-        topdown=True,
-        followlinks=False,
-    ):
-        current = Path(current_root)
-        for name in (*directory_names, *filenames):
-            entry = current / name
-            info = entry.lstat()
-            if stat.S_ISLNK(info.st_mode):
-                raise DataBridgeRefreshError(
-                    f"{label} contains a symlink"
-                )
-            if not (
-                stat.S_ISDIR(info.st_mode)
-                or stat.S_ISREG(info.st_mode)
-            ):
-                raise DataBridgeRefreshError(
-                    f"{label} contains a special file"
-                )
-    shutil.rmtree(path)

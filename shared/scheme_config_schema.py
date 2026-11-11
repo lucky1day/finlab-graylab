@@ -7,7 +7,7 @@ import unicodedata
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from shared.platform_dates import DEFAULT_FACTOR_INPUT_MODE
+from shared.platform_dates import BACKTEST_START_ISO, DEFAULT_FACTOR_INPUT_MODE
 from shared.task_specs import (
     ALLOWED_DATA_FREQUENCIES,
     ALLOWED_FREQUENCIES,
@@ -281,11 +281,11 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
                 if not isinstance(data_source, str) or not data_source.strip():
                     errors.append("backtest.data_source is required when benchmark_required=true")
             if frequency == "weekly":
-                if backtest.get("predict_start_date") != "2025-01-01":
-                    errors.append("backtest.predict_start_date must be 2025-01-01 for weekly backtests")
+                if backtest.get("predict_start_date") != BACKTEST_START_ISO:
+                    errors.append(f"backtest.predict_start_date must be {BACKTEST_START_ISO} for weekly backtests")
             elif frequency in {"daily", "monthly", "quarterly", "annual"}:
-                if backtest.get("start_date") != "2025-01-01":
-                    errors.append("backtest.start_date must be 2025-01-01 for daily/monthly backtests")
+                if backtest.get("start_date") != BACKTEST_START_ISO:
+                    errors.append(f"backtest.start_date must be {BACKTEST_START_ISO} for daily/monthly backtests")
 
     return errors
 
