@@ -19,7 +19,6 @@ from backend.factor_lab_dashboard_semantics import (
     live_actual_selector,
 )
 from backend.factor_lab_dashboard_queries import (
-    DashboardHistoryReplacementPlan,
     MAX_ACTUAL_SOURCE_ROWS,
     read_bounded_source_rows,
     read_live_actuals,
@@ -229,62 +228,6 @@ def test_feature_partition_keeps_cross_month_target_actual_and_pending() -> None
         assert detail is not None and detail["rows"] == expected
 
 
-def test_replacement_backtest_metadata_survives_old_run_cleanup(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from backend import factor_lab_dashboard as dashboard
-
-    engine = _engine()
-    replacement_run = {
-        "id": 70,
-        "benchmark_id": "replacement-source",
-        "scheme_id": "demo_daily",
-        "data_source": "blackbox_v2_current_snapshot_as_of",
-        "start_date": "2025-01-01",
-        "end_date": "2026-05-29",
-        "status": "success",
-        "created_at": "2026-06-01 10:00:00",
-        "updated_at": "2026-06-01 10:00:00",
-    }
-    monkeypatch.setattr(
-        dashboard,
-        "resolve_dashboard_history_replacements",
-        lambda _connection, _registry_rows: DashboardHistoryReplacementPlan(
-            backtest_runs_by_registry=(
-                ("demo_daily__h1__5Y", replacement_run),
-            )
-        ),
-    )
-    with engine.begin() as connection:
-        connection.execute(text("DELETE FROM t_backtest_runs"))
-        connection.execute(
-            text(
-                """INSERT INTO t_scheme_registry VALUES
-                ('demo_daily__h2__10Y','demo_daily','blackbox_v2',
-                 'Demo sibling','lw','unrelated scope',2,'T+1','daily',
-                 '10Y','active','2026-06-01')"""
-            )
-        )
-        connection.execute(
-            text(
-                """INSERT INTO t_target_registry VALUES
-                ('10Y','10年','bond','yield',2,'active','{}')"""
-            )
-        )
-
-    schemes = {
-        row["scheme_id"]: row
-        for row in build_factor_lab_dashboard(engine)["schemes"]
-    }
-
-    assert schemes["demo_daily__h1__5Y"]["backtest"] is not None
-    assert (
-        schemes["demo_daily__h1__5Y"]["backtest"]["benchmark_id"]
-        == "replacement-source"
-    )
-    assert schemes["demo_daily__h2__10Y"]["backtest"] is None
-
-
 @pytest.mark.parametrize(
     "target_date,month,source",
     [
@@ -416,10 +359,9 @@ def test_summary_streams_across_fetch_boundaries_without_changing_counts(
     monkeypatch.setattr(
         dashboard,
         "iter_summary_product_predictions",
-        lambda connection, registry_rows, *, stats, replacement_plan=None: (
+        lambda connection, registry_rows, *, stats: (
             iter_summary_product_predictions(
-                connection, registry_rows, stats=stats,
-                replacement_plan=replacement_plan, fetch_rows=2,
+                connection, registry_rows, stats=stats, fetch_rows=2,
             )
         ),
     )
@@ -880,47 +822,6 @@ def test_production_structure_errors_hide_markers(production_file, payload):
     engine = _engine()
     assert build_factor_lab_dashboard(engine)["schemes"][0]["is_production"] is False
     engine.dispose()
-
-
-@pytest.mark.parametrize("expired_at_entry", [True, False])
-def test_historical_replacement_respects_cumulative_database_budget(expired_at_entry):
-    from pathlib import Path
-    from backend.factor_lab_dashboard_queries import resolve_dashboard_history_replacements
-    from shared.legacy_prediction_migration import load_legacy_prediction_migrations
-
-    entry = next(iter(load_legacy_prediction_migrations(Path(__file__).resolve().parents[1])))
-    registry = [{
-        "scheme_id": f"{entry.prediction_scheme_id}__h{entry.horizon}__{entry.target_tenor}",
-        "base_scheme_id": entry.prediction_scheme_id,
-        "target_tenor": entry.target_tenor,
-        "horizon": entry.horizon,
-    }]
-    engine = _engine()
-    with engine.begin() as connection:
-        connection.exec_driver_sql(
-            "CREATE TABLE t_scheme_versions (scheme_id TEXT, scheme_version TEXT, "
-            "runtime_type TEXT, status TEXT, code_hash TEXT, config_hash TEXT, manifest_hash TEXT)"
-        )
-        connection.exec_driver_sql("ALTER TABLE t_scheme_predictions ADD COLUMN scheme_version TEXT")
-    now = [0.0]
-    context = create_http_request_context(None, clock=lambda: now[0], budget_seconds=1)
-    statements = []
-
-    @event.listens_for(engine, "after_cursor_execute")
-    def expire_budget(_conn, _cursor, statement, _parameters, _context, _executemany):
-        statements.append(statement)
-        now[0] = 1.25
-
-    if expired_at_entry:
-        now[0] = 1.25
-    try:
-        with engine.connect() as connection, bind_http_request_context(context):
-            with pytest.raises(RequestBudgetExceeded, match="dashboard_query"):
-                resolve_dashboard_history_replacements(connection, registry)
-        assert len(statements) == (0 if expired_at_entry else 1)
-        assert context.db_seconds == (0 if expired_at_entry else 1.25)
-    finally:
-        engine.dispose()
 
 
 @pytest.mark.parametrize("root", [None, "relative", "/nonexistent-marker-runtime"])

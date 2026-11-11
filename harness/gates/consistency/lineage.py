@@ -138,7 +138,7 @@ def validate_snapshot_lineage(
                 )
 
     candidate_live_only_versions = {
-        (str(row.get("lineage_scheme_id") or row["scheme_id"]), str(row["scheme_version"]))
+        (str(row["scheme_id"]), str(row["scheme_version"]))
         for row in snapshot.prediction_rows
         if _product_business_key(row) in live_only_keys.get(
             (str(row["scheme_id"]), str(row["target_tenor"]), int(row["horizon"])),
@@ -154,7 +154,7 @@ def validate_snapshot_lineage(
                 frozenset(),
             )
             for row in snapshot.prediction_rows
-            if (str(row.get("lineage_scheme_id") or row["scheme_id"]),
+            if (str(row["scheme_id"]),
                 str(row["scheme_version"])) == identity
         )
     }
@@ -182,9 +182,7 @@ def validate_snapshot_lineage(
             legacy_fact_count += 1
             continue
         exact = _required_text(row.get("scheme_version"), field="prediction exact")
-        lineage_scheme_id = str(
-            row.get("lineage_scheme_id") or scope[0]
-        )
+        lineage_scheme_id = scope[0]
         version_identity = (lineage_scheme_id, exact)
         version = versions.get(version_identity)
         validate_version(version_identity, version)

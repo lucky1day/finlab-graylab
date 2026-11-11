@@ -11,22 +11,11 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Connection, Engine
 
-from shared.legacy_prediction_migration import (
-    load_legacy_corrected_exact_evidence,
-    load_legacy_prediction_migrations,
-)
-from shared.prediction_history_replacement import (
-    PredictionHistoryProjection,
-    PredictionHistoryReplacementError,
-    resolve_prediction_history_projection,
-    validate_prediction_history_source_runs,
-)
 from shared.prediction_context import LIVE_PREDICTION_PHASES
 from harness.gates.consistency.common import (
     DataConsistencyError,
     DatabaseSnapshot,
     LIVE_RUN_EVIDENCE_START_DATE,
-    PROJECT_ROOT,
     _actual_selector,
     _iso_date,
     _json_mapping,
@@ -104,21 +93,23 @@ def _capture_snapshot(
             for row in registry_rows
         ]
         prediction_rows = tuple(
-            dict(row)
-            for row in _read_predictions(
-                connection,
-                scopes,
-                deadline=deadline,
-                monotonic=monotonic,
-            )
-        )
-        prediction_rows, replaced_live_run_ids = (
-            _project_snapshot_history_replacements(
-                connection,
-                registry_rows,
-                prediction_rows,
-                deadline=deadline,
-                monotonic=monotonic,
+            sorted(
+                (
+                    dict(row)
+                    for row in _read_predictions(
+                        connection,
+                        scopes,
+                        deadline=deadline,
+                        monotonic=monotonic,
+                    )
+                ),
+                key=lambda row: (
+                    str(row["scheme_id"]),
+                    str(row["target_tenor"]),
+                    int(row["horizon"]),
+                    str(row["target_date"]),
+                    int(row["id"]),
+                ),
             )
         )
         actual_rows = tuple(
@@ -152,9 +143,6 @@ def _capture_snapshot(
             sorted({str(row["base_scheme_id"]) for row in registry_rows}),
             deadline=deadline,
             monotonic=monotonic,
-        )
-        authoritative_live_ids = sorted(
-            set(authoritative_live_ids) - replaced_live_run_ids
         )
         requested_live_ids = sorted(
             set(requested_live_ids) | set(authoritative_live_ids)
@@ -193,7 +181,7 @@ def _capture_snapshot(
         )
         scheme_versions = {
                 (
-                    str(row.get("lineage_scheme_id") or row["scheme_id"]),
+                    str(row["scheme_id"]),
                     str(row.get("scheme_version") or ""),
                 )
                 for row in prediction_rows
@@ -350,248 +338,6 @@ def _read_predictions(
             ).mappings()
         )
     return rows
-
-
-def _project_snapshot_history_replacements(
-    connection: Connection,
-    registry_rows: Sequence[Mapping[str, Any]],
-    prediction_rows: Sequence[Mapping[str, Any]],
-    *,
-    deadline: float | None,
-    monotonic: Callable[[], float],
-) -> tuple[tuple[dict[str, Any], ...], frozenset[int]]:
-    """按同一精确合同投影已验证替代事实；目标机无来源时保持原样。"""
-    active_scopes = {
-        (
-            str(row["base_scheme_id"]),
-            str(row["target_tenor"]),
-            int(row["horizon"]),
-        )
-        for row in registry_rows
-    }
-    entries = load_legacy_prediction_migrations(PROJECT_ROOT)
-    corrected_by_identity = {
-        (item.source_scheme_id, item.designated_exact): item
-        for item in load_legacy_corrected_exact_evidence(PROJECT_ROOT)
-    }
-    projected_rows = [dict(row) for row in prediction_rows]
-    replaced_live_run_ids: set[int] = set()
-    for entry in entries:
-        scope = (
-            entry.prediction_scheme_id,
-            entry.target_tenor,
-            entry.horizon,
-        )
-        if scope not in active_scopes:
-            continue
-        corrected = corrected_by_identity.get(
-            (entry.designated_source_scheme_id, entry.designated_exact)
-        )
-        if corrected is None:
-            raise DataConsistencyError(
-                "historical replacement corrected evidence is missing"
-            )
-        source_identity = _execute_budgeted(
-            connection,
-            text(
-                "SELECT r.base_scheme_id, r.status AS registry_status, "
-                "v.runtime_type, v.status AS version_status, v.code_hash, "
-                "v.config_hash, v.manifest_hash "
-                "FROM t_scheme_registry r "
-                "JOIN t_scheme_versions v "
-                "ON v.scheme_id = r.base_scheme_id "
-                "AND v.scheme_version = :source_exact "
-                "WHERE r.scheme_id = :source_registry_scheme_id"
-            ),
-            {
-                "source_registry_scheme_id": corrected.source_registry_scheme_id,
-                "source_exact": entry.designated_exact,
-            },
-            deadline=deadline,
-            monotonic=monotonic,
-        ).mappings().one_or_none()
-        if source_identity is None:
-            orphan_count = _execute_budgeted(
-                connection,
-                text(
-                    "SELECT "
-                    "(SELECT COUNT(*) FROM t_scheme_versions "
-                    " WHERE scheme_id = :source_scheme_id "
-                    " AND scheme_version = :source_exact) + "
-                    "(SELECT COUNT(*) FROM t_scheme_predictions "
-                    " WHERE scheme_id = :source_scheme_id "
-                    " AND scheme_version = :source_exact)"
-                ),
-                {
-                    "source_scheme_id": entry.designated_source_scheme_id,
-                    "source_exact": entry.designated_exact,
-                },
-                deadline=deadline,
-                monotonic=monotonic,
-            ).scalar_one()
-            if int(orphan_count or 0):
-                raise DataConsistencyError(
-                    "historical replacement source identity is incomplete"
-                )
-            continue
-        if dict(source_identity) != {
-            "base_scheme_id": entry.designated_source_scheme_id,
-            "registry_status": "archived",
-            "runtime_type": "blackbox_v2",
-            "version_status": "retired",
-            "code_hash": entry.designated_code_hash,
-            "config_hash": entry.designated_config_hash,
-            "manifest_hash": entry.designated_manifest_hash,
-        }:
-            raise DataConsistencyError(
-                "historical replacement source identity changed"
-            )
-        source_rows = _read_predictions(
-            connection,
-            [
-                (
-                    entry.designated_source_scheme_id,
-                    entry.target_tenor,
-                    entry.horizon,
-                )
-            ],
-            deadline=deadline,
-            monotonic=monotonic,
-        )
-        source_rows = [
-            row
-            for row in source_rows
-            if str(row.get("scheme_version") or "") == entry.designated_exact
-        ]
-        products = [
-            row
-            for row in projected_rows
-            if (
-                str(row["scheme_id"]),
-                str(row["target_tenor"]),
-                int(row["horizon"]),
-            )
-            == scope
-        ]
-        try:
-            projection = resolve_prediction_history_projection(
-                products,
-                source_rows,
-                entry=entry,
-                corrected=corrected,
-            )
-        except PredictionHistoryReplacementError as exc:
-            raise DataConsistencyError(
-                f"historical replacement evidence drift: {exc}"
-            ) from exc
-        if projection is None:
-            continue
-        (
-            source_live_runs,
-            source_backtest_runs,
-            source_backtest_predictions,
-        ) = _read_history_replacement_source_runs(
-            connection,
-            projection,
-            deadline=deadline,
-            monotonic=monotonic,
-        )
-        try:
-            validate_prediction_history_source_runs(
-                projection,
-                source_live_runs,
-                source_backtest_runs,
-                source_backtest_predictions,
-                entry=entry,
-                corrected=corrected,
-            )
-        except PredictionHistoryReplacementError as exc:
-            raise DataConsistencyError(
-                f"historical replacement run lineage drift: {exc}"
-            ) from exc
-        excluded = projection.excluded_product_ids
-        replaced_live_run_ids.update(projection.deletable_live_run_ids)
-        projected_rows = [
-            row
-            for row in projected_rows
-            if int(row["id"]) not in excluded
-        ]
-        projected_rows.extend(projection.source_rows)
-    projected_rows.sort(
-        key=lambda row: (
-            str(row["scheme_id"]),
-            str(row["target_tenor"]),
-            int(row["horizon"]),
-            str(row["target_date"]),
-            int(row["id"]),
-        )
-    )
-    return tuple(projected_rows), frozenset(replaced_live_run_ids)
-
-
-def _read_history_replacement_source_runs(
-    connection: Connection,
-    projection: PredictionHistoryProjection,
-    *,
-    deadline: float | None,
-    monotonic: Callable[[], float],
-) -> tuple[
-    list[Mapping[str, Any]],
-    list[Mapping[str, Any]],
-    list[Mapping[str, Any]],
-]:
-    """在同一快照与总预算内读取替代事实引用的 run。"""
-    live_runs: list[Mapping[str, Any]] = []
-    if projection.source_live_run_ids:
-        statement = text(
-            "SELECT run_id, scheme_id, scheme_version, runtime_type, status, "
-            "prediction_phase, predict_date, data_snapshot_id, records_written "
-            "FROM t_scheme_runs WHERE run_id IN :run_ids ORDER BY run_id"
-        ).bindparams(bindparam("run_ids", expanding=True))
-        live_runs = list(
-            _execute_budgeted(
-                connection,
-                statement,
-                {"run_ids": sorted(projection.source_live_run_ids)},
-                deadline=deadline,
-                monotonic=monotonic,
-            ).mappings()
-        )
-    backtest_runs: list[Mapping[str, Any]] = []
-    if projection.source_backtest_run_ids:
-        statement = text(
-            "SELECT id, benchmark_id, scheme_id, data_source, status, "
-            "code_hash, config_hash, input_artifact_hash, run_mode, summary "
-            "FROM t_backtest_runs "
-            "WHERE id IN :run_ids ORDER BY id"
-        ).bindparams(bindparam("run_ids", expanding=True))
-        backtest_runs = list(
-            _execute_budgeted(
-                connection,
-                statement,
-                {"run_ids": sorted(projection.source_backtest_run_ids)},
-                deadline=deadline,
-                monotonic=monotonic,
-            ).mappings()
-        )
-    backtest_predictions: list[Mapping[str, Any]] = []
-    if projection.source_backtest_run_ids:
-        statement = text(
-            "SELECT run_id, scheme_id, target_tenor, horizon, predict_date, "
-            "feature_date, target_date, predicted_direction, label "
-            "FROM t_backtest_predictions WHERE run_id IN :run_ids "
-            "ORDER BY target_tenor, horizon, target_date, predict_date, id"
-        ).bindparams(bindparam("run_ids", expanding=True))
-        backtest_predictions = list(
-            _execute_budgeted(
-                connection,
-                statement,
-                {"run_ids": sorted(projection.source_backtest_run_ids)},
-                deadline=deadline,
-                monotonic=monotonic,
-            ).mappings()
-        )
-    return live_runs, backtest_runs, backtest_predictions
 
 
 def _read_actuals(

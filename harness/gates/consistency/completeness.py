@@ -12,8 +12,8 @@ from shared.historical_reference_compatibility import HistoricalBacktestReferenc
 from shared.legacy_prediction_migration import (
     LegacyCorrectedExactEvidence,
     LegacyPredictionMigration,
+    live_fact_digest,
 )
-from shared.prediction_history_replacement import live_fact_digest
 from harness.gates.consistency.common import (
     DatabaseSnapshot,
     _actual_selector,
@@ -225,12 +225,6 @@ def validate_snapshot_completeness(
     registry_by_base: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for row in snapshot.registry_rows:
         registry_by_base[str(row["base_scheme_id"])].append(row)
-    replacement_base_by_live_run = {
-        int(row["run_id"]): str(row["scheme_id"])
-        for row in snapshot.prediction_rows
-        if row.get("run_id") is not None
-        and row.get("lineage_scheme_id") is not None
-    }
     expected_live_by_key: dict[
         tuple[str, str, int, str], set[int]
     ] = defaultdict(set)
@@ -241,9 +235,8 @@ def validate_snapshot_completeness(
         predict_date = _iso_date(run.get("predict_date"), field="run predict_date")
         if predict_date > display_until:
             continue
-        base_scheme_id = replacement_base_by_live_run.get(
-            int(run["reference_id"]),
-            _required_text(run.get("scheme_id"), field="run scheme_id"),
+        base_scheme_id = _required_text(
+            run.get("scheme_id"), field="run scheme_id"
         )
         targets = registry_by_base.get(base_scheme_id, [])
         run_id = int(run["reference_id"])

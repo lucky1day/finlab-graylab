@@ -171,10 +171,7 @@ def validate_and_join_facts(
                     f"prediction references missing live run: {business_key!r}"
                 )
             live_run = live_runs[live_run_id]
-            lineage_scheme_id = str(
-                row.get("lineage_scheme_id") or scheme_id
-            )
-            if live_run.get("scheme_id") != lineage_scheme_id:
+            if live_run.get("scheme_id") != scheme_id:
                 raise DataConsistencyError(
                     f"prediction references another scheme's live run: {business_key!r}"
                 )

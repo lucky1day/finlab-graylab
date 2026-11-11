@@ -97,7 +97,7 @@ Dashboard 后端拆分（sql/rules/payload/service）等工作区中进行中的
 | --- | --- | --- |
 | D1 | ~~迁移 026：删除 017 账本表和其他退役表~~ 代码已完成（`8d64fdde`），**生产执行待办**，见第 8 节 | 第 8 节 |
 | D2 | ~~迁移基线压缩~~ 已完成（`8d64fdde`，2026-11-11 用户授权） | — |
-| D3 | liwei_0616_5y01 历史替代：该方案在两端每日运行（Mac 115 条预测，最新 2026-11-11），替代投影在每次 Dashboard 请求中生效。删除会改变页面展示的历史，属功能变更；保留，除非业务决定改为落库 | 业务决定 |
+| D3 | ~~liwei_0616_5y01 历史替代~~ 2026-11-11 退役：读回两端 `t_scheme_predictions` 中指定来源 `liwei_0616_5y01_full_oos_k3_div_k10_bbv2` 均为 0 行，投影在每次请求中都解析为空，Dashboard 输出不变。删除 backend 替代投影、DataConsistency 快照投影、`shared/prediction_history_replacement.py` 及已于 2026-09-17 执行完毕的一次性清理工具（`scripts/cleanup_replaced_prediction_history.py`、`scheduler/persistence/history_cleanup.py`）。迁移清单、纠正版证据 JSON 与 Harness 的 `legacy_migration` / live-only 基线验收仍在使用，保留 | — |
 | D4 | ~~删除 DataBridge v1/v2/四文件 current 兼容~~ 代码已完成（`8fdd9711`，净删约 180 行）：2026-11-11 读回两端 current 均为 v3 五文件、state 带 `publication_manifest_version=data-bridge-current-v3`；新代码以 strict_read_only 校验两端生产 current 均通过，旧格式改为 fail closed。四文件快照视图（legacy_v1 Blackbox 输入）保留。随下一个 release 部署 | — |
 | D5 | ~~下线 42 个 paused 方案~~ **撤销**：Blackbox 配置中的 `status: paused` 只是 Intake 初始声明，生效状态由数据库 Registry 决定（`lifecycle.resolve_database_lifecycle`）。2026-11-11 读回两端 Registry 159 个 target 全部 active，这 42 个方案均有生产预测（27 个在 11 月内有新预测，其余为周/月频）。`deliveries:` 多期限路径服务于运行中的 t1/t5，保留 | — |
 | D6 | `prediction_input_quality_v1.json`（1.7 万行，全部为 log_only）改为从 config 推导或删除 | 业务确认是否保留这项审计 |

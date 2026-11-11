@@ -27,7 +27,7 @@ from backend.factor_lab_dashboard_queries import (
     read_live_actuals,
     read_product_predictions,
     read_selected_backtest_runs,
-    resolve_dashboard_history_replacements,
+    require_unambiguous_registry_scopes,
 )
 from shared.runtime_paths import RUNTIME_ROOT_ENV, resolve_runtime_state_path
 
@@ -331,10 +331,7 @@ def _build_summary(
             connection,
             registry_scheme_id=None,
         )
-        replacement_plan = resolve_dashboard_history_replacements(
-            connection,
-            registry_rows,
-        )
+        require_unambiguous_registry_scopes(registry_rows)
         target_rows = read_active_targets(connection)
         actual_rows = read_live_actuals(
             connection,
@@ -348,9 +345,6 @@ def _build_summary(
         selected_backtest_runs = map_selected_backtest_runs(
             backtest_run_rows,
             registry_rows,
-        )
-        selected_backtest_runs.update(
-            replacement_plan.backtest_runs_by_registry
         )
         request_context = current_http_request_context()
         if request_context is not None:
@@ -411,7 +405,6 @@ def _build_summary(
             connection,
             registry_rows,
             stats=prediction_read_stats,
-            replacement_plan=replacement_plan,
         )
         canonical_predictions = iter_grouped_live_prediction_rows(
             prediction_rows,
@@ -613,10 +606,7 @@ def _build_detail(
         if not registry_rows:
             return None
         scheme = _registry_dto(registry_rows[0])
-        replacement_plan = resolve_dashboard_history_replacements(
-            connection,
-            registry_rows,
-        )
+        require_unambiguous_registry_scopes(registry_rows)
         display_date_range = _detail_feature_date_range(
             detail_month,
         )
@@ -629,7 +619,6 @@ def _build_detail(
                 connection,
                 registry_rows,
                 feature_date_range=feature_date_range,
-                replacement_plan=replacement_plan,
             )
             if feature_date_range is not None
             else []

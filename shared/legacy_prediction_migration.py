@@ -5,6 +5,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Iterable, Mapping
 
 from shared.scheme_config_schema import SCHEME_ID_PATTERN
 
@@ -400,6 +401,41 @@ def _corrected_facts_digest(
         }
         for fact in facts
     ]
+    raw = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def live_fact_digest(rows: Iterable[Mapping[str, Any]]) -> str:
+    """计算不含宿主主键和方案别名的 live 事实摘要。"""
+    payload = sorted(
+        (
+            {
+                "target_tenor": str(row["target_tenor"]),
+                "horizon": int(row["horizon"]),
+                "predict_date": str(row["predict_date"]),
+                "feature_date": str(row["feature_date"]),
+                "target_date": str(row["target_date"]),
+                "predicted_direction": int(row["predicted_direction"]),
+                "backtest_actual_direction": (
+                    None
+                    if row.get("backtest_actual_direction") is None
+                    else int(row["backtest_actual_direction"])
+                ),
+            }
+            for row in rows
+        ),
+        key=lambda row: (
+            row["target_tenor"],
+            row["horizon"],
+            row["target_date"],
+            row["predict_date"],
+        ),
+    )
     raw = json.dumps(
         payload,
         ensure_ascii=True,

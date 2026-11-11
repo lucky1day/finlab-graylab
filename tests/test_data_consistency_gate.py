@@ -39,6 +39,7 @@ from shared.legacy_prediction_migration import (
     LegacyCorrectedExactEvidence,
     LegacyCorrectedFact,
     LegacyPredictionMigration,
+    live_fact_digest,
 )
 from shared.legacy_backtest_lineage import LegacyBacktestLineage
 from shared.prediction_context import (
@@ -48,7 +49,6 @@ from shared.prediction_context import (
 )
 from shared.task_specs import load_legacy_native_scheme_ids
 from shared.task_specs import TASK_COMBINATIONS
-from shared.prediction_history_replacement import live_fact_digest
 
 
 BASE_SCHEME_ID = "daily_5y_lgbm_5y10_0629"

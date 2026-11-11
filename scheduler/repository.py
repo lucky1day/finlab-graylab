@@ -24,14 +24,6 @@ from scheduler.persistence.connections import (
     create_engine_from_env,
 )
 
-from scheduler.persistence.history_cleanup import (
-    ReplacedHistoryCleanupStats,
-    apply_legacy_backtest_only_cleanup,
-    apply_replaced_prediction_history_cleanup,
-    plan_legacy_backtest_only_cleanup,
-    plan_replaced_prediction_history_cleanup,
-)
-
 from scheduler.persistence.lifecycle import (
     BLACKBOX_REGISTRY_STATUSES,
     BlackboxActivationLockTimeout,
