@@ -21,6 +21,7 @@ pytestmark = pytest.mark.mysql_integration
 
 PATHS = sorted(MIGRATIONS_DIR.glob("*.sql"))
 PLAN = validate_release_migration_manifest(PATHS)
+LATEST = PLAN.baseline.through_version + len(PLAN.migrations)
 RETIRED_TABLES = {
     "t_input_generations",
     "t_schedule_occurrences",
@@ -99,15 +100,31 @@ def _simulate_database_at_baseline(engine: Engine) -> None:
             )
 
 
+def _assert_result_segment(engine: Engine) -> None:
+    """生成列只按特征基准日给出 backtest/live，且由数据库计算（VIRTUAL）。"""
+    with engine.connect() as connection:
+        column_type, extra, expression = connection.execute(
+            text(
+                "SELECT column_type, extra, generation_expression "
+                "FROM information_schema.columns WHERE table_schema = DATABASE() "
+                "AND table_name = 't_scheme_predictions' AND column_name = 'result_segment'"
+            )
+        ).one()
+    assert column_type == "enum('backtest','live')"
+    assert "VIRTUAL GENERATED" in extra.upper()
+    assert "feature_date" in expression and "2026-06-01" in expression
+
+
 def test_empty_database_gets_baseline_then_incremental(empty_mysql_engine) -> None:
     apply_pending_migration_files(empty_mysql_engine, PATHS)
 
     history = _history(empty_mysql_engine)
-    assert [row[0] for row in history] == list(range(1, 27))
+    assert [row[0] for row in history] == list(range(1, LATEST + 1))
     assert all(row[2] == "APPLIED" for row in history)
     assert {row[3] for row in history[:25]} == {1}
-    assert history[25][3] == 0
+    assert {row[3] for row in history[25:]} == {0}
     assert not RETIRED_TABLES & _tables(empty_mysql_engine)
+    _assert_result_segment(empty_mysql_engine)
 
     apply_pending_migration_files(empty_mysql_engine, PATHS)
     assert _history(empty_mysql_engine) == history
@@ -120,9 +137,10 @@ def test_existing_database_at_025_only_runs_new_migrations(empty_mysql_engine) -
     apply_pending_migration_files(empty_mysql_engine, PATHS)
 
     history = _history(empty_mysql_engine)
-    assert [row[0] for row in history] == list(range(1, 27))
-    assert history[25][1] == PLAN.migrations[0].path.name
+    assert [row[0] for row in history] == list(range(1, LATEST + 1))
+    assert [row[1] for row in history[25:]] == [m.path.name for m in PLAN.migrations]
     assert not RETIRED_TABLES & _tables(empty_mysql_engine)
+    _assert_result_segment(empty_mysql_engine)
 
 
 def test_history_identity_drift_is_refused(empty_mysql_engine) -> None:

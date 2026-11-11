@@ -282,3 +282,14 @@ def test_general_migration_rejects_unknown_identifier_mode() -> None:
         match="unsupported lower_case_table_names",
     ):
         validate_mysql_session_contract(_safe_facts("unknown"))
+
+
+def test_result_segment_boundary_matches_dashboard_constant() -> None:
+    """数据库生成列与后端展示分区必须使用同一个特征基准日分界。"""
+    from backend.factor_lab_dashboard_semantics import (
+        FACTOR_LAB_LIVE_FEATURE_START_DATE,
+    )
+    from migrations.runner import MIGRATIONS_DIR
+
+    sql = (MIGRATIONS_DIR / "027_add_result_segment.sql").read_text()
+    assert f"feature_date < ''{FACTOR_LAB_LIVE_FEATURE_START_DATE.isoformat()}''" in sql

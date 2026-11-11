@@ -137,6 +137,11 @@
       "version": 26,
       "filename": "026_retire_schedule_ledger_and_audit_tables.sql",
       "sha256": "29644cebc1e407712b3e9c580fb996147ea24f920da786de8e5d640d3617620f"
+    },
+    {
+      "version": 27,
+      "filename": "027_add_result_segment.sql",
+      "sha256": "1091f9a1aa71d7540b9d6d3a1798bede5c4e56bc0819aa8de13c47a9e006d4a9"
     }
   ]
 }
