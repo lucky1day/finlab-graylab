@@ -42,6 +42,7 @@ from shared.legacy_prediction_migration import (
     live_fact_digest,
 )
 from shared.legacy_backtest_lineage import LegacyBacktestLineage
+from shared.unversioned_backtest_facts import UnversionedBacktestFacts
 from shared.prediction_context import (
     MONTHLY_TARGET_RULE,
     WEEKLY_AVERAGE_TARGET_RULE,
@@ -2624,3 +2625,130 @@ def test_data_consistency_cli_accepts_repeated_selected_schemes() -> None:
 
     assert args.gate_name == "data-consistency"
     assert args.scheme_id == [BASE_SCHEME_ID, "other_scheme"]
+
+
+def _unversioned_backtest_snapshot() -> tuple[
+    DatabaseSnapshot,
+    UnversionedBacktestFacts,
+]:
+    """exact 为空的单条回测产品事实及与之吻合的冻结清单条目。"""
+    snapshot, _evidence = _legacy_backtest_lineage_snapshot()
+    row = {**snapshot.prediction_rows[0], "scheme_version": None}
+    fact = {
+        "scheme_id": row["scheme_id"],
+        "target_tenor": "3Y",
+        "horizon": 5,
+        "predict_date": "2026-05-19",
+        "feature_date": "2026-05-19",
+        "target_date": "2026-05-26",
+        "predicted_direction": 1,
+        "actual_direction": -1,
+    }
+    frozen = UnversionedBacktestFacts(
+        scheme_id=row["scheme_id"],
+        target_tenor="3Y",
+        horizon=5,
+        expected_fact_count=1,
+        facts_sha256=_sha256_json([fact]),
+        reason="fixture",
+    )
+    return replace(snapshot, prediction_rows=(row,)), frozen
+
+
+def test_frozen_unversioned_backtest_facts_are_a_known_gap_not_a_crash() -> None:
+    snapshot, frozen = _unversioned_backtest_snapshot()
+
+    errors, details = validate_snapshot_lineage(
+        snapshot,
+        historical_references=frozenset(),
+        unversioned_backtest_facts=frozenset({frozen}),
+    )
+
+    assert errors == []
+    assert details["unversioned_backtest_fact_count"] == 1
+    assert details["authority_gaps"] == [
+        "1 backtest facts predate exact-version recording and are frozen, "
+        "not backfilled: scheme_id=legacy_blackbox target_tenor=3Y horizon=5"
+    ]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"expected_fact_count": 2},
+        {"facts_sha256": "0" * 64},
+    ],
+)
+def test_changed_unversioned_backtest_facts_are_rejected(mutation) -> None:
+    snapshot, frozen = _unversioned_backtest_snapshot()
+
+    errors, details = validate_snapshot_lineage(
+        snapshot,
+        historical_references=frozenset(),
+        unversioned_backtest_facts=frozenset({replace(frozen, **mutation)}),
+    )
+
+    assert len(errors) == 1
+    assert errors[0].startswith("frozen unversioned backtest facts changed:")
+    assert details["unversioned_backtest_fact_count"] == 0
+
+
+def test_unversioned_backtest_facts_outside_the_inventory_are_rejected() -> None:
+    snapshot, _frozen = _unversioned_backtest_snapshot()
+
+    errors, _details = validate_snapshot_lineage(
+        snapshot,
+        historical_references=frozenset(),
+    )
+
+    assert errors == [
+        "unversioned backtest facts are not in the frozen inventory: "
+        "scheme_id=legacy_blackbox target_tenor=3Y horizon=5 count=1"
+    ]
+
+
+def test_unversioned_rows_do_not_mask_other_lineage_results() -> None:
+    """同一范围内带 exact 的事实仍被检查；空 exact 只产生一条错误而不中断。"""
+    snapshot, _frozen = _unversioned_backtest_snapshot()
+    versioned, _evidence = _legacy_backtest_lineage_snapshot()
+    unversioned_row = {
+        **snapshot.prediction_rows[0],
+        "id": 2,
+        "predict_date": "2026-05-20",
+        "feature_date": "2026-05-20",
+        "target_date": "2026-05-27",
+    }
+    mixed = replace(
+        snapshot,
+        prediction_rows=(versioned.prediction_rows[0], unversioned_row),
+    )
+
+    errors, details = validate_snapshot_lineage(
+        mixed,
+        historical_references=frozenset(),
+    )
+
+    assert errors == [
+        "unversioned backtest facts are not in the frozen inventory: "
+        "scheme_id=legacy_blackbox target_tenor=3Y horizon=5 count=1"
+    ]
+    assert any(
+        gap.startswith("backtest lineage is missing: run_id=9")
+        for gap in details["authority_gaps"]
+    )
+
+
+def test_live_fact_with_empty_exact_still_fails_closed() -> None:
+    snapshot, frozen = _unversioned_backtest_snapshot()
+    live_row = {
+        **snapshot.prediction_rows[0],
+        "run_id": 5,
+        "backtest_run_id": None,
+    }
+
+    with pytest.raises(DataConsistencyError, match="prediction exact"):
+        validate_snapshot_lineage(
+            replace(snapshot, prediction_rows=(live_row,)),
+            historical_references=frozenset(),
+            unversioned_backtest_facts=frozenset({frozen}),
+        )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections import defaultdict
+from typing import Any, Iterable, Mapping
 
 from shared.historical_reference_compatibility import HistoricalBacktestReference
 from shared.legacy_prediction_migration import (
@@ -8,8 +9,10 @@ from shared.legacy_prediction_migration import (
     LegacyPredictionMigration,
 )
 from shared.legacy_backtest_lineage import LegacyBacktestLineage
+from shared.unversioned_backtest_facts import UnversionedBacktestFacts
 from shared.prediction_context import LIVE_PREDICTION_PHASES
 from harness.gates.consistency.common import (
+    DataConsistencyError,
     DatabaseSnapshot,
     _is_sha256,
     _is_snapshot_id,
@@ -22,6 +25,7 @@ from harness.gates.consistency.legacy import (
     _legacy_migration_evidence,
     _resolve_legacy_backtest_lineage_matches,
     _resolve_legacy_migration_matches,
+    _unversioned_facts_sha256,
 )
 from harness.gates.consistency.completeness import _validated_live_only_baselines
 
@@ -38,6 +42,9 @@ def validate_snapshot_lineage(
     ] = frozenset(),
     legacy_backtest_lineages: frozenset[
         LegacyBacktestLineage
+    ] = frozenset(),
+    unversioned_backtest_facts: frozenset[
+        UnversionedBacktestFacts
     ] = frozenset(),
 ) -> tuple[list[str], dict[str, Any]]:
     """核对产品事实引用的 exact、run、版本与输入工件血缘。"""
@@ -158,6 +165,9 @@ def validate_snapshot_lineage(
                 str(row["scheme_version"])) == identity
         )
     }
+    unversioned_backtest_rows: dict[
+        tuple[str, str, int], list[Mapping[str, Any]]
+    ] = defaultdict(list)
     for row in snapshot.prediction_rows:
         scope = (str(row["scheme_id"]), str(row["target_tenor"]), int(row["horizon"]))
         registry_row = registry.get(scope)
@@ -180,6 +190,13 @@ def validate_snapshot_lineage(
             )
         ):
             legacy_fact_count += 1
+            continue
+        if backtest_run_id is not None and not str(
+            row.get("scheme_version") or ""
+        ).strip():
+            # 早于 exact 记录发布的回测事实不补写 exact；按组对照冻结清单判定，
+            # 不在首行抛异常，避免遮蔽同一范围内其它方案的血缘检查。
+            unversioned_backtest_rows[scope].append(row)
             continue
         exact = _required_text(row.get("scheme_version"), field="prediction exact")
         lineage_scheme_id = scope[0]
@@ -333,7 +350,14 @@ def validate_snapshot_lineage(
                     f"backtest input identity is invalid: "
                     f"run_id={row['backtest_run_id']}"
                 )
+    unversioned_fact_count = _judge_unversioned_backtest_facts(
+        unversioned_backtest_rows,
+        unversioned_backtest_facts,
+        errors,
+        authority_gaps,
+    )
     return errors, {
+        "unversioned_backtest_fact_count": unversioned_fact_count,
         "version_count": len(versions),
         "live_run_count": len(live_runs),
         "backtest_run_count": len(backtest_runs),
@@ -345,3 +369,51 @@ def validate_snapshot_lineage(
             legacy_lineage_matches
         ),
     }
+
+
+def _judge_unversioned_backtest_facts(
+    groups: Mapping[tuple[str, str, int], Iterable[Mapping[str, Any]]],
+    frozen: frozenset[UnversionedBacktestFacts],
+    errors: list[str],
+    authority_gaps: set[str],
+) -> int:
+    """逐组核对 exact 为空的回测事实：与冻结清单完全一致才记为已知缺口，否则失败。
+
+    已知缺口使结论保持 BLOCKED（Gate 不能证明这些事实的版本血缘），不是通过；
+    清单之外的空 exact、条数或摘要变化、无法规范化的事实一律是错误。
+    """
+    inventory = {
+        (entry.scheme_id, entry.target_tenor, entry.horizon): entry
+        for entry in frozen
+    }
+    covered = 0
+    for scope, raw_rows in sorted(groups.items()):
+        rows = list(raw_rows)
+        label = (
+            f"scheme_id={scope[0]} target_tenor={scope[1]} horizon={scope[2]}"
+        )
+        entry = inventory.get(scope)
+        if entry is None:
+            errors.append(
+                "unversioned backtest facts are not in the frozen inventory: "
+                f"{label} count={len(rows)}"
+            )
+            continue
+        try:
+            digest = _unversioned_facts_sha256(rows)
+        except (DataConsistencyError, TypeError, ValueError):
+            errors.append(f"unversioned backtest facts are invalid: {label}")
+            continue
+        if len(rows) != entry.expected_fact_count or digest != entry.facts_sha256:
+            errors.append(
+                "frozen unversioned backtest facts changed: "
+                f"{label} count={len(rows)} expected={entry.expected_fact_count}"
+            )
+            continue
+        covered += len(rows)
+        authority_gaps.add(
+            f"{len(rows)} backtest facts predate exact-version recording and "
+            f"are frozen, not backfilled: {label}"
+        )
+    return covered
+

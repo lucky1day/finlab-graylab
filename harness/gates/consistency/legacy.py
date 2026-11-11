@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from scheduler.repository import registry_scheme_id
 from shared.legacy_prediction_migration import (
@@ -407,6 +407,15 @@ def _resolve_legacy_backtest_lineage_matches(
             backtest_run_id=run_id,
         )
     return matches
+
+
+def _unversioned_facts_sha256(rows: Iterable[Mapping[str, Any]]) -> str:
+    """exact 为空的回测产品事实的规范摘要，与冻结清单的生成口径一致。"""
+    facts = sorted(
+        (_legacy_fact(row, product=True) for row in rows),
+        key=_legacy_fact_sort_key,
+    )
+    return _canonical_json_sha256(facts)
 
 
 def _legacy_fact_sort_key(fact: Mapping[str, Any]) -> tuple[Any, ...]:

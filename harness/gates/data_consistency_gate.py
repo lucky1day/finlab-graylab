@@ -20,6 +20,7 @@ from shared.legacy_prediction_migration import (
     load_legacy_prediction_migrations,
 )
 from shared.legacy_backtest_lineage import load_legacy_backtest_lineages
+from shared.unversioned_backtest_facts import load_unversioned_backtest_facts
 from shared.task_specs import load_legacy_native_scheme_ids
 from harness.gates.consistency.common import (
     ConsistencyFact,
@@ -264,6 +265,9 @@ class DataConsistencyGate(Gate):
             historical_references = load_historical_backtest_references(
                 PROJECT_ROOT
             )
+            unversioned_backtest_facts = load_unversioned_backtest_facts(
+                PROJECT_ROOT
+            )
             try:
                 completeness_errors, completeness_details = (
                     validate_snapshot_completeness(
@@ -303,6 +307,7 @@ class DataConsistencyGate(Gate):
                     legacy_migrations=legacy_migrations,
                     corrected_exact_evidence=corrected_exact_evidence,
                     legacy_backtest_lineages=legacy_backtest_lineages,
+                    unversioned_backtest_facts=unversioned_backtest_facts,
                 )
                 lineage_authority_gaps = lineage_details.get(
                     "authority_gaps", []

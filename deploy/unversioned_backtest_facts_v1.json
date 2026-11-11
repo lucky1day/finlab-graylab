@@ -1,0 +1,237 @@
+{
+  "schema_version": "unversioned-backtest-facts-v1",
+  "entries": [
+    {
+      "expected_fact_count": 337,
+      "facts_sha256": "a078754a324f914787a2142d450f31175892b24adee37d2d02f9e0889b1b932a",
+      "horizon": 1,
+      "scheme_id": "daily_10y_lgbm_10y04_0629",
+      "target_tenor": "10Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 337,
+      "facts_sha256": "2977179e1c9e1557bb7bff57a85730d338a24dbe3f154eae3fc940fe31b5dd45",
+      "horizon": 1,
+      "scheme_id": "daily_1y_xgb_1y13_0629",
+      "target_tenor": "1Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 333,
+      "facts_sha256": "76e8e7da3690a233416d05b698cba40e583a5d84d7a4650d0862e945c4b85e47",
+      "horizon": 5,
+      "scheme_id": "daily_5y_2_v28",
+      "target_tenor": "5Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 337,
+      "facts_sha256": "29ef45d4087d2fc1cede7d296524b9f5c29116d027775d8a5ea1e9f83690e06f",
+      "horizon": 1,
+      "scheme_id": "daily_5y_lgbm_5y10_0629",
+      "target_tenor": "5Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 333,
+      "facts_sha256": "0ae6d2c9bacb5e306e63e5078da2b75ffc6ac2b395428d08f84a14416b78e8a5",
+      "horizon": 5,
+      "scheme_id": "daily_7y_1_v28",
+      "target_tenor": "7Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 333,
+      "facts_sha256": "4285530f64d4f59e19a9045527d40d88394b3303952c565448694bbd1502735b",
+      "horizon": 5,
+      "scheme_id": "liwei_0616_10y01_cons_say_k3_div_k10",
+      "target_tenor": "10Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 333,
+      "facts_sha256": "6aa98e75f29227ba861e1d546032cb17c21b3afd2d8393c88d9205cf937b27b2",
+      "horizon": 5,
+      "scheme_id": "liwei_0616_10y01_full_oos_k3_div_k10",
+      "target_tenor": "10Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 333,
+      "facts_sha256": "aee3d879d295b112824c2ec9711256d221f6a5757f5925012fadf16656858219",
+      "horizon": 5,
+      "scheme_id": "liwei_0616_10y02_cons_say_k3_div_k5",
+      "target_tenor": "10Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 333,
+      "facts_sha256": "79ede03e546123c1eb8284d2f894ee23c391f4fbe3ef5c5d5cd39866c0e0a0dc",
+      "horizon": 5,
+      "scheme_id": "liwei_0616_5y_auc_static_all_k3_div_k10",
+      "target_tenor": "5Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 333,
+      "facts_sha256": "625549295cb247979a5fc04b7aeffb5bc470b30f624c85328a7dec26cc47b5ba",
+      "horizon": 5,
+      "scheme_id": "liwei_0616_5y_auc_yearly_all_k3_div_k10",
+      "target_tenor": "5Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 333,
+      "facts_sha256": "82c09aeae0db2eb8820eb47457da1549e5ae7fedbe1395c43af198f6bae91b4d",
+      "horizon": 5,
+      "scheme_id": "liwei_0616_5y_ic_yearly_all_k3_div_k10",
+      "target_tenor": "5Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 333,
+      "facts_sha256": "d08f3837f597fc06601aa9982309720b21852be7f878e5dbc2140f270b34f11b",
+      "horizon": 5,
+      "scheme_id": "liwei_0616_7y01_cons_say_k3_div_k10",
+      "target_tenor": "7Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 333,
+      "facts_sha256": "9206c654753b045085431fa629d64bc427466db05da7f74b784c2b87f3299b8d",
+      "horizon": 5,
+      "scheme_id": "liwei_0616_7y03_cons_all_k3_div_k8",
+      "target_tenor": "7Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 333,
+      "facts_sha256": "b443eaa5c974a81426af7831e47f35b5b7ad98d4a9e93671615a46e98d90d398",
+      "horizon": 5,
+      "scheme_id": "liwei_0616_cons_sda_k3_div_k10",
+      "target_tenor": "5Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 16,
+      "facts_sha256": "e2ec2ee0089522301b78d66b7e9d824ff0bfcfc86df07b64e372ebaee7e071d3",
+      "horizon": 30,
+      "scheme_id": "monthly_10y_rf_top5_0629",
+      "target_tenor": "10Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 16,
+      "facts_sha256": "9e80fa656e501a95a58c37ebcb98457326937b2b6d2eb57b398f81bcf5c24dc9",
+      "horizon": 30,
+      "scheme_id": "monthly_1y_rf_top30_0629",
+      "target_tenor": "1Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 16,
+      "facts_sha256": "5cf3c74c31aed3ac7a5bc553f50f1914de203be6094e2759b259a4f7596588e0",
+      "horizon": 30,
+      "scheme_id": "monthly_5y_knn_top20_0629",
+      "target_tenor": "5Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 337,
+      "facts_sha256": "4ad770abb3939db66f39b13fb316380cb571fa4714bb0fed411696ee21a8f756",
+      "horizon": 1,
+      "scheme_id": "t1_daily",
+      "target_tenor": "10Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 337,
+      "facts_sha256": "750d69e3e13f5d55d9bbe1aab93104ea3bfea20a58496d511880ad0c364e98b8",
+      "horizon": 1,
+      "scheme_id": "t1_daily",
+      "target_tenor": "5Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 333,
+      "facts_sha256": "7f33c7abb436f87802a19ddc3031854f85a2de86ecf57906335e21ffd5f05d30",
+      "horizon": 5,
+      "scheme_id": "t5_daily",
+      "target_tenor": "10Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 333,
+      "facts_sha256": "fe8920c08932785fa8750743a0d5b89d4070d2372e6e9e0809ff4dd8d154e9ca",
+      "horizon": 5,
+      "scheme_id": "t5_daily",
+      "target_tenor": "3Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 333,
+      "facts_sha256": "6b34ef4568177c6af1e97f2bd1edd4116aaa9f4a79baadb69958f0b7756640bc",
+      "horizon": 5,
+      "scheme_id": "t5_daily",
+      "target_tenor": "5Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 333,
+      "facts_sha256": "140cb95f8d7f3459dec02648b48f28a6649d1ef1ab23c477664f54ec258afed1",
+      "horizon": 5,
+      "scheme_id": "t5_daily",
+      "target_tenor": "7Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 72,
+      "facts_sha256": "7f5b99210b81be579a1ebfa2a86b347112929786e1982c741775c4e635839b91",
+      "horizon": 6,
+      "scheme_id": "weekly_10y_d_overlay_0529",
+      "target_tenor": "10Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 72,
+      "facts_sha256": "5820ababcb5416325e5b32cd36fcef306d00b03237caf9bf138289fcf36757ce",
+      "horizon": 6,
+      "scheme_id": "weekly_5y_direct_0529",
+      "target_tenor": "5Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 72,
+      "facts_sha256": "481ba9439510d78296c0392e7589dff406e436c385f0388b57e2015f2c2b9865",
+      "horizon": 6,
+      "scheme_id": "weekly_7y_cross_d_overlay_0529",
+      "target_tenor": "7Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 72,
+      "facts_sha256": "35a7b5210be8888ffb196392be09436d111a38a87c0f726dc0ef130021c521d4",
+      "horizon": 6,
+      "scheme_id": "weekly_avg_10y_lgbm_0529",
+      "target_tenor": "10Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 72,
+      "facts_sha256": "dff60436834c65ed6fd5fd0980d336c3e5a2a286b0b84ac517c1725cc5f0e816",
+      "horizon": 6,
+      "scheme_id": "weekly_avg_1y_lgbm_0529",
+      "target_tenor": "1Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    },
+    {
+      "expected_fact_count": 72,
+      "facts_sha256": "7b2630df8e1e062727d81ad37cff6377abfab69a12bd310ce71856baa8af6ba3",
+      "horizon": 6,
+      "scheme_id": "weekly_avg_5y_lgbm_0529",
+      "target_tenor": "5Y",
+      "reason": "Published before exact-version recording. Per the 2026-09-21 decision these facts stay frozen: no exact is back-filled and they are never attributed to a later version. Count and canonical fact digest were read identically on both deployment databases on 2026-11-12."
+    }
+  ]
+}
