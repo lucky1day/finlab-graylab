@@ -117,4 +117,23 @@ Dashboard 后端拆分（sql/rules/payload/service）等工作区中进行中的
 
 | 日期 | 批次 | 提交 | 结果 |
 | --- | --- | --- | --- |
-| 2026-11-11 | 计划 | 本文 | — |
+| 2026-11-11 | 计划 | `3a3319cc` | 落盘本文 |
+| 2026-11-11 | 1 可定位性 | `283ffc8b` | one-shot、harness gate、gap plan、DataBridge gate 写入把 traceback 写入 stderr；stdout 摘要、退出码、失败码不变；补上缺失的 `Mapping` import |
+| 2026-11-11 | 2 不可达代码 | `f834e195` | 删除 `historical_as_of` 快照模式 |
+| 2026-11-11 | 3A | `070795c0` | Native/Blackbox 共用 `process_control.start_process_group` |
+| 2026-11-11 | 3C | `8130ca23` | `data_consistency_gate` 从 3586 行拆为 565 行加 `harness/gates/consistency/` 7 个模块；72 个顶层块逐字节一致（仅 `PROJECT_ROOT` 层级随目录调整） |
+| 2026-11-11 | 3E | `e90db00b` | 标明 cutoff 承接是现行 v3 producer 语义（只加注释，未改名） |
+| 2026-11-11 | 顺带修复 | `456f0215` | `harness/blackbox_v2/gates.py` 引用了已删除的异常类，配置变更时报 NameError；改为抛 ValueError 并给出原意文案，gate 仍按失败处理 |
+
+本批验证：非 MySQL pytest 1170 passed（基线 1168，新增 2 项）；Node 56 pass；release archive 两次构建 sha256 一致；各定时入口 `--help` 冒烟通过；pyflakes 全框架无未定义名。
+
+本批评估后不做的项：
+
+- `detect_spring_boundary` 是交易日历春节边界的不变量测试入口，受日历不改约束。
+- `upsert_*_actuals` 兼容入口被多处测试当作便捷入口使用，删除收益小于改测试的成本。
+- 尾部修复（tail repair）是 CODE_ARCHITECTURE §3.2 记载的运维能力，不属于死代码。
+- `_RETIRED_GRAY_GAP_EXTRA_FIELDS` 会剥离入站记录字段，删除会改变写库内容。
+- 3E 不改名：authority 层参数确实只在 legacy manifest 下生效，改名收益有限。
+- `process_started`/`process_fence` 仅测试传入，但它们是进程生命周期测试的接缝，暂不删除。
+
+下一批候选（同样满足第 1 节约束）：3B `_fs`/`_digest` 公共工具；3D `data_bridge/refresh.py` 拆分（定时任务链路，需逐字节搬迁核对）；3F 测试共享 schema 夹具；批次 4 文档整理。
