@@ -56,7 +56,7 @@
 ## 已知限制
 
 - ECS 4 核 / 14 GB，单个重任务（回测、状态重建）已贴近 2 小时上限；目前缓存状态的行身份哈希基于特征原始比特，Mac 状态迁到 ECS 会被判为“全部行已变化”。实测与改造计划见 [TODO](TODO.md#ecs-算力卡点与新验证流程)。
-- 旧回测的全历史 DataConsistency Gate 不通过（2026-09-21 记录）：部分旧回测 run 缺 `persisted_prediction_count` 依据、旧产品记录 exact 为空（2026-11-12 起由[冻结清单](../deploy/unversioned_backtest_facts_v1.json)登记 29 组共 7160 条回测事实，Gate 按已知缺口汇总、结论仍为阻塞，不再中断其它检查）、2025-01-26 旧目标日期与现行 T+5 日历不符。历史冻结，不伪填字段、不放宽 Gate；逐机例子见[维护报告](/Users/macstudio0/bond-factor-lab-production/runtime/releases/four-v3-20260920/state-repair-20260921/README.md)。
+- 旧回测的全历史 DataConsistency Gate 不通过（2026-09-21 记录）：部分旧回测 run 缺 `persisted_prediction_count` 依据、旧产品记录 exact 为空（2026-11-12 起由[冻结清单](../deploy/unversioned_backtest_facts_v1.json)登记 29 组共 7160 条回测事实，Gate 按已知缺口汇总、结论仍为阻塞，不再中断其它检查）、2025-01-26 旧目标日期与现行 T+5 日历不符。2026-11-12 起历史一致性证据账本（旧迁移/旧血缘/历史引用兼容清单）已退役，曾命中这些例外的历史项目前按通用规则暴露：缺血缘/权威依据为 authority gap（结论 BLOCKED），日期合同不符等真实漂移为错误。历史冻结，不伪填字段、不放宽 Gate；逐机例子见[维护报告](/Users/macstudio0/bond-factor-lab-production/runtime/releases/four-v3-20260920/state-repair-20260921/README.md)。
 - ECS 权威交易日历止于 2026-12-31，年均方案的下一 SF 锚点须待日历扩展后计算。
 
 ## 保留身份与恢复证据

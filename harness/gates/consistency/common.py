@@ -9,8 +9,6 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
-from shared.legacy_prediction_migration import LegacyPredictionMigration
-from shared.legacy_backtest_lineage import LegacyBacktestLineage
 from shared.platform_dates import LIVE_START_DATE
 from shared.prediction_context import (
     MONTHLY_TARGET_RULE,
@@ -80,19 +78,6 @@ class DatabaseSnapshot:
     actual_watermarks: tuple[dict[str, Any], ...] = ()
 
 
-@dataclass(frozen=True, slots=True)
-class _LegacyMigrationMatch:
-    entry: LegacyPredictionMigration
-    backtest_run_id: int
-    mismatch_business_keys: frozenset[tuple[str, str, int, str]]
-
-
-@dataclass(frozen=True, slots=True)
-class _LegacyBacktestLineageMatch:
-    entry: LegacyBacktestLineage
-    backtest_run_id: int
-
-
 class DataConsistencyError(ValueError):
     """表示数据库事实或公开表示违反数据一致性合同。"""
 
@@ -112,27 +97,6 @@ def _product_business_key(row: Mapping[str, Any]) -> tuple[str, str, int, str]:
         int(row["horizon"]),
         _iso_date(row.get("target_date"), field="target_date"),
     )
-
-
-def _source_registry_scope_status(
-    run: Mapping[str, Any],
-    *,
-    target_tenor: str,
-    horizon: int,
-) -> str | None:
-    """返回历史来源精确 tenor/horizon Registry 状态。"""
-    scopes = run.get("source_registry_scopes")
-    if isinstance(scopes, (list, tuple)):
-        matches = {
-            str(item.get("status"))
-            for item in scopes
-            if isinstance(item, Mapping)
-            and str(item.get("target_tenor")) == target_tenor
-            and int(item.get("horizon") or 0) == horizon
-        }
-        if len(matches) == 1:
-            return next(iter(matches))
-    return None
 
 
 def _product_reference_key(row: Mapping[str, Any]) -> tuple[str, int, str]:

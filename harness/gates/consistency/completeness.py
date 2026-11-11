@@ -8,12 +8,6 @@ from harness.signal_gap_plan import (
     SignalGapPlanError,
     expected_signal_case_from_calendar_rows,
 )
-from shared.historical_reference_compatibility import HistoricalBacktestReference
-from shared.legacy_prediction_migration import (
-    LegacyCorrectedExactEvidence,
-    LegacyPredictionMigration,
-    live_fact_digest,
-)
 from harness.gates.consistency.common import (
     DatabaseSnapshot,
     _actual_selector,
@@ -25,84 +19,17 @@ from harness.gates.consistency.common import (
     _product_reference_key,
     _required_text,
 )
-from harness.gates.consistency.legacy import _resolve_legacy_migration_matches
-
-
-def _validated_live_only_baselines(
-    snapshot: DatabaseSnapshot,
-    entries: frozenset[LegacyPredictionMigration],
-    scopes_without_backtest: set[tuple[str, str, int]],
-) -> tuple[dict[tuple[str, str, int], frozenset[tuple[str, str, int, str]]], list[str]]:
-    """仅在已批准的保留 live 范围逐值吻合时接受无回测分区。"""
-    matched: dict[
-        tuple[str, str, int], frozenset[tuple[str, str, int, str]]
-    ] = {}
-    errors: list[str] = []
-    for entry in entries:
-        scope = (
-            entry.prediction_scheme_id,
-            entry.target_tenor,
-            entry.horizon,
-        )
-        if scope not in scopes_without_backtest:
-            continue
-        rows = [
-            row
-            for row in snapshot.prediction_rows
-            if (
-                str(row["scheme_id"]),
-                str(row["target_tenor"]),
-                int(row["horizon"]),
-            ) == scope
-            and entry.live_target_date_from
-            <= _iso_date(row.get("target_date"), field="target_date")
-            <= entry.live_target_date_through
-        ]
-        if (
-            len(rows) != entry.expected_live_fact_count
-            or any(
-                row.get("run_id") is None
-                or row.get("backtest_run_id") is not None
-                for row in rows
-            )
-            or live_fact_digest(rows) != entry.product_live_facts_sha256
-        ):
-            errors.append(
-                "retained live-only product baseline differs: "
-                f"scheme_id={scope[0]} tenor={scope[1]} horizon={scope[2]}"
-            )
-            continue
-        matched[scope] = frozenset(_product_business_key(row) for row in rows)
-    return matched, errors
 
 
 def validate_snapshot_completeness(
     snapshot: DatabaseSnapshot,
     *,
     display_until: str,
-    historical_references: frozenset[
-        HistoricalBacktestReference
-    ] = frozenset(),
-    legacy_migrations: frozenset[
-        LegacyPredictionMigration
-    ] = frozenset(),
-    corrected_exact_evidence: frozenset[
-        LegacyCorrectedExactEvidence
-    ] = frozenset(),
 ) -> tuple[list[str], dict[str, Any]]:
     """用成功 run 与不可变回测事实建立预期键并核对产品事实。"""
     errors: list[str] = []
     authority_gaps: set[str] = set()
-    legacy_matches = _resolve_legacy_migration_matches(
-        snapshot,
-        legacy_migrations,
-        corrected_exact_evidence,
-    )
     product_rows = list(snapshot.prediction_rows)
-    compatible_pairs = {
-        (item.prediction_scheme_id, item.backtest_source_scheme_id)
-        for item in historical_references
-    }
     product_by_backtest_run: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
     for row in product_rows:
         if row.get("backtest_run_id") is not None:
@@ -125,12 +52,8 @@ def validate_snapshot_completeness(
         for row in product_rows
         if row.get("backtest_run_id") is not None
     }
-    live_only_keys, live_only_errors = _validated_live_only_baselines(
-        snapshot, legacy_migrations, registry_scopes - referenced_backtest_scopes
-    )
-    errors.extend(live_only_errors)
     missing_backtest_authority = sorted(
-        registry_scopes - referenced_backtest_scopes - set(live_only_keys)
+        registry_scopes - referenced_backtest_scopes
     )
     if missing_backtest_authority:
         authority_gaps.add(
@@ -160,14 +83,10 @@ def validate_snapshot_completeness(
         summary = _json_mapping(run.get("summary"), field="backtest summary")
         declared_count = summary.get("persisted_prediction_count")
         if not isinstance(declared_count, int) or declared_count < 0:
-            legacy_match = legacy_matches.get(run_id)
-            if legacy_match is None:
-                authority_gaps.add(
-                    f"backtest run {run_id} lacks persisted_prediction_count authority"
-                )
-                declared_count = None
-            else:
-                declared_count = legacy_match.entry.expected_fact_count
+            authority_gaps.add(
+                f"backtest run {run_id} lacks persisted_prediction_count authority"
+            )
+            declared_count = None
         if declared_count is not None and declared_count != len(source_rows):
             errors.append(
                 f"backtest source count mismatch: run_id={run_id} "
@@ -184,18 +103,7 @@ def validate_snapshot_completeness(
         }
         if len(product_index) != len(product_for_run):
             errors.append(f"duplicate product backtest key: run_id={run_id}")
-        product_scheme_ids = {
-            str(row["scheme_id"]) for row in product_for_run
-        }
-        is_approved_cross_source = bool(product_scheme_ids) and all(
-            (product_scheme_id, str(run["scheme_id"])) in compatible_pairs
-            for product_scheme_id in product_scheme_ids
-        )
-        unpublished = (
-            set()
-            if is_approved_cross_source
-            else set(source_index) - set(product_index)
-        )
+        unpublished = set(source_index) - set(product_index)
         live_covered = {
             key
             for key in unpublished
@@ -390,9 +298,4 @@ def validate_snapshot_completeness(
         "authority_gaps": sorted(authority_gaps),
         "mature_actual_missing_count": mature_actual_missing,
         "pending_actual_count": pending_actual,
-        "legacy_migration_fact_count": sum(
-            match.entry.expected_fact_count
-            for match in legacy_matches.values()
-        ),
-        "retained_live_only_scopes": sorted(live_only_keys),
     }

@@ -41,7 +41,7 @@ exact + Registry 及 `activate` 读回。Native（W4）不适用本节，见 [W4
 | # | 步骤 | 在哪里执行 | 产物 / 副作用 |
 |---|---|---|---|
 | 1 | Intake（可选 `--incremental-state`） | 开发工作区 | `schemes/{id}/` canonical |
-| 2 | 定稿 canonical 与部署清单 | 开发工作区，提交 Git | 部署矩阵、输入审计目录条目 |
+| 2 | 定稿 canonical 与部署清单 | 开发工作区，提交 Git | 部署矩阵条目 |
 | 3 | 候选 release 构建与安装 | 构建机 → 目标机 | 预安装的不可变 release |
 | 4 | 持久化回测 | 目标机候选 release | immutable `t_backtest_*` run |
 | 5 | 激活 | 目标机同一 release | exact version、composite Registry、历史产品事实 |
@@ -79,14 +79,9 @@ python -B -m harness intake-blackbox --delivery-dir <delivery-dir> --project-roo
 2. **部署矩阵** [`deploy/scheme_deployment_matrix_v1.json`](../../deploy/scheme_deployment_matrix_v1.json)：
    新增 `"{id}": [<部署目标>...]`。**必需**：设置 `BFL_DEPLOYMENT_TARGET` 的生产 discovery 要求矩阵与全部
    `schemes/*/config.yaml` 一一对应，缺一项会使该主机所有方案的自然运行 fail-closed。
-3. **输入审计目录** [`deploy/prediction_input_quality_v1.json`](../../deploy/prediction_input_quality_v1.json)：
-   在 `schemes` 下新增条目，绑定 `scheme_version`（当前 exact）、`runtime_type`、`coverage`，以及每个执行脚本的
-   `sha256` 与 `profiles`；所引用的 profile 须在 `profiles` 中存在，`mode` 统一为 `audit`。仓库内没有生成工具，
-   按既有条目格式维护。运行期缺条目只记 `not_declared`，但公共测试要求矩阵中每个方案都有一致条目。
-   含义见[调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)。
 
 - **通过标准**：[入库相关验证](../onboarding/README.md#入库相关验证)全部通过，尤其
-  `tests/test_deployment_scope.py` 与 `tests/test_prediction_input_quality.py`；exact 以 discovery 计算值为准。
+  `tests/test_deployment_scope.py`；exact 以 discovery 计算值为准。
 - **失败时**：修正清单或 config 后重跑测试；不得通过修改交付两文件迁就清单。
 - **副作用与授权**：仓库提交；不改变任何主机状态。
 
@@ -223,8 +218,7 @@ python -B -m harness gate data-consistency --scheme-id {scheme_id} \
 
 与新方案的差异：
 
-- 不执行 Intake；直接替换获准的 canonical 两文件及必要 config，同步更新输入审计目录中的 `scheme_version`
-  与脚本 `sha256`（部署矩阵通常不变），再从 3.3 开始。
+- 不执行 Intake；直接替换获准的 canonical 两文件及必要 config，部署矩阵通常不变，再从 3.3 开始。
 - 任何交付字节或参与 exact 的 config 变化都会产生新 exact；回测后发生漂移必须重新回测，不能复用旧证据。
 - `activate` 自动识别修订：原子替换唯一 active exact（Evidence `activation_mode: revision`），
   不重写历史产品事实，保留既有 Registry `name/description/owner`；边界见[共享契约](../architecture/SCHEME_CONTRACT.md#3-方案身份)。
@@ -300,7 +294,7 @@ run/prediction/backtest/Actual，不激活或补发信号，但会写状态文�
 | 场景 | 处理 |
 |---|---|
 | Intake 失败 | 修正交付后重新 Intake；目标目录不得有部分写入 |
-| 部署矩阵/输入审计测试失败 | 修正清单后重跑；不改交付字节 |
+| 部署矩阵测试失败 | 修正清单后重跑；不改交付字节 |
 | 无 ready generation | 停止；由 DataBridge producer 独立发布，方案流程不代建 |
 | 回测失败 | 保留失败现场；修复后创建新的完整回测 run |
 | exact/环境/输入证据不匹配 | 禁止激活，对当前 exact 重新回测 |

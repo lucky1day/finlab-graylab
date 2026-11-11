@@ -88,31 +88,16 @@ W4 固定版本的运行检查与故障恢复见[W4 运行手册](../sop/NATIVE_
 
 恢复源码、schema 和外置状态前执行[部署恢复](../../deploy/README.md#回滚与认证部署)的兼容性与备份检查。
 
-## 方案输入质量审计与每日结果
+## 无法计算的每日结果
 
-数据质量检查采用**只记录、继续计算**。输入存在缺值、错期、窗口不足或审计声明未核验时，平台记录详细问题后执行原模型，不在平台填0、沿用旧方向或替换输入。模型能计算时正常发布其原始方向；模型自身无法计算时，保留当日failed run及运行日志，并记录`prediction_result.outcome=not_computable`、`predicted_direction=null`。不向预测事实表插入虚构的0或旧预测。真实休市/非到期任务仍按原日历no-op；不能确定日历或无法取得可信输入时，按已知active候选逐模型记录无法计算，不能假装成功或猜测业务日期。
-
-`deploy/prediction_input_quality_v1.json`是静态审计目录，覆盖部署矩阵中的全部执行文件，绑定base、exact和脚本SHA；profiles维护检查窗口与输入角色，运行方式统一为audit。绑定漂移明确记`policy_mismatch`，未声明记`not_declared`，检查器异常记`check_error`，均不能声称输入完整。它不取代原有执行身份、Registry、ready快照或生命周期校验，也不成为第二份启用名单。
-
-Blackbox在已取得可信runtime view和Request后审计封存文件，再启动原交付。日、周、月使用各自的精确cutoff；只在cutoff及以前统计窗口，未来行不能补足历史。所需列、窗口、缺失日期、有效值/有效差分数量及最近可用观测逐项留证，合法0不会被当成空值。多目标按执行文件分别记录；原算法和exact不变。
-
-Mac3 W4九套固定版本通过独立审计子进程从原legacy DB经`shared.input_artifacts`导出核查，不改接DataBridge、不改adapter/core或源包。审计最多30秒，之后原模型拥有原有完整计算预算；审计失败或超时只记录，不吞取消/进程组清理异常。Native源包未完整公开逐因子依赖时，审计明确标为“导出输入集上界”，不能把所有导出列说成模型必需因子。审计期间源水位变化单列；水位不是全值digest，也不证明二进制算法最终使用的每个值。
-
-### 日志与结果关联
-
-完整结构化日志追加到`BFL_RUNTIME_ROOT/logs/prediction-input-quality/YYYY-MM-DD.jsonl`（Asia/Shanghai记录日），以run_id、audit_id、scheme、执行文件、预测日和snapshot关联。线程锁与flock均非阻塞；竞争或不可写时转存完整stderr，成功追加后fsync。Native父进程仅转发本审计协议行，不转发未识别的算法stderr或连接信息。日志sink异常不把预测成功反转为失败。
-
-多目标和区间预测仅在单次封存runtime view内复用策略、CSV及执行文件摘要，逐Request重新核查窗口与截止日；不跨批次缓存结论，不把不同目录或不同策略混入同一批次，也不修改算法输入。
-
-- `prediction_input_quality`：状态、输入覆盖范围、规则/版本身份、各窗口边界、缺列/缺值日期及最近可用值；明确平台未填数。
-- `prediction_result`：发布状态、原始模型方向和审计引用；无法计算时方向null及失败原因，同时保留既有run/run_log。
-- `prediction_input_unavailable`：原ready gate错误分类；无法取得可信快照时不制造方向，逐模型留下当日无法计算记录。
-- `native_input_audit_source_observation`：审计期间的源水位观察，不能标成算法消费的精确快照。
-
-`last_available_observation`只表示窗口之前最近可用观测，**不能写成模型实际使用值**。交付未暴露内部填补行为时，记录`actual_value_treatment=not_exposed_by_delivery`及“原模型原生处理”，不猜测它填了0、使用旧值或跳过因子。未来如需精确到内部选值，应由交付提供可核验的审计接口；平台不篡改冻结算法追踪结果。
+2026-11-12 起平台不再有输入质量审计：不读取输入目录核查缺值、错期或窗口，不启动 Native 审计子进程，也不写
+`prediction-input-quality/*.jsonl` 日志；原有只记录、不阻断的审计从未改变运行结果，移除也不改变任何结果。
+输入存在缺值时仍执行原模型，平台不填0、不沿用旧方向、不替换输入。模型能计算时正常发布其原始方向；模型自身无法
+计算时，保留当日failed run及其`error_message`与run_log，不向预测事实表插入虚构的0或旧预测。真实休市/非到期
+任务仍按原日历no-op；无法取得可信输入时，按已知active候选逐模型记录失败，不能假装成功或猜测业务日期。
 
 所有人工核查保留其人工来源，不冒称自然运行。已发布事实仍遵守insert-only；新增日志不会触发旧预测重算。
 
 2026-10-29当日整批替换是已经闭环的独立修复，未来release不再提供该一次性改写出口。
 历史修复脚本、回执和对应immutable release仍用于追溯，不能作为现行操作入口。
-现行已发布事实保持insert-only；输入审计和失败日期追补不构成覆盖历史的授权。
+现行已发布事实保持insert-only；失败日期追补不构成覆盖历史的授权。

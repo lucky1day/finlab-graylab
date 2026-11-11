@@ -230,25 +230,20 @@ def test_backtest_validates_all_targets_before_one_atomic_persist(tmp_path, fail
         assert {row["extra"]["scheme_version"] for row in output.rows} == {cfg.scheme_version}
 
 
-def test_incomplete_quality_audit_does_not_block_any_target(tmp_path,monkeypatch):
-    """缺数照常执行所有目标，记录原模型方向及审计引用。"""
+def test_live_run_executes_every_target(tmp_path):
+    """多目标交付逐目标执行并返回各自原模型方向。"""
     from scheduler.executor import run_blackbox_scheme_subprocess
     from shared.calendar_service import CalendarService
-    monkeypatch.setenv('BFL_RUNTIME_ROOT',str(tmp_path/'runtime'))
     cfg=load_scheme_config(_scheme(tmp_path)[0])
     calendar=CalendarService(None)
     calendar.__dict__['_trading_days']=['2026-09-10','2026-09-11']
-    reports=[{'status':'complete','enforcement':'log_only','audit_id':'first'},
-             {'status':'incomplete','enforcement':'log_only','audit_id':'second'}]
     with (
         patch('scheduler.executor.get_ready_blackbox_snapshot',return_value=_snapshot()),
         patch('scheduler.executor.get_calendar',return_value=calendar),
         patch('scheduler.executor.resolve_blackbox_input_cutoffs',return_value=CutoffKeys('2026-09-10','202636','202608')),
         patch('scheduler.executor.open_blackbox_runtime_view',side_effect=_runtime_view),
-        patch('shared.prediction_input_quality.audit_prediction_input_quality',side_effect=reports),
         patch('scheduler.blackbox_v2_runner.run_blackbox_predict',side_effect=lambda **kw:_record(kw['metadata'],kw['request'])) as predict,
     ):
         records=run_blackbox_scheme_subprocess(cfg,'2026-09-11',engine=object(),algo_env='forecast_env',timeout_sec=120)
     assert predict.call_count==2
     assert [r.predicted_direction for r in records]==[-1,-1]
-    assert [r.extra['input_quality']['audit_id'] for r in records]==['first','second']

@@ -198,9 +198,10 @@ target_date  = T + horizon
 
 回测执行只写 immutable `t_backtest_*` 证据，不读取产品事实拼历史结果。首次 Blackbox `activate` 才在同一激活事务中把已批准 exact-version 回测的缺失业务键发布到 `t_scheme_predictions`；revision 回测和 activation 不重写历史产品事实。参与前端历史排行的样本统一要求 `feature_date >= 2025-01-01`；这是展示样本起点，不改变训练或回测执行区间。
 
-已发布但早于 exact-version 强制记录的旧事实不得补写或冒充后续 exact。若业务明确指定后续纠正版作为迁移
-权威，只能通过 Harness 的精确兼容清单绑定完整旧事实摘要、日期差异摘要和纠正版身份，在只读验收中显式标为
-`legacy_migration`；这不改变旧行的原始来源、三日期或 insert-only 边界，也不为新事实提供例外。
+已发布但早于 exact-version 强制记录的旧事实不得补写或冒充后续 exact，也不得被后续纠正版 exact 代为
+认证。2026-11-12 起 Harness 不再保留任何“旧迁移/兼容清单”例外：这类历史事实在只读验收中按通用规则
+暴露为 authority gap（BLOCKED）或错误；这不改变旧行的原始来源、三日期或 insert-only 边界，也不为新事实
+提供例外。
 
 回测来源、exact 为空的旧产品事实由[冻结清单](../../deploy/unversioned_backtest_facts_v1.json)按方案/期限/horizon
 登记条数与规范事实摘要；Gate 将其作为已知缺口汇总，不据此推断或补写 exact。

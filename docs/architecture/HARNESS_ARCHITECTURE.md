@@ -40,26 +40,11 @@ target date 关联 Actual。回测发布事实只用 immutable `backtest_actual_
 未成熟目标保留 pending。Gate 再独立形成 month/source 的已验证样本、指标样本、方向分布、正确数和 true
 positive，并逐分区请求真实 Detail 对账；不得调用 Dashboard builder 或聚合 helper 生成标准答案。
 
-缺少原生 exact 的已发布旧事实默认阻断。唯一例外是
-[`legacy_prediction_migration_compatibility_v1.json`](../../deploy/legacy_prediction_migration_compatibility_v1.json)
-精确登记的只读迁移批次：清单同时绑定旧输入、summary、source/product 全事实、日期差异集合及经业务确认的
-纠正版 Blackbox exact 身份；纠正版 archived Registry、retired version、成功回测和逐事实原件由
-[`legacy_prediction_migration_evidence_v1.json`](../../deploy/legacy_prediction_migration_evidence_v1.json)
-冻结，Gate 会重算其摘要并验证现行三日期合同。Gate 只在整批证据全部命中时把它报告为
-`legacy_migration`；不回填数据库，
-不宣称旧事实由纠正版 exact 原生生成，也不允许该例外用于未来写入。任一事实或摘要漂移仍失败。
-
-该清单登记的 `liwei_0616_5y01_full_oos_k3_div_k10` 5Y/h5 已单独授权清除旧回测产品事实。
-若该范围没有回测分区，DataConsistency 只在保留的 78 条 live 事实与清单所冻结的日期范围、条数及
-业务值 SHA-256 完全一致时接受 live-only；缺行或方向漂移为失败。仅这些事实引用的 retired Native
-版本可容忍原本缺失的 `manifest_hash` 和空 `input_artifact_id`；已有非空但失效的字段、范围外事实及
-后续 Blackbox 仍按完整合同检查。此例外不恢复、推断或声称已删除的回测执行血缘存在。
-
-早期 Blackbox 回测若只缺少后来新增到 `t_backtest_runs` 的冗余血缘列，也不能按名称推断来源。
-[`legacy_backtest_lineage_compatibility_v1.json`](../../deploy/legacy_backtest_lineage_compatibility_v1.json)
-只登记已由 canonical 交付字节、版本 code/config/manifest hash、输入 snapshot、不可变 benchmark、完整
-summary 摘要以及 raw/product 逐事实摘要共同唯一证明的历史 run。Gate 仅在整批证据同时命中时从版本行恢复
-该 run 的只读解释；不更新数据库、不接受部分事实，也不对未登记 run 放宽血缘要求。
+2026-11-12 起，历史一致性证据账本（旧迁移兼容清单、纠正版 exact 证据、旧回测血缘兼容清单、历史回测
+引用兼容清单及其解析代码）已退役。曾命中这些例外的历史事实不再有任何特殊通道：按通用规则判定——缺少
+run 血缘、`persisted_prediction_count`、exact 版本血缘或输入身份的，作为 authority gap（结论 BLOCKED，
+不是通过，也不崩溃）；跨方案引用的回测 run、哈希或快照与版本行不符、日期违反现行任务合同、事实
+缺失或漂移的，仍判错误。没有回测分区的 active 范围同样只是 authority gap。新事实不享有任何例外。
 
 早于 exact 记录发布的回测产品事实（`scheme_version` 为空，且来自回测 run）按决定不补写 exact。
 [`unversioned_backtest_facts_v1.json`](../../deploy/unversioned_backtest_facts_v1.json) 冻结其
