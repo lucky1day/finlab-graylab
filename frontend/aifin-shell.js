@@ -116,23 +116,6 @@
     setActiveRoute(window.location.pathname, false);
   });
 
-  window.addEventListener("message", function (event) {
-    if (event.origin !== window.location.origin) {
-      return;
-    }
-
-    var data = event.data || {};
-    if (data.type !== "aifin:navigate" || typeof data.route !== "string") {
-      return;
-    }
-
-    if (!routeToView[normalizeRoute(data.route)]) {
-      return;
-    }
-
-    navigateWithTransition(data.route);
-  });
-
   function navigateWithTransition(route) {
     setActiveRoute(route, true);
   }
@@ -1048,7 +1031,6 @@
     setTimeout: function (callback, delay) { return window.setTimeout(callback, delay); },
     clearTimeout: function (timer) { return window.clearTimeout(timer); },
     defaultTimeoutMs: function () { return FACTOR_LAB_REQUEST_TIMEOUT_MS; },
-    maxRetryDelayMs: FACTOR_LAB_MAX_RETRY_DELAY_MS,
     onUnauthorized: function () {
       if (window.CustomEvent) {
         window.dispatchEvent(new CustomEvent("bfl:auth-required"));
@@ -1281,13 +1263,6 @@
       FACTOR_LAB_RETRY_DELAYS_MS.length - 1
     );
     var retryDelayMs = FACTOR_LAB_RETRY_DELAYS_MS[delayIndex];
-    if (error && error.retryAfterAt === Infinity) {
-      factorLabRuntimeState.retryNotBeforeAt = Infinity;
-      return false;
-    }
-    if (error && Number.isFinite(error.retryAfterAt)) {
-      retryDelayMs = Math.max(retryDelayMs, error.retryAfterAt - Date.now());
-    }
     factorLabRuntimeState.retryNotBeforeAt = Date.now() + retryDelayMs;
     scheduleFactorLabRefresh(retryDelayMs);
     return false;
@@ -1297,9 +1272,7 @@
     var force = options && options.force === true;
     if (!factorLabRuntimeState.authenticated || !window.fetch) return Promise.resolve(false);
     if ((!force || options.automatic === true) && factorLabRuntimeState.retryNotBeforeAt > Date.now()) {
-      if (Number.isFinite(factorLabRuntimeState.retryNotBeforeAt)) {
-        scheduleFactorLabRefresh(factorLabRuntimeState.retryNotBeforeAt - Date.now());
-      }
+      scheduleFactorLabRefresh(factorLabRuntimeState.retryNotBeforeAt - Date.now());
       return Promise.resolve(false);
     }
     if (factorLabRemoteLoading && !(options && options.selection)) return Promise.resolve(false);

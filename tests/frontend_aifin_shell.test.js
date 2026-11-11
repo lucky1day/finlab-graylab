@@ -148,45 +148,12 @@ test("a new authenticated Dashboard scope starts with its own retry history", as
   assert.equal(harness.scheduledDelays.filter((delay) => delay !== 6000 && delay !== 0).at(-1), 10000);
 });
 
-for (const retryAfter of ["120", "9999999999999999"]) {
-  test(`visibility does not bypass Retry-After ${retryAfter}, while explicit refresh remains available`, async (t) => {
-    let requests = 0;
-    const harness = createHarness(() => {
-      requests += 1;
-      return Promise.resolve({
-        ok: false, status: 429,
-        headers: { get: (name) => name === "Retry-After" ? retryAfter : null },
-        json: () => Promise.resolve({})
-      });
-    });
-    t.after(() => harness.hooks.stop());
-    harness.hooks.start();
-    await waitFor(() => harness.hooks.state().consecutiveFailures === 1);
-    harness.setVisibility("hidden");
-    harness.setVisibility("visible");
-    await flushPromises();
-    assert.equal(requests, 1);
-    if (retryAfter === "120") {
-      assert.ok(harness.scheduledDelays.at(-1) >= 119000);
-    } else {
-      assert.equal(harness.hooks.state().hasRefreshTimer, false);
-    }
-    harness.setFetch(() => {
-      requests += 1;
-      return Promise.resolve(okResponse(dashboardPayload("explicit-refresh")));
-    });
-    await harness.hooks.load({ force: true });
-    assert.equal(requests, 2);
-    assert.equal(harness.hooks.state().snapshotId, "explicit-refresh");
-  });
-}
-
-test("the same identity retains Retry-After across admin view stop/start, while a replacement starts fresh", async (t) => {
+test("the same identity retains its retry backoff across admin view stop/start, while a replacement starts fresh", async (t) => {
   let requests = 0;
   const harness = createHarness(() => {
     requests += 1;
     return Promise.resolve({ ok: false, status: 429,
-      headers: { get: (name) => name === "Retry-After" ? "120" : null },
+      headers: { get: () => null },
       json: () => Promise.resolve({}) });
   });
   t.after(() => harness.hooks.stop());
@@ -197,7 +164,6 @@ test("the same identity retains Retry-After across admin view stop/start, while 
   await flushPromises();
   assert.equal(requests, 1);
   assert.equal(harness.hooks.state().consecutiveFailures, 1);
-  assert.ok(harness.scheduledDelays.at(-1) >= 119000);
   harness.hooks.start({ identity: 2 });
   await flushPromises();
   assert.equal(requests, 2);
@@ -366,43 +332,6 @@ test("an old request timeout cannot clear or overwrite a new identity request", 
   assert.equal(state.dataMode, "fresh");
   assert.equal(state.remoteLoading, false);
   assert.equal(state.consecutiveFailures, 0);
-  harness.hooks.stop();
-});
-
-test("automatic retry is not scheduled before Retry-After", async () => {
-  const harness = createHarness(() => Promise.resolve({
-    ok: false,
-    status: 429,
-    headers: { get: () => "2" },
-    json: () => Promise.resolve({ error_code: "rate_limited" })
-  }));
-  harness.hooks.setRequestTimeoutMs(100);
-  harness.hooks.setRetryDelaysMs([5]);
-
-  harness.hooks.start();
-  await waitFor(() => harness.hooks.state().dataMode === "error");
-
-  assert.ok(
-    harness.scheduledDelays.some((delay) => delay >= 1900),
-    `expected a Retry-After delay, got ${harness.scheduledDelays.join(", ")}`
-  );
-  harness.hooks.stop();
-});
-
-test("an unrepresentably long Retry-After fails closed without an early timer", async () => {
-  const harness = createHarness(() => Promise.resolve({
-    ok: false,
-    status: 503,
-    headers: { get: () => "999999999" },
-    json: () => Promise.resolve(null)
-  }));
-  harness.hooks.setRequestTimeoutMs(100);
-  harness.hooks.setRetryDelaysMs([5]);
-
-  harness.hooks.start();
-  await waitFor(() => harness.hooks.state().dataMode === "error");
-
-  assert.equal(harness.hooks.state().hasRefreshTimer, false);
   harness.hooks.stop();
 });
 
