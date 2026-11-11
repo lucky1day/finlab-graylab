@@ -108,14 +108,14 @@ python -B -m harness gate backtest \
   --predict-date <DataBridge current 的 refresh_date> \
   --persist \
   --backtest-start-date 2025-01-01 \
-  --timeout-sec 7200
+  --timeout-sec 7200   # 缺省值，可省略或调低
 ```
 
 - **参数含义**：回测覆盖 `2025-01-01` 起、`target_date < --predict-date` 的全部 Request，即实际值已可验证的全部样本；
   `--predict-date` 取本机 DataBridge current 的 `refresh_date`（最新可用数据日）。结果分区不看来源，只按
   [`feature_date`](../architecture/PREDICTION_SEMANTICS.md#20-唯一结果分区公开口径) 判定，覆盖到 2026-06-01 之后是正常的。
   `--backtest-start-date` 缺省即 `2025-01-01`，周频方案必须使用该值。`--persist` 必填，缺省直接阻断。
-  `--timeout-sec` 缺省 600，会截断完整回测，必须显式给出；实际上限还受 Runtime Profile 约束。
+  `gate backtest` 的 `--timeout-sec` 缺省 7200 秒（完整回测预算），可显式调低；实际上限还受 Runtime Profile 约束。
 - **前置条件**：第 3 步 release；目标环境绑定已核验；本机有 producer-ready generation；取得本次回测写库授权。
 - **执行内容**：复验 canonical 两文件 → 读取 ready generation → 构造完整 HistoricalCase → 每个交付只启动
   一次 backtest 入口 → 逐行校验 Result → 在一个事务内写入 success run、完整明细与非空 monthly metrics，并保存
@@ -199,6 +199,9 @@ python -B -m harness gate dashboard --scheme-id {scheme_id} \
 python -B -m harness gate data-consistency --scheme-id {scheme_id} \
   --api-base-url <本机 API> --api-prefix <路径前缀> --session-file <owner-only 会话文件>
 ```
+
+`--api-base-url` 省略时按 `BFL_DEPLOYMENT_TARGET` 推导（`aliyun-gray` 为 8100，`mac3-production` 为 8101）；
+环境变量未设置且未传该参数时以退出码 2 拒绝，不再默认 8100。
 
 - **前置条件**：current 已切到包含该方案的 release 且服务已按授权刷新；有效登录会话；数据库环境绑定到该 HTTP 服务所在主机。
 - **通过标准**：两个 Gate 退出码 0；逐项满足[生产准备清单](../blackbox_v2/PRODUCTION_READINESS.md)。

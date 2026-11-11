@@ -300,7 +300,7 @@ class ActualsRunnerCoverageTests(unittest.TestCase):
             engine_p,
             calendar_p,
             daily_p as daily,
-            weekly_p as weekly,
+            weekly_p,
             monthly_p as monthly,
             period_p as period,
         ):

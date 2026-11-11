@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.contracts import import_rules
+from tests.support import import_rules
 
 
 @pytest.mark.parametrize(

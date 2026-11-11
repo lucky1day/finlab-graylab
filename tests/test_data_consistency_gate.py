@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -79,7 +80,26 @@ DETAIL_FIELDS = [
 ]
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_EVIDENCE_FILES = (
+    "historical_backtest_reference_compatibility_v1.json",
+    "legacy_backtest_lineage_compatibility_v1.json",
+    "legacy_prediction_migration_compatibility_v1.json",
+    "legacy_prediction_migration_evidence_v1.json",
+    "onboarding_policy_v1.json",
+    "unversioned_backtest_facts_v1.json",
+)
+
+
+def _copy_evidence(project_root: Path) -> None:
+    deploy = project_root / "deploy"
+    deploy.mkdir(exist_ok=True)
+    for name in _EVIDENCE_FILES:
+        shutil.copy(_REPO_ROOT / "deploy" / name, deploy / name)
+
+
 def _write_config(project_root: Path) -> None:
+    _copy_evidence(project_root)
     config = project_root / "schemes" / BASE_SCHEME_ID / "config.yaml"
     config.parent.mkdir(parents=True)
     config.write_text(
@@ -2752,3 +2772,39 @@ def test_live_fact_with_empty_exact_still_fails_closed() -> None:
             historical_references=frozenset(),
             unversioned_backtest_facts=frozenset({frozen}),
         )
+
+
+def test_corrupt_evidence_file_blocks_only_dependent_stages(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(tmp_path)
+    fetcher, _calls = _fetcher()
+    ctx = _context(tmp_path, engine)
+    (tmp_path / "deploy" / "legacy_backtest_lineage_compatibility_v1.json").write_text(
+        "{not json", encoding="utf-8"
+    )
+
+    result = _gate(fetcher).run(ctx)
+
+    evidence = {item.key: item.value for item in result.evidence}
+    assert result.status is GateStatus.BLOCKED
+    assert evidence["completeness"]["status"] == "PASSED"
+    assert evidence["lineage"]["status"] == "BLOCKED"
+    assert evidence["lineage"]["errors"] == [
+        "legacy_lineages evidence unavailable: JSONDecodeError"
+    ]
+    assert evidence["representation"]["status"] == "PASSED"
+
+
+def test_evidence_is_loaded_from_context_project_root(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    fetcher, _calls = _fetcher()
+    ctx = _context(tmp_path, engine)
+    (tmp_path / "deploy" / "unversioned_backtest_facts_v1.json").unlink()
+
+    result = _gate(fetcher).run(ctx)
+
+    evidence = {item.key: item.value for item in result.evidence}
+    assert evidence["lineage"]["status"] == "BLOCKED"
+    assert "unversioned_facts evidence unavailable" in evidence["lineage"]["errors"][0]
+    assert evidence["completeness"]["status"] == "PASSED"

@@ -14,7 +14,7 @@ from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
 from backend.auth import repository, routes
 from backend.auth.repository import AuthUser
-from backend.auth.service import AuthError, AuthService, LoginResult
+from backend.auth.service import AuthService, LoginResult
 from backend.main import app
 from backend.request_limits import (
     AUTH_JSON_WRITE_PATHS,

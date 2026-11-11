@@ -14,7 +14,6 @@ from unittest.mock import Mock, patch
 import pandas as pd
 import pytest
 
-from harness.context import GateContext
 
 
 class BlackboxV2HarnessGateTests(unittest.TestCase):
