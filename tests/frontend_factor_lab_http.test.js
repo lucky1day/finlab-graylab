@@ -12,8 +12,7 @@ function createClient(fetchImpl, overrides) {
     AbortController,
     setTimeout,
     clearTimeout,
-    defaultTimeoutMs: 20,
-    maxRetryDelayMs: 2147483647
+    defaultTimeoutMs: 20
   }, overrides || {}));
 }
 
@@ -184,58 +183,22 @@ test("HTTP client checks the request identity before a late unauthorized side ef
   assert.equal(unauthorizedEvents, 0);
 });
 
-test("HTTP client preserves Retry-After and unauthorized semantics", async () => {
-  let calls = 0;
+test("HTTP client reports unauthorized once per 401 response", async () => {
   let unauthorizedEvents = 0;
-  const fetchJson = createClient(() => {
-    calls += 1;
-    return Promise.resolve({
-      ok: false,
-      status: calls === 1 ? 429 : 401,
-      headers: { get: () => calls === 1 ? "2" : null },
-      json: () => Promise.resolve({ error_code: "request_failed" })
-    });
-  }, {
+  const fetchJson = createClient(() => Promise.resolve({
+    ok: false,
+    status: 401,
+    headers: { get: () => null },
+    json: () => Promise.resolve({ error_code: "request_failed" })
+  }), {
     onUnauthorized: () => { unauthorizedEvents += 1; }
   });
 
-  const before = Date.now();
-  await assert.rejects(
-    fetchJson("/api/factor-lab/dashboard"),
-    (error) => error.status === 429 && error.retryAfterAt >= before + 1900
-  );
   await assert.rejects(
     fetchJson("/api/factor-lab/dashboard"),
     (error) => error.status === 401
   );
   assert.equal(unauthorizedEvents, 1);
-});
-
-test("HTTP client parses HTTP-date and fails closed on unsafe Retry-After", async () => {
-  const retryDate = new Date(Date.now() + 3000).toUTCString();
-  const values = [retryDate, "2026-09-16", "99999999999999999999"];
-  const fetchJson = createClient(() => {
-    const value = values.shift();
-    return Promise.resolve({
-      ok: false,
-      status: 429,
-      headers: { get: (name) => name === "Retry-After" ? value : null },
-      json: () => Promise.resolve({ error_code: "rate_limited" })
-    });
-  });
-
-  await assert.rejects(
-    fetchJson("/api/factor-lab/dashboard"),
-    (error) => error.retryAfter === retryDate && error.retryAfterAt >= Date.parse(retryDate)
-  );
-  await assert.rejects(
-    fetchJson("/api/factor-lab/dashboard"),
-    (error) => error.retryAfter === "2026-09-16" && error.retryAfterAt === undefined
-  );
-  await assert.rejects(
-    fetchJson("/api/factor-lab/dashboard"),
-    (error) => error.retryAfterAt === Infinity
-  );
 });
 
 test("401 invalidates the current identity before a pending error body", async () => {
@@ -259,13 +222,12 @@ test("401 invalidates the current identity before a pending error body", async (
   );
 });
 
-test("429 keeps Retry-After metadata when the error body times out", async () => {
+test("429 keeps status metadata when the error body times out", async () => {
   const fetchJson = createClient(() => Promise.resolve({
     ok: false,
     status: 429,
     headers: {
       get(name) {
-        if (name === "Retry-After") return "60";
         if (name === "X-Request-ID") return "request-429";
         return null;
       }
@@ -276,7 +238,6 @@ test("429 keeps Retry-After metadata when the error body times out", async () =>
   await assert.rejects(
     fetchJson("/api/factor-lab/dashboard", { timeoutMs: 5 }),
     (error) => error.code === "request_timeout" &&
-      error.status === 429 && error.requestId === "request-429" &&
-      Number.isFinite(error.retryAfterAt)
+      error.status === 429 && error.requestId === "request-429"
   );
 });
