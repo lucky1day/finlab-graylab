@@ -133,7 +133,10 @@ Dashboard 只从产品事实表聚合逐点结果。
        ├─ 同一 connection / repeatable-read readonly transaction
        ├─ factor_lab_dashboard_queries：Registry、产品事实、Actual 与回测元数据查询
        ├─ factor_lab_dashboard_semantics：canonical 选择、Actual 冲突校验与月度/日级区间计数
-       └─ factor_lab_dashboard：Summary/Detail 编排及 V7 gzip/identity 表示
+       ├─ factor_lab_dashboard_dto：Registry/target 源行到 DTO 的严格字段转换
+       ├─ factor_lab_dashboard_validation：V7 Summary/Detail payload 精确合同校验
+       ├─ factor_lab_dashboard_encoding：canonical JSON/gzip 编码与字节预算
+       └─ factor_lab_dashboard：Summary/Detail 编排、生产名单读取、诊断 LRU
 
 ```
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import gzip
 import json
 import logging
 import os
@@ -9,7 +8,6 @@ import time
 from collections import OrderedDict, defaultdict
 from copy import deepcopy
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from threading import Lock
@@ -32,7 +30,6 @@ from backend.factor_lab_dashboard_queries import (
     resolve_dashboard_history_replacements,
 )
 from shared.runtime_paths import RUNTIME_ROOT_ENV, resolve_runtime_state_path
-from shared.scheme_config_schema import normalize_scheme_owner
 
 from backend.factor_lab_dashboard_semantics import (
     DASHBOARD_SCHEMA_VERSION,
@@ -54,29 +51,50 @@ from backend.factor_lab_dashboard_semantics import (
     is_factor_lab_history_visible,
     iter_grouped_live_prediction_rows,
     live_actual_selector,
-    validate_dashboard_payload,
 )
+from backend.factor_lab_dashboard_dto import (
+    _direction_value,
+    _iso_date,
+    _registry_dto,
+    _required_int,
+    _required_text,
+    _target_dto,
+)
+from backend.factor_lab_dashboard_encoding import (
+    MAX_GZIP_JSON_BYTES,
+    MAX_RAW_JSON_BYTES,
+    SnapshotEncoding,
+    encode_canonical_snapshot,
+)
+from backend.factor_lab_dashboard_validation import validate_dashboard_payload
+
+# 稳定导入面：编码、DTO 与 payload 校验已拆到同级模块，这里继续再导出。
+__all__ = [
+    "FACTOR_LAB_HISTORY_START_DATE",
+    "MAX_GZIP_JSON_BYTES",
+    "MAX_RAW_JSON_BYTES",
+    "DashboardDataError",
+    "DashboardQueryError",
+    "SnapshotEncoding",
+    "build_factor_lab_dashboard",
+    "build_factor_lab_dashboard_detail",
+    "dashboard_build_diagnostics",
+    "dashboard_read_connection",
+    "encode_canonical_snapshot",
+    "parse_dashboard_date_range",
+    "parse_dashboard_month",
+    "record_dashboard_encoding",
+    "validate_production_scheme_ids",
+]
 
 
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 MYSQL_SNAPSHOT_SQL = "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"
-MAX_RAW_JSON_BYTES = 1_500_000
-MAX_GZIP_JSON_BYTES = 100_000
 MAX_PRODUCTION_LIST_BYTES = 256 * 1024
 logger = logging.getLogger(__name__)
 _DIAGNOSTICS_LIMIT = 8
 _diagnostics_lock = Lock()
 _diagnostics_by_snapshot_id: OrderedDict[str, dict[str, Any]] = OrderedDict()
-
-
-@dataclass(frozen=True, slots=True)
-class SnapshotEncoding:
-    """Canonical snapshot 的 identity/gzip 编码及其精确字节数。"""
-
-    raw_body: bytes
-    gzip_body: bytes
-    raw_size: int
-    gzip_size: int
 
 
 class DashboardQueryError(ValueError):
@@ -801,20 +819,6 @@ def _shift_month(value: date, offset: int) -> date:
     return date(month_index // 12, month_index % 12 + 1, 1)
 
 
-def _direction_value(value: Any, *, field: str) -> int:
-    if isinstance(value, bool):
-        raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
-    try:
-        result = int(value)
-    except (TypeError, ValueError) as exc:
-        raise DashboardDataError(
-            f"dashboard {field} is invalid: {value!r}"
-        ) from exc
-    if result not in {-1, 0, 1} or result != value:
-        raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
-    return result
-
-
 def _record_build_diagnostics(
     snapshot_id: str,
     diagnostics: Mapping[str, Any],
@@ -944,56 +948,6 @@ def _actual_frequency(actual_kind: str) -> str:
     )
 
 
-def _registry_dto(
-    row: Mapping[str, Any],
-) -> dict[str, Any]:
-    scheme_id = _required_text(row.get("scheme_id"), field="registry scheme_id")
-    base_scheme_id = _required_text(
-        row.get("base_scheme_id"), field="registry base_scheme_id"
-    )
-    target_tenor = _required_text(
-        row.get("target_tenor"), field="registry target_tenor"
-    )
-    task_type = row.get("task_type")
-    live_actual_selector(task_type)
-    deployed_at = _iso_date(row.get("deployed_at"), field="registry deployed_at")
-    if row.get("status") != "active":
-        raise DashboardDataError(
-            f"dashboard registry row is not active: scheme_id={scheme_id}"
-        )
-    return {
-        "scheme_id": scheme_id,
-        "base_scheme_id": base_scheme_id,
-        "name": _required_text(row.get("name"), field="registry name"),
-        "owner": _required_owner(row.get("owner")),
-        "description": str(row.get("description") or ""),
-        "horizon": _required_int(row.get("horizon"), field="registry horizon"),
-        "task_type": task_type,
-        "frequency": _required_text(
-            row.get("frequency"), field="registry frequency"
-        ),
-        "target_tenor": target_tenor,
-        "status": "active",
-        "deployed_at": deployed_at,
-    }
-
-
-def _target_dto(row: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "target_code": _required_text(
-            row.get("target_code"), field="target target_code"
-        ),
-        "display_name": _required_text(
-            row.get("display_name"), field="target display_name"
-        ),
-        "asset_class": str(row.get("asset_class") or ""),
-        "target_type": str(row.get("target_type") or ""),
-        "sort_order": _required_int(row.get("sort_order"), field="target sort_order"),
-        "status": _required_text(row.get("status"), field="target status"),
-        "extra": _json_object(row.get("extra")),
-    }
-
-
 def _compact_row_sort_key(row: list[Any]) -> tuple[int, str, str, str]:
     return (
         {"backtest": 0, "live": 1}[str(row[0])],
@@ -1003,86 +957,3 @@ def _compact_row_sort_key(row: list[Any]) -> tuple[int, str, str, str]:
     )
 
 
-def encode_canonical_snapshot(payload: Mapping[str, Any]) -> SnapshotEncoding:
-    """按未来 route 的固定参数编码 canonical snapshot 并校验字节预算。"""
-    raw_body = json.dumps(
-        payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    if len(raw_body) > MAX_RAW_JSON_BYTES:
-        raise DashboardDataError(
-            "dashboard raw JSON exceeds budget: "
-            f"bytes={len(raw_body)} limit={MAX_RAW_JSON_BYTES}"
-        )
-
-    gzip_body = gzip.compress(raw_body, compresslevel=6)
-    if len(gzip_body) > MAX_GZIP_JSON_BYTES:
-        raise DashboardDataError(
-            "dashboard gzip JSON exceeds budget: "
-            f"bytes={len(gzip_body)} limit={MAX_GZIP_JSON_BYTES}"
-        )
-    return SnapshotEncoding(
-        raw_body=raw_body,
-        gzip_body=gzip_body,
-        raw_size=len(raw_body),
-        gzip_size=len(gzip_body),
-    )
-
-
-def _json_object(value: Any) -> dict[str, Any]:
-    if value is None:
-        return {}
-    if isinstance(value, Mapping):
-        return dict(value)
-    try:
-        parsed = json.loads(value)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise DashboardDataError(f"dashboard JSON object is invalid: {value!r}") from exc
-    if not isinstance(parsed, dict):
-        raise DashboardDataError(f"dashboard JSON object is invalid: {value!r}")
-    return parsed
-
-
-def _required_text(value: Any, *, field: str) -> str:
-    result = str(value or "").strip()
-    if not result:
-        raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
-    return result
-
-
-def _required_owner(value: Any) -> str:
-    try:
-        return normalize_scheme_owner(value)
-    except ValueError as exc:
-        raise DashboardDataError(
-            f"dashboard registry owner is invalid: {value!r}"
-        ) from exc
-
-
-def _required_int(value: Any, *, field: str) -> int:
-    if isinstance(value, bool):
-        raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
-    try:
-        return int(value)
-    except (TypeError, ValueError) as exc:
-        raise DashboardDataError(
-            f"dashboard {field} is invalid: {value!r}"
-        ) from exc
-
-
-def _iso_date(value: Any, *, field: str) -> str:
-    if isinstance(value, datetime):
-        value = value.date()
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, str):
-        try:
-            parsed = date.fromisoformat(value)
-        except ValueError as exc:
-            raise DashboardDataError(
-                f"dashboard {field} is invalid: {value!r}"
-            ) from exc
-        if parsed.isoformat() == value:
-            return value
-    raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
