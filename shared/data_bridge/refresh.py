@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import shutil
-import stat
 import tempfile
 import threading
 import time
@@ -23,7 +22,6 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from shared.data_bridge.validation import (
     DataBridgeValidationError,
-    EXPECTED_FILENAMES,
     LEGACY_FOUR_FILENAMES,
     ValidatedDataBridgeDataset,
     read_dataset_directory,
@@ -31,102 +29,99 @@ from shared.data_bridge.validation import (
     validate_dataset,
     validate_legacy_four_file_dataset,
 )
-from shared.data_contract import (
-    CALENDAR_SOURCE_TABLES,
-    FACTOR_SOURCE_TABLES,
-    METADATA_SOURCE_TABLE,
-    SourceCommitEvidence,
-    SourceTableEvidence,
-    source_commit_evidence_payload,
-    source_commit_evidence_sha256,
-)
 from shared.runtime_paths import resolve_runtime_state_path
+from shared.data_bridge.errors import (
+    DataBridgeRefreshError,
+    DataBridgeNonRetryableRefreshError,
+    DataBridgeContinuityIdentityError,
+    DataBridgeCurrentReadError,
+    DataBridgeCurrentMissingError,
+    DataBridgeCurrentInvalidError,
+    DataBridgeStoreLockError,
+    DataBridgeRecoveryIdentityError,
+)
+from shared.data_bridge.filesystem import (
+    _fsync_directory,
+    _fsync_regular_file,
+    _require_private_directory,
+    _open_strict_read_lock,
+    _read_strict_current_state,
+    ensure_private_directory,
+    _validate_publish_candidate,
+    _copy_regular_file_no_follow,
+    _remove_private_debris_tree,
+)
+from shared.data_bridge.publication_manifest import (
+    CURRENT_PUBLICATION_MANIFEST,
+    LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION,
+    LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION,
+    CURRENT_PUBLICATION_MANIFEST_VERSION,
+    LEGACY_CURRENT_PUBLICATION_MANIFEST_FIELDS,
+    LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_FIELDS,
+    CURRENT_PUBLICATION_MANIFEST_FIELDS,
+    CURRENT_PUBLICATION_MANIFEST_FIELDS_BY_VERSION,
+    LOCAL_MYSQL_SOURCE_MODE,
+    LOCAL_MYSQL_PROVENANCE_VERSION,
+    _publication_identity_from_state,
+    require_local_mysql_source_provenance,
+    _require_provenance_feature_date,
+    _normalize_source_provenance,
+    _canonical_date_value,
+    _canonical_aware_timestamp_value,
+    _canonical_sha256_value,
+    data_bridge_publication_identity_sha256,
+    _normalize_stored_publication_capability,
+    _canonical_publication_manifest_bytes,
+    _write_publication_manifest,
+    _read_publication_manifest,
+    _validate_identity_against_dataset,
+    _directory_publication_identity,
+)
 
 
 _logger = logging.getLogger(__name__)
 
+__all__ = [
+    "DataBridgeRefreshError",
+    "DataBridgeNonRetryableRefreshError",
+    "DataBridgeContinuityIdentityError",
+    "DataBridgeCurrentReadError",
+    "DataBridgeCurrentMissingError",
+    "DataBridgeCurrentInvalidError",
+    "DataBridgeStoreLockError",
+    "DataBridgeRecoveryIdentityError",
+    "CURRENT_PUBLICATION_MANIFEST",
+    "LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION",
+    "LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION",
+    "CURRENT_PUBLICATION_MANIFEST_VERSION",
+    "LEGACY_CURRENT_PUBLICATION_MANIFEST_FIELDS",
+    "LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_FIELDS",
+    "CURRENT_PUBLICATION_MANIFEST_FIELDS",
+    "CURRENT_PUBLICATION_MANIFEST_FIELDS_BY_VERSION",
+    "LOCAL_MYSQL_SOURCE_MODE",
+    "LOCAL_MYSQL_PROVENANCE_VERSION",
+    "FAILED_ATTEMPT_ERROR_CATEGORIES",
+    "DownloadRound",
+    "DataBridgeRoundSource",
+    "DataBridgeRefreshConfig",
+    "RefreshResult",
+    "CurrentDataset",
+    "DataBridgeContinuityAuthority",
+    "data_bridge_continuity_authority_sha256",
+    "select_stable_round",
+    "run_full_refresh",
+    "check_current_dataset",
+    "require_local_mysql_source_provenance",
+    "data_bridge_publication_identity_sha256",
+    "DataBridgeStore",
+    "ensure_private_directory",
+    "_canonical_aware_timestamp_value",
+    "_canonical_sha256_value",
+    "_normalize_stored_publication_capability",
+    "_canonical_publication_manifest_bytes",
+]
 
-class DataBridgeRefreshError(RuntimeError):
-    """A full refresh could not produce a stable valid dataset."""
 
-
-class DataBridgeNonRetryableRefreshError(DataBridgeRefreshError):
-    """重试不能改变结果的 refresh 控制面失败。"""
-
-
-class DataBridgeContinuityIdentityError(
-    DataBridgeNonRetryableRefreshError
-):
-    """current 与冻结 continuity authority 身份不一致。"""
-
-
-class DataBridgeCurrentReadError(DataBridgeNonRetryableRefreshError):
-    """严格只读 current 检查失败。"""
-
-
-class DataBridgeCurrentMissingError(DataBridgeCurrentReadError):
-    """严格只读 current 所需的已发布状态缺失。"""
-
-
-class DataBridgeCurrentInvalidError(DataBridgeCurrentReadError):
-    """严格只读 current 的目录、状态或内容无效。"""
-
-
-class DataBridgeStoreLockError(DataBridgeNonRetryableRefreshError):
-    """DataBridge store owner lock 无法取得或升级。"""
-
-
-class DataBridgeRecoveryIdentityError(
-    DataBridgeNonRetryableRefreshError
-):
-    """current/previous 与已发布 state 身份无法恢复一致。"""
-
-
-CURRENT_PUBLICATION_MANIFEST = ".publication-manifest.json"
-LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION = "data-bridge-current-v1"
-LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION = "data-bridge-current-v2"
-CURRENT_PUBLICATION_MANIFEST_VERSION = "data-bridge-current-v3"
-LEGACY_CURRENT_PUBLICATION_MANIFEST_FIELDS = frozenset(
-    {
-        "manifest_version",
-        "generation_id",
-        "refresh_date",
-        "schema_version",
-        "business_digest",
-        "files",
-        "publication_capability",
-    }
-)
-LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_FIELDS = frozenset(
-    {
-        *LEGACY_CURRENT_PUBLICATION_MANIFEST_FIELDS,
-        "source_mode",
-        "source_provenance",
-    }
-)
-CURRENT_PUBLICATION_MANIFEST_FIELDS = frozenset(
-    {
-        "manifest_version",
-        "generation_id",
-        "refresh_date",
-        "schema_version",
-        "business_digest",
-        "files",
-        "source_mode",
-        "source_provenance",
-    }
-)
-CURRENT_PUBLICATION_MANIFEST_FIELDS_BY_VERSION = {
-    LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION: (
-        LEGACY_CURRENT_PUBLICATION_MANIFEST_FIELDS
-    ),
-    LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION: (
-        LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_FIELDS
-    ),
-    CURRENT_PUBLICATION_MANIFEST_VERSION: CURRENT_PUBLICATION_MANIFEST_FIELDS,
-}
-LOCAL_MYSQL_SOURCE_MODE = "local_mysql"
-LOCAL_MYSQL_PROVENANCE_VERSION = "data-bridge-local-mysql-v1"
 FAILED_ATTEMPT_ERROR_CATEGORIES = frozenset(
     {
         "refresh_failed",
@@ -1017,138 +1012,6 @@ def _build_state(
     }
 
 
-def _publication_identity_from_state(
-    state: Mapping[str, object],
-) -> dict[str, object]:
-    """提取与 current 原子切换的稳定身份；排除后置 published_at。"""
-    if not isinstance(state, Mapping):
-        raise DataBridgeRefreshError(
-            "DataBridge publication state must be an object"
-        )
-    version = state.get("manifest_version")
-    if version is None:
-        version = state.get("publication_manifest_version")
-    if version is None:
-        version = (
-            LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION
-            if state.get("source_provenance") is not None
-            else LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION
-        )
-    if not isinstance(version, str):
-        raise DataBridgeRefreshError(
-            "DataBridge publication manifest version is invalid"
-        )
-    identity: dict[str, object] = {
-        "manifest_version": version,
-        "generation_id": copy.deepcopy(state.get("generation_id")),
-        "refresh_date": copy.deepcopy(state.get("refresh_date")),
-        "schema_version": copy.deepcopy(state.get("schema_version")),
-        "business_digest": copy.deepcopy(
-            state.get("business_digest")
-        ),
-        "files": copy.deepcopy(state.get("files")),
-    }
-    if version == LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION:
-        identity["publication_capability"] = (
-            _normalize_stored_publication_capability(
-                state.get("publication_capability")
-            )
-        )
-        return identity
-
-    source_provenance = state.get("source_provenance")
-    source_mode = state.get("source_mode")
-    if version == LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION:
-        if source_mode != LOCAL_MYSQL_SOURCE_MODE:
-            raise DataBridgeRefreshError(
-                "DataBridge local source provenance requires local_mysql mode"
-            )
-        identity["publication_capability"] = (
-            _normalize_stored_publication_capability(
-                state.get("publication_capability")
-            )
-        )
-        identity["source_mode"] = source_mode
-        identity["source_provenance"] = _normalize_source_provenance(
-            source_provenance
-        )
-        return identity
-    if version != CURRENT_PUBLICATION_MANIFEST_VERSION:
-        raise DataBridgeRefreshError(
-            "DataBridge publication manifest version is unsupported"
-        )
-    if source_mode is None:
-        source_mode = "full_export"
-    if not isinstance(source_mode, str) or not source_mode:
-        raise DataBridgeRefreshError("DataBridge source_mode is invalid")
-    if source_mode == LOCAL_MYSQL_SOURCE_MODE:
-        normalized_provenance: dict[str, object] | None = (
-            _normalize_source_provenance(source_provenance)
-        )
-    elif source_provenance is not None:
-        raise DataBridgeRefreshError(
-            "DataBridge non-local source must not carry local provenance"
-        )
-    else:
-        normalized_provenance = None
-    identity["source_mode"] = source_mode
-    identity["source_provenance"] = normalized_provenance
-    return identity
-
-
-def require_local_mysql_source_provenance(
-    state: Mapping[str, object],
-    *,
-    expected_daily_date: str | None = None,
-) -> dict[str, object]:
-    """返回已封存的本机 MySQL 来源证据；旧 current 一律拒绝。"""
-    if not isinstance(state, Mapping):
-        raise DataBridgeRefreshError(
-            "DataBridge local source provenance state is invalid"
-        )
-    identity = _publication_identity_from_state(state)
-    if (
-        identity.get("manifest_version")
-        not in {
-            LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION,
-            CURRENT_PUBLICATION_MANIFEST_VERSION,
-        }
-        or identity.get("source_mode") != LOCAL_MYSQL_SOURCE_MODE
-    ):
-        raise DataBridgeRefreshError(
-            "DataBridge current lacks sealed local MySQL source provenance"
-        )
-    provenance = identity.get("source_provenance")
-    if not isinstance(provenance, dict):
-        raise DataBridgeRefreshError(
-            "DataBridge local source provenance is invalid"
-        )
-    _require_provenance_feature_date(
-        provenance,
-        expected_daily_date=expected_daily_date,
-    )
-    return provenance
-
-
-def _require_provenance_feature_date(
-    provenance: Mapping[str, object],
-    *,
-    expected_daily_date: str | None,
-) -> None:
-    """本机 MySQL 水位必须与调用方 feature cutoff 完全一致。"""
-    if expected_daily_date is None:
-        return
-    normalized_expected_date = _canonical_date_value(
-        expected_daily_date,
-        label="DataBridge expected_daily_date",
-    )
-    if provenance.get("feature_date") != normalized_expected_date:
-        raise DataBridgeRefreshError(
-            "DataBridge local source provenance feature_date must equal "
-            "expected_daily_date"
-        )
-
-
 def _require_launchd_round_builder(
     round_builder: DataBridgeRoundSource | None,
 ) -> None:
@@ -1210,514 +1073,6 @@ def _is_no_current_failure_audit_state(state: object) -> bool:
         and isinstance(attempt.get("error"), str)
         and attempt["error"] in FAILED_ATTEMPT_ERROR_CATEGORIES
     )
-
-
-def _normalize_source_provenance(payload: object) -> dict[str, object]:
-    """校验并规范化写入 current identity 的 MySQL 水位证据。"""
-    if not isinstance(payload, Mapping):
-        raise DataBridgeRefreshError(
-            "DataBridge source_provenance must be an object"
-        )
-    required_fields = {
-        "provenance_version",
-        "feature_date",
-        "source_rdate_cutoff",
-        "snapshot_started_at",
-        "source_commit_token",
-        "source_evidence_sha256",
-        "source_evidence",
-    }
-    if set(payload) != required_fields:
-        raise DataBridgeRefreshError(
-            "DataBridge source_provenance fields are invalid"
-        )
-    if payload.get("provenance_version") != LOCAL_MYSQL_PROVENANCE_VERSION:
-        raise DataBridgeRefreshError(
-            "DataBridge source_provenance version is invalid"
-        )
-    feature_date = _canonical_date_value(
-        payload.get("feature_date"),
-        label="DataBridge source_provenance.feature_date",
-    )
-    source_rdate_cutoff = _canonical_date_value(
-        payload.get("source_rdate_cutoff"),
-        label="DataBridge source_provenance.source_rdate_cutoff",
-    )
-    if source_rdate_cutoff != feature_date:
-        raise DataBridgeRefreshError(
-            "DataBridge source_provenance cutoff must equal feature_date"
-        )
-    snapshot_started_at = _canonical_aware_timestamp_value(
-        payload.get("snapshot_started_at"),
-        label="DataBridge source_provenance.snapshot_started_at",
-    )
-    source_commit_token = _canonical_sha256_value(
-        payload.get("source_commit_token"),
-        label="DataBridge source_provenance.source_commit_token",
-    )
-    source_evidence_sha256 = _canonical_sha256_value(
-        payload.get("source_evidence_sha256"),
-        label="DataBridge source_provenance.source_evidence_sha256",
-    )
-    if source_evidence_sha256 != source_commit_token:
-        raise DataBridgeRefreshError(
-            "DataBridge source provenance evidence hash mismatch"
-        )
-    raw_evidence = payload.get("source_evidence")
-    if not isinstance(raw_evidence, Mapping) or set(raw_evidence) != {
-        "evidence_version",
-        "feature_date",
-        "tables",
-    }:
-        raise DataBridgeRefreshError(
-            "DataBridge source provenance evidence is invalid"
-        )
-    if raw_evidence.get("evidence_version") != "native-source-watermark-v1":
-        raise DataBridgeRefreshError(
-            "DataBridge source provenance evidence version is invalid"
-        )
-    evidence_feature_date = _canonical_date_value(
-        raw_evidence.get("feature_date"),
-        label="DataBridge source provenance evidence feature_date",
-    )
-    if evidence_feature_date != feature_date:
-        raise DataBridgeRefreshError(
-            "DataBridge source provenance evidence feature_date mismatch"
-        )
-    raw_tables = raw_evidence.get("tables")
-    if not isinstance(raw_tables, list) or not raw_tables:
-        raise DataBridgeRefreshError(
-            "DataBridge source provenance evidence tables are invalid"
-        )
-    tables: list[SourceTableEvidence] = []
-    expected_table_fields = {
-        "table_name",
-        "row_count",
-        "latest_create_time",
-        "latest_update_time",
-        "latest_business_key",
-    }
-    for raw_table in raw_tables:
-        if not isinstance(raw_table, Mapping) or set(raw_table) != expected_table_fields:
-            raise DataBridgeRefreshError(
-                "DataBridge source provenance evidence table is invalid"
-            )
-        table_name = raw_table.get("table_name")
-        row_count = raw_table.get("row_count")
-        if (
-            not isinstance(table_name, str)
-            or not table_name
-            or not isinstance(row_count, int)
-            or isinstance(row_count, bool)
-            or row_count < 0
-        ):
-            raise DataBridgeRefreshError(
-                "DataBridge source provenance evidence table values are invalid"
-            )
-        values: dict[str, str | None] = {}
-        for field_name in (
-            "latest_create_time",
-            "latest_update_time",
-            "latest_business_key",
-        ):
-            value = raw_table.get(field_name)
-            if value is not None and not isinstance(value, str):
-                raise DataBridgeRefreshError(
-                    "DataBridge source provenance evidence table values are invalid"
-                )
-            values[field_name] = value
-        tables.append(
-            SourceTableEvidence(
-                table_name=table_name,
-                row_count=row_count,
-                latest_create_time=values["latest_create_time"],
-                latest_update_time=values["latest_update_time"],
-                latest_business_key=values["latest_business_key"],
-            )
-        )
-    if [item.table_name for item in tables] != sorted(
-        item.table_name for item in tables
-    ):
-        raise DataBridgeRefreshError(
-            "DataBridge source provenance evidence tables are not canonical"
-        )
-    required_table_names = set(FACTOR_SOURCE_TABLES) | {
-        METADATA_SOURCE_TABLE
-    } | set(CALENDAR_SOURCE_TABLES)
-    if tuple(item.table_name for item in tables) != tuple(
-        sorted(required_table_names)
-    ):
-        raise DataBridgeRefreshError(
-            "DataBridge source provenance evidence tables are incomplete"
-        )
-    evidence = SourceCommitEvidence(
-        feature_date=feature_date,
-        source_commit_token=source_commit_token,
-        tables=tuple(tables),
-    )
-    canonical_evidence = source_commit_evidence_payload(evidence)
-    if dict(raw_evidence) != canonical_evidence:
-        raise DataBridgeRefreshError(
-            "DataBridge source provenance evidence is not canonical"
-        )
-    if source_commit_evidence_sha256(evidence) != source_commit_token:
-        raise DataBridgeRefreshError(
-            "DataBridge source provenance token does not match evidence"
-        )
-    return {
-        "provenance_version": LOCAL_MYSQL_PROVENANCE_VERSION,
-        "feature_date": feature_date,
-        "source_rdate_cutoff": source_rdate_cutoff,
-        "snapshot_started_at": snapshot_started_at,
-        "source_commit_token": source_commit_token,
-        "source_evidence_sha256": source_evidence_sha256,
-        "source_evidence": canonical_evidence,
-    }
-
-
-def _canonical_date_value(value: object, *, label: str) -> str:
-    if not isinstance(value, str):
-        raise DataBridgeRefreshError(f"{label} is invalid")
-    try:
-        normalized = date.fromisoformat(value).isoformat()
-    except ValueError as exc:
-        raise DataBridgeRefreshError(f"{label} is invalid") from exc
-    if value != normalized:
-        raise DataBridgeRefreshError(f"{label} is non-canonical")
-    return normalized
-
-
-def _canonical_aware_timestamp_value(value: object, *, label: str) -> str:
-    if not isinstance(value, str):
-        raise DataBridgeRefreshError(f"{label} is invalid")
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError as exc:
-        raise DataBridgeRefreshError(f"{label} is invalid") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise DataBridgeRefreshError(f"{label} is timezone-naive")
-    normalized = parsed.astimezone(ZoneInfo("Asia/Shanghai")).isoformat(
-        timespec="seconds"
-    )
-    if value != normalized:
-        raise DataBridgeRefreshError(f"{label} is non-canonical")
-    return normalized
-
-
-def _canonical_sha256_value(value: object, *, label: str) -> str:
-    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
-        raise DataBridgeRefreshError(f"{label} is invalid")
-    return value
-
-
-def data_bridge_publication_identity_sha256(
-    state: Mapping[str, object],
-) -> str:
-    """返回 current 原子发布身份的稳定摘要。"""
-    identity = _publication_identity_from_state(state)
-    return hashlib.sha256(
-        json.dumps(
-            identity,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    ).hexdigest()
-
-
-def _normalize_stored_publication_capability(
-    payload: object,
-) -> dict[str, object] | None:
-    if payload is None:
-        return None
-    if (
-        not isinstance(payload, Mapping)
-        or set(payload)
-        != {
-            "occurrence_id",
-            "business_date",
-            "daily_coordinator_epoch",
-        }
-    ):
-        raise DataBridgeRefreshError(
-            "DataBridge publication capability fields are invalid"
-        )
-    occurrence_id = payload.get("occurrence_id")
-    business_date = payload.get("business_date")
-    epoch = payload.get("daily_coordinator_epoch")
-    if (
-        not isinstance(occurrence_id, int)
-        or isinstance(occurrence_id, bool)
-        or occurrence_id <= 0
-        or not isinstance(business_date, str)
-        or date.fromisoformat(business_date).isoformat()
-        != business_date
-        or not isinstance(epoch, Mapping)
-        or set(epoch) != {"epoch", "mode", "record_sha256"}
-    ):
-        raise DataBridgeRefreshError(
-            "DataBridge publication capability identity is invalid"
-        )
-    normalized_epoch = {
-        "epoch": epoch.get("epoch"),
-        "mode": epoch.get("mode"),
-        "record_sha256": epoch.get("record_sha256"),
-    }
-    if (
-        not isinstance(normalized_epoch["epoch"], int)
-        or isinstance(normalized_epoch["epoch"], bool)
-        or normalized_epoch["epoch"] <= 0
-        or normalized_epoch["mode"] != "ledger"
-        or not isinstance(
-            normalized_epoch["record_sha256"],
-            str,
-        )
-        or re.fullmatch(
-            r"[0-9a-f]{64}",
-            normalized_epoch["record_sha256"],
-        )
-        is None
-    ):
-        raise DataBridgeRefreshError(
-            "DataBridge publication capability epoch is invalid"
-        )
-    return {
-        "occurrence_id": occurrence_id,
-        "business_date": business_date,
-        "daily_coordinator_epoch": normalized_epoch,
-    }
-
-
-def _canonical_publication_manifest_bytes(
-    manifest: Mapping[str, object],
-) -> bytes:
-    return (
-        json.dumps(
-            manifest,
-            ensure_ascii=True,
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n"
-    ).encode("utf-8")
-
-
-def _write_publication_manifest(
-    directory: Path,
-    *,
-    state: Mapping[str, object],
-) -> None:
-    marker_path = directory / CURRENT_PUBLICATION_MANIFEST
-    if os.path.lexists(marker_path):
-        raise DataBridgeRefreshError(
-            "DataBridge current publication manifest already exists"
-        )
-    payload = _canonical_publication_manifest_bytes(
-        _publication_identity_from_state(state)
-    )
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=".publication-manifest-",
-        dir=directory,
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-            os.fchmod(handle.fileno(), 0o444)
-        os.replace(temporary, marker_path)
-        _fsync_directory(directory)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
-
-
-def _read_publication_manifest(
-    directory: Path,
-) -> dict[str, object]:
-    marker_path = directory / CURRENT_PUBLICATION_MANIFEST
-    try:
-        descriptor = os.open(
-            marker_path,
-            os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
-        )
-    except OSError as exc:
-        raise DataBridgeRefreshError(
-            "DataBridge current publication manifest is missing"
-        ) from exc
-    try:
-        with os.fdopen(descriptor, "rb") as handle:
-            marker_stat = os.fstat(handle.fileno())
-            if not stat.S_ISREG(marker_stat.st_mode):
-                raise DataBridgeRefreshError(
-                    "DataBridge current publication manifest is not a "
-                    "regular file"
-                )
-            if stat.S_IMODE(marker_stat.st_mode) & 0o222:
-                raise DataBridgeRefreshError(
-                    "DataBridge current publication manifest must be "
-                    "read-only"
-                )
-            raw = handle.read(1024 * 1024 + 1)
-    except OSError as exc:
-        raise DataBridgeRefreshError(
-            "DataBridge current publication manifest is invalid"
-        ) from exc
-    if len(raw) > 1024 * 1024:
-        raise DataBridgeRefreshError(
-            "DataBridge current publication manifest is too large"
-        )
-    try:
-        marker = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as exc:
-        raise DataBridgeRefreshError(
-            "DataBridge current publication manifest is invalid"
-        ) from exc
-    if not isinstance(marker, dict):
-        raise DataBridgeRefreshError(
-            "DataBridge current publication manifest must be an object"
-        )
-    manifest_version = marker.get("manifest_version")
-    expected_fields = (
-        CURRENT_PUBLICATION_MANIFEST_FIELDS_BY_VERSION.get(
-            manifest_version
-        )
-        if isinstance(manifest_version, str)
-        else None
-    )
-    if expected_fields is None or set(marker) != expected_fields:
-        raise DataBridgeRefreshError(
-            "DataBridge current publication manifest fields are invalid"
-        )
-    if marker != _publication_identity_from_state(marker):
-        raise DataBridgeRefreshError(
-            "DataBridge current publication manifest identity is invalid"
-        )
-    if raw != _canonical_publication_manifest_bytes(marker):
-        raise DataBridgeRefreshError(
-            "DataBridge current publication manifest is not canonical JSON"
-        )
-    return marker
-
-
-def _validate_identity_against_dataset(
-    identity: Mapping[str, object],
-    *,
-    dataset: ValidatedDataBridgeDataset,
-    expected_filenames: tuple[str, ...] = EXPECTED_FILENAMES,
-) -> None:
-    manifest_version = identity.get("manifest_version")
-    if manifest_version == LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION:
-        if identity.get("source_mode") != LOCAL_MYSQL_SOURCE_MODE:
-            raise DataBridgeRefreshError(
-                "DataBridge publication manifest local source mode is invalid"
-            )
-        _normalize_source_provenance(identity.get("source_provenance"))
-    elif manifest_version == CURRENT_PUBLICATION_MANIFEST_VERSION:
-        source_mode = identity.get("source_mode")
-        source_provenance = identity.get("source_provenance")
-        if not isinstance(source_mode, str) or not source_mode:
-            raise DataBridgeRefreshError(
-                "DataBridge publication manifest source mode is invalid"
-            )
-        if source_mode == LOCAL_MYSQL_SOURCE_MODE:
-            _normalize_source_provenance(source_provenance)
-        elif source_provenance is not None:
-            raise DataBridgeRefreshError(
-                "DataBridge publication manifest non-local source provenance "
-                "is invalid"
-            )
-    generation_id = identity.get("generation_id")
-    refresh_date = identity.get("refresh_date")
-    business_digest = identity.get("business_digest")
-    if (
-        not isinstance(generation_id, str)
-        or not generation_id
-        or not isinstance(refresh_date, str)
-        or date.fromisoformat(refresh_date).isoformat() != refresh_date
-        or not isinstance(business_digest, str)
-        or re.fullmatch(r"[0-9a-f]{64}", business_digest) is None
-    ):
-        raise DataBridgeRefreshError(
-            "DataBridge publication manifest generation identity is invalid"
-        )
-    if identity.get("schema_version") != dataset.schema_version:
-        raise DataBridgeRefreshError(
-            "DataBridge publication manifest schema does not match files"
-        )
-    if identity.get("business_digest") != dataset.business_digest:
-        raise DataBridgeRefreshError(
-            "DataBridge publication manifest digest does not match files"
-        )
-    files = identity.get("files")
-    if not isinstance(files, Mapping):
-        raise DataBridgeRefreshError(
-            "DataBridge publication manifest files profile is missing"
-        )
-    if set(files) != set(expected_filenames):
-        raise DataBridgeRefreshError(
-            "DataBridge publication manifest files profile is incomplete"
-        )
-    for filename, profile in dataset.files.items():
-        stored = files.get(filename)
-        if (
-            not isinstance(stored, Mapping)
-            or stored.get("sha256") != profile.sha256
-        ):
-            raise DataBridgeRefreshError(
-                "DataBridge publication manifest hash mismatch for "
-                f"{filename}"
-            )
-
-
-def _directory_publication_identity(
-    directory: Path,
-    *,
-    schema_path: Path,
-) -> dict[str, object] | None:
-    if not directory.is_dir():
-        return None
-    try:
-        identity = _read_publication_manifest(directory)
-        entries = {path.name for path in directory.iterdir()}
-        is_legacy_four = entries == (
-            set(LEGACY_FOUR_FILENAMES)
-            | {CURRENT_PUBLICATION_MANIFEST}
-        )
-        if is_legacy_four:
-            dataset = validate_legacy_four_file_dataset(
-                read_legacy_four_file_directory(
-                    directory,
-                    allowed_sidecar_filenames=frozenset(
-                        {CURRENT_PUBLICATION_MANIFEST}
-                    ),
-                ),
-                schema_path=schema_path,
-            )
-        else:
-            dataset = validate_dataset(
-                read_dataset_directory(
-                    directory,
-                    allowed_sidecar_filenames=frozenset(
-                        {CURRENT_PUBLICATION_MANIFEST}
-                    ),
-                ),
-                schema_path=schema_path,
-            )
-        _validate_identity_against_dataset(
-            identity,
-            dataset=dataset,
-            expected_filenames=(
-                LEGACY_FOUR_FILENAMES
-                if is_legacy_four
-                else EXPECTED_FILENAMES
-            ),
-        )
-        return identity
-    except (DataBridgeRefreshError, OSError, ValueError):
-        return None
 
 
 class DataBridgeStore:
@@ -2147,264 +1502,6 @@ class DataBridgeStore:
         except BaseException:
             temporary.unlink(missing_ok=True)
             raise
-
-
-def _fsync_directory(directory: Path) -> None:
-    descriptor = os.open(directory, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _fsync_regular_file(path: Path) -> None:
-    descriptor = os.open(
-        path,
-        os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
-    )
-    try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise DataBridgeRefreshError(
-                "DataBridge fsync target is not a regular file"
-            )
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _require_private_directory(
-    path: Path,
-    *,
-    label: str,
-    error_type: type[DataBridgeRefreshError] = DataBridgeRefreshError,
-    missing_error_type: (
-        type[DataBridgeRefreshError] | None
-    ) = None,
-) -> None:
-    try:
-        info = path.lstat()
-    except FileNotFoundError as exc:
-        raise (missing_error_type or error_type)(
-            f"{label} is missing"
-        ) from exc
-    if stat.S_ISLNK(info.st_mode):
-        raise error_type(f"{label} must not be a symlink")
-    if not stat.S_ISDIR(info.st_mode):
-        raise error_type(f"{label} must be a directory")
-    if info.st_uid != os.getuid():
-        raise error_type(f"{label} has another owner")
-    if stat.S_IMODE(info.st_mode) & 0o077:
-        raise error_type(
-            f"{label} must be private (mode 0700 or stricter)"
-        )
-
-
-def _open_strict_read_lock(path: Path):
-    """原子、无跟随地打开既有 lock，不创建任何目录或文件。"""
-    try:
-        descriptor = os.open(
-            path,
-            os.O_RDONLY
-            | os.O_NONBLOCK
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
-        )
-    except FileNotFoundError as exc:
-        raise DataBridgeCurrentMissingError(
-            "DataBridge refresh lock is missing"
-        ) from exc
-    except OSError as exc:
-        raise DataBridgeCurrentInvalidError(
-            "DataBridge refresh lock is invalid"
-        ) from exc
-    try:
-        info = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_uid != os.getuid()
-            or stat.S_IMODE(info.st_mode) & 0o022
-        ):
-            raise DataBridgeCurrentInvalidError(
-                "DataBridge refresh lock is unsafe"
-            )
-        return os.fdopen(descriptor, "rb")
-    except BaseException:
-        os.close(descriptor)
-        raise
-
-
-def _read_strict_current_state(path: Path) -> dict[str, object]:
-    """无跟随读取既有 state，缺失与损坏在 shared lock 内分类。"""
-    try:
-        descriptor = os.open(
-            path,
-            os.O_RDONLY
-            | os.O_NONBLOCK
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
-        )
-    except FileNotFoundError as exc:
-        raise DataBridgeCurrentMissingError(
-            "DataBridge refresh state does not exist"
-        ) from exc
-    except OSError as exc:
-        raise DataBridgeCurrentInvalidError(
-            "DataBridge refresh state is invalid"
-        ) from exc
-    try:
-        with os.fdopen(descriptor, "rb") as handle:
-            info = os.fstat(handle.fileno())
-            if not stat.S_ISREG(info.st_mode):
-                raise DataBridgeCurrentInvalidError(
-                    "DataBridge refresh state is not a regular file"
-                )
-            raw = handle.read(4 * 1024 * 1024 + 1)
-    except OSError as exc:
-        raise DataBridgeCurrentInvalidError(
-            "DataBridge refresh state is invalid"
-        ) from exc
-    if len(raw) > 4 * 1024 * 1024:
-        raise DataBridgeCurrentInvalidError(
-            "DataBridge refresh state is too large"
-        )
-    try:
-        state = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as exc:
-        raise DataBridgeCurrentInvalidError(
-            "DataBridge refresh state is invalid"
-        ) from exc
-    if not isinstance(state, dict):
-        raise DataBridgeCurrentInvalidError(
-            "DataBridge refresh state must be an object"
-        )
-    return state
-
-
-def ensure_private_directory(path: Path, *, label: str) -> None:
-    """只创建新私有根；既有非私有根必须由部署迁移显式修复。"""
-    path.mkdir(parents=True, mode=0o700, exist_ok=True)
-    _require_private_directory(path, label=label)
-
-
-def _validate_publish_candidate(path: Path) -> None:
-    try:
-        root_info = path.lstat()
-    except FileNotFoundError as exc:
-        raise DataBridgeRefreshError(
-            "candidate directory does not exist"
-        ) from exc
-    if stat.S_ISLNK(root_info.st_mode):
-        raise DataBridgeRefreshError(
-            "candidate directory must not be a symlink"
-        )
-    if not stat.S_ISDIR(root_info.st_mode):
-        raise DataBridgeRefreshError("candidate must be a directory")
-    entries = list(path.iterdir())
-    if {entry.name for entry in entries} != set(EXPECTED_FILENAMES):
-        raise DataBridgeRefreshError(
-            "candidate directory does not contain exactly five data files"
-        )
-    for entry in entries:
-        info = entry.lstat()
-        if stat.S_ISLNK(info.st_mode):
-            raise DataBridgeRefreshError(
-                f"candidate file must not be a symlink: {entry.name}"
-            )
-        if not stat.S_ISREG(info.st_mode):
-            raise DataBridgeRefreshError(
-                f"candidate file must be regular: {entry.name}"
-            )
-
-
-def _copy_regular_file_no_follow(
-    source: str | os.PathLike[str],
-    destination: str | os.PathLike[str],
-) -> str:
-    """以 O_NOFOLLOW 复制候选文件，并拒绝复制期间身份漂移。"""
-    source_path = Path(source)
-    destination_path = Path(destination)
-    before = source_path.lstat()
-    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
-        raise DataBridgeRefreshError(
-            f"candidate file must be regular and non-symlink: "
-            f"{source_path.name}"
-        )
-    source_descriptor = os.open(
-        source_path,
-        os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
-    )
-    try:
-        opened = os.fstat(source_descriptor)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or opened.st_dev != before.st_dev
-            or opened.st_ino != before.st_ino
-        ):
-            raise DataBridgeRefreshError(
-                f"candidate file changed while opening: {source_path.name}"
-            )
-        destination_descriptor = os.open(
-            destination_path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            0o600,
-        )
-        try:
-            while True:
-                chunk = os.read(source_descriptor, 1024 * 1024)
-                if not chunk:
-                    break
-                view = memoryview(chunk)
-                while view:
-                    written = os.write(destination_descriptor, view)
-                    view = view[written:]
-        finally:
-            os.close(destination_descriptor)
-    finally:
-        os.close(source_descriptor)
-    after = source_path.lstat()
-    if (
-        stat.S_ISLNK(after.st_mode)
-        or after.st_dev != before.st_dev
-        or after.st_ino != before.st_ino
-        or after.st_size != before.st_size
-        or after.st_mtime_ns != before.st_mtime_ns
-    ):
-        raise DataBridgeRefreshError(
-            f"candidate file changed while copying: {source_path.name}"
-        )
-    return str(destination_path)
-
-
-def _remove_private_debris_tree(path: Path, *, label: str) -> None:
-    try:
-        root_info = path.lstat()
-    except FileNotFoundError:
-        return
-    if stat.S_ISLNK(root_info.st_mode):
-        raise DataBridgeRefreshError(f"{label} must not be a symlink")
-    if not stat.S_ISDIR(root_info.st_mode):
-        raise DataBridgeRefreshError(f"{label} must be a directory")
-    for current_root, directory_names, filenames in os.walk(
-        path,
-        topdown=True,
-        followlinks=False,
-    ):
-        current = Path(current_root)
-        for name in (*directory_names, *filenames):
-            entry = current / name
-            info = entry.lstat()
-            if stat.S_ISLNK(info.st_mode):
-                raise DataBridgeRefreshError(
-                    f"{label} contains a symlink"
-                )
-            if not (
-                stat.S_ISDIR(info.st_mode)
-                or stat.S_ISREG(info.st_mode)
-            ):
-                raise DataBridgeRefreshError(
-                    f"{label} contains a special file"
-                )
-    shutil.rmtree(path)
 
 
 def _shanghai_now() -> datetime:
