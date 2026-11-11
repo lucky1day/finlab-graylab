@@ -18,12 +18,9 @@ from shared.data_bridge.errors import DataBridgeRefreshError
 from shared.data_bridge.filesystem import _fsync_directory
 from shared.data_bridge.validation import (
     EXPECTED_FILENAMES,
-    LEGACY_FOUR_FILENAMES,
     ValidatedDataBridgeDataset,
     read_dataset_directory,
-    read_legacy_four_file_directory,
     validate_dataset,
-    validate_legacy_four_file_dataset,
 )
 from shared.data_contract import (
     CALENDAR_SOURCE_TABLES,
@@ -37,27 +34,7 @@ from shared.data_contract import (
 
 
 CURRENT_PUBLICATION_MANIFEST = ".publication-manifest.json"
-LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION = "data-bridge-current-v1"
-LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION = "data-bridge-current-v2"
 CURRENT_PUBLICATION_MANIFEST_VERSION = "data-bridge-current-v3"
-LEGACY_CURRENT_PUBLICATION_MANIFEST_FIELDS = frozenset(
-    {
-        "manifest_version",
-        "generation_id",
-        "refresh_date",
-        "schema_version",
-        "business_digest",
-        "files",
-        "publication_capability",
-    }
-)
-LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_FIELDS = frozenset(
-    {
-        *LEGACY_CURRENT_PUBLICATION_MANIFEST_FIELDS,
-        "source_mode",
-        "source_provenance",
-    }
-)
 CURRENT_PUBLICATION_MANIFEST_FIELDS = frozenset(
     {
         "manifest_version",
@@ -71,12 +48,6 @@ CURRENT_PUBLICATION_MANIFEST_FIELDS = frozenset(
     }
 )
 CURRENT_PUBLICATION_MANIFEST_FIELDS_BY_VERSION = {
-    LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION: (
-        LEGACY_CURRENT_PUBLICATION_MANIFEST_FIELDS
-    ),
-    LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION: (
-        LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_FIELDS
-    ),
     CURRENT_PUBLICATION_MANIFEST_VERSION: CURRENT_PUBLICATION_MANIFEST_FIELDS,
 }
 LOCAL_MYSQL_SOURCE_MODE = "local_mysql"
@@ -94,12 +65,6 @@ def _publication_identity_from_state(
     version = state.get("manifest_version")
     if version is None:
         version = state.get("publication_manifest_version")
-    if version is None:
-        version = (
-            LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION
-            if state.get("source_provenance") is not None
-            else LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION
-        )
     if not isinstance(version, str):
         raise DataBridgeRefreshError(
             "DataBridge publication manifest version is invalid"
@@ -114,31 +79,8 @@ def _publication_identity_from_state(
         ),
         "files": copy.deepcopy(state.get("files")),
     }
-    if version == LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION:
-        identity["publication_capability"] = (
-            _normalize_stored_publication_capability(
-                state.get("publication_capability")
-            )
-        )
-        return identity
-
     source_provenance = state.get("source_provenance")
     source_mode = state.get("source_mode")
-    if version == LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION:
-        if source_mode != LOCAL_MYSQL_SOURCE_MODE:
-            raise DataBridgeRefreshError(
-                "DataBridge local source provenance requires local_mysql mode"
-            )
-        identity["publication_capability"] = (
-            _normalize_stored_publication_capability(
-                state.get("publication_capability")
-            )
-        )
-        identity["source_mode"] = source_mode
-        identity["source_provenance"] = _normalize_source_provenance(
-            source_provenance
-        )
-        return identity
     if version != CURRENT_PUBLICATION_MANIFEST_VERSION:
         raise DataBridgeRefreshError(
             "DataBridge publication manifest version is unsupported"
@@ -175,10 +117,7 @@ def require_local_mysql_source_provenance(
     identity = _publication_identity_from_state(state)
     if (
         identity.get("manifest_version")
-        not in {
-            LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION,
-            CURRENT_PUBLICATION_MANIFEST_VERSION,
-        }
+        != CURRENT_PUBLICATION_MANIFEST_VERSION
         or identity.get("source_mode") != LOCAL_MYSQL_SOURCE_MODE
     ):
         raise DataBridgeRefreshError(
@@ -429,69 +368,6 @@ def data_bridge_publication_identity_sha256(
     ).hexdigest()
 
 
-def _normalize_stored_publication_capability(
-    payload: object,
-) -> dict[str, object] | None:
-    if payload is None:
-        return None
-    if (
-        not isinstance(payload, Mapping)
-        or set(payload)
-        != {
-            "occurrence_id",
-            "business_date",
-            "daily_coordinator_epoch",
-        }
-    ):
-        raise DataBridgeRefreshError(
-            "DataBridge publication capability fields are invalid"
-        )
-    occurrence_id = payload.get("occurrence_id")
-    business_date = payload.get("business_date")
-    epoch = payload.get("daily_coordinator_epoch")
-    if (
-        not isinstance(occurrence_id, int)
-        or isinstance(occurrence_id, bool)
-        or occurrence_id <= 0
-        or not isinstance(business_date, str)
-        or date.fromisoformat(business_date).isoformat()
-        != business_date
-        or not isinstance(epoch, Mapping)
-        or set(epoch) != {"epoch", "mode", "record_sha256"}
-    ):
-        raise DataBridgeRefreshError(
-            "DataBridge publication capability identity is invalid"
-        )
-    normalized_epoch = {
-        "epoch": epoch.get("epoch"),
-        "mode": epoch.get("mode"),
-        "record_sha256": epoch.get("record_sha256"),
-    }
-    if (
-        not isinstance(normalized_epoch["epoch"], int)
-        or isinstance(normalized_epoch["epoch"], bool)
-        or normalized_epoch["epoch"] <= 0
-        or normalized_epoch["mode"] != "ledger"
-        or not isinstance(
-            normalized_epoch["record_sha256"],
-            str,
-        )
-        or re.fullmatch(
-            r"[0-9a-f]{64}",
-            normalized_epoch["record_sha256"],
-        )
-        is None
-    ):
-        raise DataBridgeRefreshError(
-            "DataBridge publication capability epoch is invalid"
-        )
-    return {
-        "occurrence_id": occurrence_id,
-        "business_date": business_date,
-        "daily_coordinator_epoch": normalized_epoch,
-    }
-
-
 def _canonical_publication_manifest_bytes(
     manifest: Mapping[str, object],
 ) -> bytes:
@@ -609,16 +485,9 @@ def _validate_identity_against_dataset(
     identity: Mapping[str, object],
     *,
     dataset: ValidatedDataBridgeDataset,
-    expected_filenames: tuple[str, ...] = EXPECTED_FILENAMES,
 ) -> None:
     manifest_version = identity.get("manifest_version")
-    if manifest_version == LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION:
-        if identity.get("source_mode") != LOCAL_MYSQL_SOURCE_MODE:
-            raise DataBridgeRefreshError(
-                "DataBridge publication manifest local source mode is invalid"
-            )
-        _normalize_source_provenance(identity.get("source_provenance"))
-    elif manifest_version == CURRENT_PUBLICATION_MANIFEST_VERSION:
+    if manifest_version == CURRENT_PUBLICATION_MANIFEST_VERSION:
         source_mode = identity.get("source_mode")
         source_provenance = identity.get("source_provenance")
         if not isinstance(source_mode, str) or not source_mode:
@@ -659,7 +528,7 @@ def _validate_identity_against_dataset(
         raise DataBridgeRefreshError(
             "DataBridge publication manifest files profile is missing"
         )
-    if set(files) != set(expected_filenames):
+    if set(files) != set(EXPECTED_FILENAMES):
         raise DataBridgeRefreshError(
             "DataBridge publication manifest files profile is incomplete"
         )
@@ -684,39 +553,18 @@ def _directory_publication_identity(
         return None
     try:
         identity = _read_publication_manifest(directory)
-        entries = {path.name for path in directory.iterdir()}
-        is_legacy_four = entries == (
-            set(LEGACY_FOUR_FILENAMES)
-            | {CURRENT_PUBLICATION_MANIFEST}
+        dataset = validate_dataset(
+            read_dataset_directory(
+                directory,
+                allowed_sidecar_filenames=frozenset(
+                    {CURRENT_PUBLICATION_MANIFEST}
+                ),
+            ),
+            schema_path=schema_path,
         )
-        if is_legacy_four:
-            dataset = validate_legacy_four_file_dataset(
-                read_legacy_four_file_directory(
-                    directory,
-                    allowed_sidecar_filenames=frozenset(
-                        {CURRENT_PUBLICATION_MANIFEST}
-                    ),
-                ),
-                schema_path=schema_path,
-            )
-        else:
-            dataset = validate_dataset(
-                read_dataset_directory(
-                    directory,
-                    allowed_sidecar_filenames=frozenset(
-                        {CURRENT_PUBLICATION_MANIFEST}
-                    ),
-                ),
-                schema_path=schema_path,
-            )
         _validate_identity_against_dataset(
             identity,
             dataset=dataset,
-            expected_filenames=(
-                LEGACY_FOUR_FILENAMES
-                if is_legacy_four
-                else EXPECTED_FILENAMES
-            ),
         )
         return identity
     except (DataBridgeRefreshError, OSError, ValueError):

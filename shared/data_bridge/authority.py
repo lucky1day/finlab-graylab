@@ -8,7 +8,6 @@ from typing import Any, Iterable, Mapping
 
 from shared.data_bridge.refresh import (
     CURRENT_PUBLICATION_MANIFEST_VERSION,
-    LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION,
     DataBridgeCurrentInvalidError,
     DataBridgeCurrentMissingError,
     DataBridgeContinuityAuthority,
@@ -462,12 +461,8 @@ def resolve_stable_databridge_current_authority(
             for row in calendar.itertuples(index=False)
         }
     publication_manifest = current.publication_manifest
-    legacy_v1_period_fallback = (
-        allow_legacy_v1_period_fallback
-        and isinstance(publication_manifest, Mapping)
-        and publication_manifest.get("manifest_version")
-        == LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION
-    )
+    # allow_legacy_v1_period_fallback 仅为保持调用签名而保留：legacy v1 current
+    # 已在 check_current_dataset 处 fail-closed，此参数不再产生任何效果。
     producer_v3_period_bootstrap = (
         allow_producer_period_bootstrap
         and isinstance(publication_manifest, Mapping)
@@ -482,10 +477,7 @@ def resolve_stable_databridge_current_authority(
             schema_path=config.schema_path,
             # cutoffs 层的周期键向前承接同时服务 legacy v1 current 与 v3 producer
             # bootstrap；后者是现行 one-shot publisher 链路，不能按 legacy 清理。
-            allow_legacy_v1_period_fallback=(
-                legacy_v1_period_fallback
-                or producer_v3_period_bootstrap
-            ),
+            allow_legacy_v1_period_fallback=producer_v3_period_bootstrap,
         )
     except ValueError as exc:
         raise DataBridgeCurrentInvalidError(

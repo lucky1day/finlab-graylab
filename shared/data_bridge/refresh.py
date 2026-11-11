@@ -25,9 +25,7 @@ from shared.data_bridge.validation import (
     LEGACY_FOUR_FILENAMES,
     ValidatedDataBridgeDataset,
     read_dataset_directory,
-    read_legacy_four_file_directory,
     validate_dataset,
-    validate_legacy_four_file_dataset,
 )
 from shared.runtime_paths import resolve_runtime_state_path
 from shared.data_bridge.errors import (
@@ -53,11 +51,7 @@ from shared.data_bridge.filesystem import (
 )
 from shared.data_bridge.publication_manifest import (
     CURRENT_PUBLICATION_MANIFEST,
-    LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION,
-    LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION,
     CURRENT_PUBLICATION_MANIFEST_VERSION,
-    LEGACY_CURRENT_PUBLICATION_MANIFEST_FIELDS,
-    LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_FIELDS,
     CURRENT_PUBLICATION_MANIFEST_FIELDS,
     CURRENT_PUBLICATION_MANIFEST_FIELDS_BY_VERSION,
     LOCAL_MYSQL_SOURCE_MODE,
@@ -70,7 +64,6 @@ from shared.data_bridge.publication_manifest import (
     _canonical_aware_timestamp_value,
     _canonical_sha256_value,
     data_bridge_publication_identity_sha256,
-    _normalize_stored_publication_capability,
     _canonical_publication_manifest_bytes,
     _write_publication_manifest,
     _read_publication_manifest,
@@ -91,11 +84,7 @@ __all__ = [
     "DataBridgeStoreLockError",
     "DataBridgeRecoveryIdentityError",
     "CURRENT_PUBLICATION_MANIFEST",
-    "LEGACY_CURRENT_PUBLICATION_MANIFEST_VERSION",
-    "LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_VERSION",
     "CURRENT_PUBLICATION_MANIFEST_VERSION",
-    "LEGACY_CURRENT_PUBLICATION_MANIFEST_FIELDS",
-    "LEGACY_CURRENT_PUBLICATION_MANIFEST_V2_FIELDS",
     "CURRENT_PUBLICATION_MANIFEST_FIELDS",
     "CURRENT_PUBLICATION_MANIFEST_FIELDS_BY_VERSION",
     "LOCAL_MYSQL_SOURCE_MODE",
@@ -117,7 +106,6 @@ __all__ = [
     "ensure_private_directory",
     "_canonical_aware_timestamp_value",
     "_canonical_sha256_value",
-    "_normalize_stored_publication_capability",
     "_canonical_publication_manifest_bytes",
 ]
 
@@ -513,7 +501,7 @@ def check_current_dataset(
     with store.current_read(
         strict_read_only=strict_read_only,
     ) as state:
-        current = _validate_current_or_legacy_dataset_locked(
+        current = _validate_current_dataset_locked(
             store,
             state=state,
             schema_path=config.schema_path,
@@ -575,71 +563,11 @@ def _load_previous_current_locked(
             )
         return None
     with store.current_read() as state:
-        return _validate_current_or_legacy_dataset_locked(
+        return _validate_current_dataset_locked(
             store,
             state=state,
             schema_path=schema_path,
         )
-
-
-def _validate_current_or_legacy_dataset_locked(
-    store: "DataBridgeStore",
-    *,
-    state: Mapping[str, object],
-    schema_path: Path,
-    expected_daily_date: str | None = None,
-) -> CurrentDataset:
-    entries = {path.name for path in store.current_dir.iterdir()}
-    if entries == (
-        set(LEGACY_FOUR_FILENAMES) | {CURRENT_PUBLICATION_MANIFEST}
-    ):
-        return _validate_legacy_four_file_current_locked(
-            store,
-            state=state,
-            schema_path=schema_path,
-            expected_daily_date=expected_daily_date,
-        )
-    return _validate_current_dataset_locked(
-        store,
-        state=state,
-        schema_path=schema_path,
-        expected_daily_date=expected_daily_date,
-    )
-
-
-def _validate_legacy_four_file_current_locked(
-    store: "DataBridgeStore",
-    *,
-    state: Mapping[str, object],
-    schema_path: Path,
-    expected_daily_date: str | None,
-) -> CurrentDataset:
-    """验证升级前四文件 current，供兼容 release 和 producer 使用。"""
-    marker = _read_publication_manifest(store.current_dir)
-    if marker != _publication_identity_from_state(state):
-        raise DataBridgeRefreshError(
-            "DataBridge legacy four-file current identity does not match state"
-        )
-    dataset = validate_legacy_four_file_dataset(
-        read_legacy_four_file_directory(
-            store.current_dir,
-            allowed_sidecar_filenames=frozenset(
-                {CURRENT_PUBLICATION_MANIFEST}
-            ),
-        ),
-        schema_path=schema_path,
-        expected_daily_date=expected_daily_date,
-    )
-    _validate_identity_against_dataset(
-        marker,
-        dataset=dataset,
-        expected_filenames=LEGACY_FOUR_FILENAMES,
-    )
-    return CurrentDataset(
-        state=state,
-        dataset=dataset,
-        publication_manifest=marker,
-    )
 
 
 def _validate_current_dataset_locked(
@@ -861,30 +789,8 @@ def _assert_factor_catalog_continuity(
     previous: CurrentDataset | None,
     candidate: ValidatedDataBridgeDataset,
 ) -> None:
-    """已发布版本成员封版；四文件 current 仅作为首次五文件基线。"""
+    """已发布版本成员封版。"""
     if previous is None:
-        return
-    if "factor_catalog.csv" not in previous.dataset.frames:
-        candidate_catalog = candidate.frames.get("factor_catalog.csv")
-        if candidate_catalog is None:
-            raise DataBridgeRefreshError(
-                "DataBridge candidate factor catalog is missing"
-            )
-        if set(candidate_catalog["factor_version"]) != {"V1.0"}:
-            raise DataBridgeRefreshError(
-                "first five-file generation must freeze only V1.0 factors"
-            )
-        changed_files = [
-            filename
-            for filename in LEGACY_FOUR_FILENAMES[:3]
-            if list(previous.dataset.frames[filename].columns)
-            != list(candidate.frames[filename].columns)
-        ]
-        if changed_files:
-            raise DataBridgeRefreshError(
-                "first five-file generation must preserve legacy factor columns: "
-                f"{changed_files}"
-            )
         return
     previous_catalog = previous.dataset.frames["factor_catalog.csv"]
     candidate_catalog = candidate.frames.get("factor_catalog.csv")
@@ -1352,8 +1258,11 @@ class DataBridgeStore:
             if self.state_path.is_file():
                 try:
                     state = json.loads(self.state_path.read_text(encoding="utf-8"))
-                    state_identity = _publication_identity_from_state(
-                        state
+                    # 无 current 的失败审计 state 不带发布版本，不构成发布身份。
+                    state_identity = (
+                        None
+                        if _is_no_current_failure_audit_state(state)
+                        else _publication_identity_from_state(state)
                     )
                 except (OSError, json.JSONDecodeError):
                     state_identity = None
@@ -1374,21 +1283,10 @@ class DataBridgeStore:
                 and not os.path.lexists(marker_path)
             ):
                 try:
-                    entries = {
-                        path.name for path in self.current_dir.iterdir()
-                    }
-                    if entries == set(LEGACY_FOUR_FILENAMES):
-                        legacy_dataset = validate_legacy_four_file_dataset(
-                            read_legacy_four_file_directory(
-                                self.current_dir
-                            ),
-                            schema_path=Path(schema_path),
-                        )
-                    else:
-                        legacy_dataset = validate_dataset(
-                            read_dataset_directory(self.current_dir),
-                            schema_path=Path(schema_path),
-                        )
+                    legacy_dataset = validate_dataset(
+                        read_dataset_directory(self.current_dir),
+                        schema_path=Path(schema_path),
+                    )
                 except (OSError, ValueError):
                     legacy_dataset = None
                 if legacy_dataset is not None:

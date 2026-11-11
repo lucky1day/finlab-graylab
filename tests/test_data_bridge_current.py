@@ -191,6 +191,85 @@ def test_publication_failure_preserves_complete_committed_generation(
     assert check_current_dataset(config, strict_read_only=True).state == published
 
 
+def test_legacy_v1_four_file_current_fails_closed(tmp_path):
+    """legacy v1 四文件 current 不再被兼容读取，必须 fail-closed。"""
+    from shared.data_bridge.authority import (
+        resolve_stable_databridge_current_authority,
+    )
+    from shared.data_bridge.refresh import (
+        CURRENT_PUBLICATION_MANIFEST,
+        DataBridgeCurrentInvalidError,
+        DataBridgeRefreshConfig,
+        DataBridgeStore,
+        _build_state,
+        _canonical_publication_manifest_bytes,
+        check_current_dataset,
+    )
+    from shared.data_bridge.validation import (
+        validate_dataset,
+        validate_legacy_four_file_dataset,
+    )
+
+    config = DataBridgeRefreshConfig(
+        data_root=tmp_path / 'data',
+        runtime_root=tmp_path / 'runtime',
+        schema_path=SCHEMA_PATH,
+    )
+    store = DataBridgeStore(data_root=config.data_root, runtime_root=config.runtime_root)
+    frames = _bridge_frames(include_new_week=False)
+    legacy_digest = validate_legacy_four_file_dataset(
+        {name: frame for name, frame in frames.items() if name != 'factor_catalog.csv'},
+        schema_path=SCHEMA_PATH,
+    ).business_digest
+    candidate = tmp_path / 'candidate'
+    candidate.mkdir()
+    for name, frame in frames.items():
+        frame.to_csv(candidate / name, index=False)
+    state = _build_state(
+        validate_dataset(frames, schema_path=SCHEMA_PATH), '2026-07-20', 2,
+        refresh_started_at=datetime(2026, 7, 20, 6, 30, tzinfo=ZoneInfo('Asia/Shanghai')),
+        duration_sec=1,
+    )
+    published = store.publish(candidate, state)
+    assert check_current_dataset(config, strict_read_only=True).state == published
+
+    # 把已发布 v3 current 改写为升级前的 v1 四文件形态。
+    current_mode = stat.S_IMODE(store.current_dir.stat().st_mode)
+    store.current_dir.chmod(0o700)
+    (store.current_dir / 'factor_catalog.csv').unlink()
+    legacy_files = {
+        name: profile
+        for name, profile in published['files'].items()
+        if name != 'factor_catalog.csv'
+    }
+    legacy_marker = {
+        'manifest_version': 'data-bridge-current-v1',
+        'generation_id': published['generation_id'],
+        'refresh_date': published['refresh_date'],
+        'schema_version': published['schema_version'],
+        'business_digest': legacy_digest,
+        'files': legacy_files,
+        'publication_capability': None,
+    }
+    marker_path = store.current_dir / CURRENT_PUBLICATION_MANIFEST
+    marker_path.unlink()
+    marker_path.write_bytes(_canonical_publication_manifest_bytes(legacy_marker))
+    marker_path.chmod(0o444)
+    store.current_dir.chmod(current_mode)
+    legacy_state = {
+        key: value
+        for key, value in published.items()
+        if key not in {'publication_manifest_version', 'source_mode', 'source_provenance'}
+    }
+    legacy_state['files'] = legacy_files
+    legacy_state['business_digest'] = legacy_digest
+    store.state_path.write_text(json.dumps(legacy_state), encoding='utf-8')
+
+    with pytest.raises(DataBridgeCurrentInvalidError):
+        resolve_stable_databridge_current_authority(
+            config, feature_dates=('2026-07-20',), connection=object(),
+        )
+
 def _frame(filename: str, keys: list[str]) -> pd.DataFrame:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     columns = list(schema["files"][filename]["columns"])
