@@ -13,7 +13,7 @@ from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, ContextManager, Sequence
+from typing import Any, Callable, ContextManager, Mapping, Sequence
 
 from scheduler.blackbox_v2_runner import (
     DEFAULT_RUNTIME_PROFILE,

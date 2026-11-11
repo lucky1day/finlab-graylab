@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import select
@@ -10,7 +11,7 @@ from datetime import date
 from dataclasses import fields, is_dataclass
 from getpass import getuser
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from harness.operation import (
     DEFAULT_BACKTEST_START_DATE,
@@ -550,6 +551,7 @@ def _run_signal_gap_fill_command(args: argparse.Namespace) -> int:
         )
         return 2
     except Exception:
+        logging.getLogger(__name__).exception("signal_gap_plan_internal_error")
         _print_signal_gap_fill_result(
             {
                 "schema_version": report_schema,

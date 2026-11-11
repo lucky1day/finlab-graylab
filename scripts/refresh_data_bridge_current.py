@@ -7,6 +7,7 @@ import argparse
 from contextlib import contextmanager
 import fcntl
 import json
+import logging
 import os
 import sys
 import time
@@ -54,6 +55,7 @@ from shared.one_shot_control_plane import (  # noqa: E402
     DATABRIDGE_ONE_SHOT_PRODUCERS,
 )
 
+_logger = logging.getLogger("scripts.refresh_data_bridge_current")
 Mode = Literal["dry-run", "publish", "check-only"]
 DATABRIDGE_PRODUCER_ENV = "BFL_DATABRIDGE_PRODUCER"
 LAUNCHD_PUBLISHER_ENV = DATABRIDGE_PRODUCER_ENV
@@ -300,6 +302,7 @@ def _try_write_blocked_gate(
             check_name=check_name,
         )
     except Exception:
+        _logger.exception("data_bridge_gate_write_failed check_name=%s", check_name)
         return False
     return True
 
@@ -320,6 +323,7 @@ def _try_write_checking_gate(
             check_name=check_name,
         )
     except Exception:
+        _logger.exception("data_bridge_gate_write_failed check_name=%s", check_name)
         return False
     return True
 

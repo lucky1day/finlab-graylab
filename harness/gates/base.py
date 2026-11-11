@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Callable
 
 from harness.context import GateContext
 from harness.result import Evidence, GateResult, GateStatus
+
+logger = logging.getLogger(__name__)
 
 
 class Gate(ABC):
@@ -32,6 +35,7 @@ def guarded_result(gate_name: str, runner: Callable[[str], GateResult]) -> GateR
     try:
         return runner(started_at)
     except Exception as exc:
+        logger.exception("gate_exception gate=%s", gate_name)
         finished_at = utc_now()
         return GateResult(
             gate_name=gate_name,

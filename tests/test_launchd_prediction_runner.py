@@ -902,6 +902,31 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                     "dependency_unavailable",
                 )
 
+    def test_unexpected_failure_logs_traceback_but_summary_stays_stable(self) -> None:
+        from scheduler import launchd_prediction_runner
+
+        secret_text = "low-level detail must not reach the summary"
+        with (
+            patch.object(
+                launchd_prediction_runner,
+                "run",
+                side_effect=RuntimeError(secret_text),
+            ),
+            patch("builtins.print") as output,
+            self.assertLogs("scheduler.one_shot_prediction_runner", "ERROR") as logs,
+        ):
+            exit_code = launchd_prediction_runner.main(
+                ["--cadence", "daily", "--predict-date", "2026-08-28"]
+            )
+
+        stdout_text = output.call_args.args[0]
+        self.assertEqual(exit_code, 2)
+        self.assertNotIn(secret_text, stdout_text)
+        self.assertEqual(json.loads(stdout_text)["outcome"], "configuration_error")
+        exc_info = logs.records[0].exc_info
+        self.assertIsNotNone(exc_info)
+        self.assertEqual(str(exc_info[1]), secret_text)
+
 
     def test_one_shot_requires_matching_target_before_runtime_access(
         self,

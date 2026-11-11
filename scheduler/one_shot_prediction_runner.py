@@ -11,6 +11,7 @@ import argparse
 import errno
 import fcntl
 import json
+import logging
 import math
 import os
 import sys
@@ -52,6 +53,7 @@ from shared.task_specs import PERIOD_AVERAGE_TASK_TYPES, PREDICTION_CADENCES
 from shared.data_bridge.refresh import DataBridgeRefreshConfig
 
 
+logger = logging.getLogger(__name__)
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
 DATA_BRIDGE_READY_MAX_WAIT_SEC = 30 * 60
 DATA_BRIDGE_READY_POLL_INTERVAL_SEC = 30
@@ -458,6 +460,7 @@ def _wait_for_v2_daily_ready(
                 return SCHEDULED_PREFLIGHT_FAILURE_DATA_BRIDGE_READY_TIMEOUT
             sleep(min(poll_interval_sec, remaining))
         except Exception:  # noqa: BLE001 - never reveal low-level gate details
+            logger.exception("v2_daily_gate_unavailable")
             return "v2_gate_unavailable"
 
 
@@ -523,6 +526,10 @@ def _execute_candidate(
             process_start_guard.poison(exc)
         raise
     except Exception:  # noqa: BLE001 - isolate one candidate
+        logger.exception(
+            "candidate_execution_exception scheme_id=%s",
+            getattr(cfg, "scheme_id", None),
+        )
         summary.failed.append(
             _failure_item(
                 cfg,
@@ -873,6 +880,7 @@ def _execute_data_bridge_wave(
             else str(calendar.previous_trading_day(predict_date))[:10]
         )
     except Exception:  # noqa: BLE001 - preserve calendar isolation
+        logger.exception("prediction_calendar_unavailable")
         for cfg in candidates:
             _execute_candidate(
                 summary, cfg, predict_date=predict_date, algo_env=algo_env,
@@ -1232,7 +1240,8 @@ def run_prediction_cli(
             args.cadence, predict_date=args.predict_date, algo_env=args.algo_env,
             scheme_ids=args.scheme_ids, lock_timeout_sec=args.lock_timeout_sec,
         )
-    except Exception as exc:  # noqa: BLE001 - 不向宿主日志序列化底层异常
+    except Exception as exc:  # noqa: BLE001 - 结构化回执不含底层异常文本
+        logger.exception("one_shot_prediction_run_failed cadence=%s", args.cadence)
         summary = (
             exc.summary
             if isinstance(exc, OneShotPredictionRunError) and exc.summary is not None
