@@ -125,6 +125,10 @@ Dashboard 后端拆分（sql/rules/payload/service）等工作区中进行中的
 | 2026-11-11 | 3E | `e90db00b` | 标明 cutoff 承接是现行 v3 producer 语义（只加注释，未改名） |
 | 2026-11-11 | 顺带修复 | `456f0215` | `harness/blackbox_v2/gates.py` 引用了已删除的异常类，配置变更时报 NameError；改为抛 ValueError 并给出原意文案，gate 仍按失败处理 |
 
+| 2026-11-11 | 4 文档 | `af789d97` | 删除已被取代的 `DETERMINISM_HOTFIX_ACTIVATION_DRAFT`；文档中心增加本计划入口 |
+| 2026-11-11 | 2 不可达代码 | `5f325824` | 删除 lifecycle 中未使用的局部变量及 harness 中两处未使用 import |
+| 2026-11-11 | 3D | `fc32b5d9` | `shared/data_bridge/refresh.py` 从 2412 行拆为 1509 行，另加 `errors.py`、`publication_manifest.py`、`filesystem.py`；70 个顶层块逐字节一致；`refresh` 保留全部原有名字和测试补丁点（`DataBridgeStore`、`_ensure_before_deadline`、`_logger` 不搬）。唯一可见差异：异常类的 `__module__` 变为 `shared.data_bridge.errors`，仓库内无代码依赖它 |
+
 本批验证：非 MySQL pytest 1170 passed（基线 1168，新增 2 项）；Node 56 pass；release archive 两次构建 sha256 一致；各定时入口 `--help` 冒烟通过；pyflakes 全框架无未定义名。
 
 本批评估后不做的项：
@@ -136,4 +140,4 @@ Dashboard 后端拆分（sql/rules/payload/service）等工作区中进行中的
 - 3E 不改名：authority 层参数确实只在 legacy manifest 下生效，改名收益有限。
 - `process_started`/`process_fence` 仅测试传入，但它们是进程生命周期测试的接缝，暂不删除。
 
-下一批候选（同样满足第 1 节约束）：3B `_fs`/`_digest` 公共工具；3D `data_bridge/refresh.py` 拆分（定时任务链路，需逐字节搬迁核对）；3F 测试共享 schema 夹具；批次 4 文档整理。
+下一批候选（同样满足第 1 节约束）：3B `_fs`/`_digest` 公共工具（各处实现语义有细微差异，需逐处比对）；3F 测试共享 schema 夹具；`migrations/runner.py` 与 `scripts/apply_migrations.py` 中的未使用 import 需确认没有外部通过模块属性引用后再清理。`architecture/parity/five_y_factor_rule_online_v1.md` 等确认结案后再处理。
