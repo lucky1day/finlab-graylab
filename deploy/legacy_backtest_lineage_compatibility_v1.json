@@ -12,10 +12,10 @@
       "config_hash": "54ae53fe85743c4ec40c98be545e6d48f27db7ce24797da58224b4dff2d64124",
       "manifest_hash": "6d1ff7a43c148b66b79d7a01d88cf910534ee6e55b828aec26d59c6b7b8d7fd9",
       "expected_fact_count": 333,
-      "backtest_summary_sha256": "4979dc407cbdd348aa22054e8072f8bba20d0229d337f7efbe0ac1bda4b42655",
-      "backtest_facts_sha256": "8ddbcba77e4380a3f0555a2ae16cd46ecb75643cf65929e0c408574d237457cb",
-      "product_facts_sha256": "cff9a01db6067fe8bda7c0e70519b7f867d8bfbd4bd9411c0a85fede51886887",
-      "reason": "The pre-lineage-field Blackbox V2 run is uniquely bound by its immutable benchmark, exact version hashes, input snapshot, canonical summary, and matching raw/product fact digests on both deployment databases."
+      "backtest_summary_sha256": "8de7f2e6cc9d696d905dbc586b807e8199e21a1e7e8763459a7093482cff61be",
+      "backtest_facts_sha256": "aaaa10cb1c42e6a842ff146ab79f42b7568d3f46296c5889b07f88bef91ce923",
+      "product_facts_sha256": "74c50609513ba563e99e6888e951f2e39ec669d1606b7f9a475750942f6ca3c2",
+      "reason": "The pre-lineage-field Blackbox V2 run is uniquely bound by its immutable benchmark, exact version hashes, input snapshot, canonical summary, and matching raw/product fact digests on both deployment databases. Re-baselined 2026-11-11: on 2026-09-19 (UTC) the backtest labels for target dates 2026-05-11 and 2026-05-12 and the run summary were corrected on both hosts to match the 3Y actuals revised on 2026-09-16 (both now +1, consistent with t_scheme_actuals); the 2026-09-17 digests predated that correction."
     }
   ]
 }
