@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from shared.legacy_prediction_migration import LegacyPredictionMigration
 from shared.legacy_backtest_lineage import LegacyBacktestLineage
+from shared.platform_dates import LIVE_START_DATE
 from shared.prediction_context import (
     MONTHLY_TARGET_RULE,
     WEEKLY_AVERAGE_TARGET_RULE,
@@ -21,8 +22,8 @@ from shared.task_specs import TASK_COMBINATIONS
 
 HISTORY_START_DATE = "2025-01-01"
 # 运行证据的取数边界独立于 Dashboard 展示分区。
-LIVE_RUN_EVIDENCE_START_DATE = date(2026, 6, 1)
-LIVE_FEATURE_START_DATE = date(2026, 6, 1)
+LIVE_RUN_EVIDENCE_START_DATE = LIVE_START_DATE
+LIVE_FEATURE_START_DATE = LIVE_START_DATE
 MAX_RESPONSE_BYTES = 1_500_000
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]

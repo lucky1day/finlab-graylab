@@ -8,6 +8,7 @@ from datetime import date, datetime
 from typing import Callable, Sequence
 from zoneinfo import ZoneInfo
 
+from shared.platform_dates import BACKTEST_START_ISO
 from scheduler.actuals_errors import ActualStageError
 from scheduler.daily_actuals_updater import update_actuals_detailed
 from scheduler.monthly_actuals_updater import update_monthly_actuals_detailed
@@ -18,7 +19,7 @@ from shared.calendar_service import CalendarService, get_calendar
 
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
-PERIOD_AVERAGE_ACTUALS_START_DATE = "2025-01-01"
+PERIOD_AVERAGE_ACTUALS_START_DATE = BACKTEST_START_ISO
 logger = logging.getLogger(__name__)
 
 

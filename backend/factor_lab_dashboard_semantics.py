@@ -9,6 +9,7 @@ from datetime import date, datetime
 from typing import Any, Iterable, Iterator, Mapping
 
 from shared.models import DIRECTION_VALUES
+from shared.platform_dates import LIVE_START_DATE
 from shared.prediction_context import (
     MONTHLY_TARGET_RULE,
     WEEKLY_AVERAGE_TARGET_RULE,
@@ -24,7 +25,7 @@ from shared.task_specs import (
 
 DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v7"
 FACTOR_LAB_HISTORY_START_DATE = "2025-01-01"
-FACTOR_LAB_LIVE_FEATURE_START_DATE = date(2026, 6, 1)
+FACTOR_LAB_LIVE_FEATURE_START_DATE = LIVE_START_DATE
 DETAIL_ROW_FIELDS = (
     "source",
     "predict_date",

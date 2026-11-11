@@ -25,6 +25,7 @@ from shared.data_bridge.refresh import (
     DataBridgeCurrentMissingError,
     DataBridgeRefreshConfig,
 )
+from shared.platform_dates import LIVE_START_ISO
 from shared.prediction_context import (
     LIVE_PREDICTION_PHASES,
     build_daily_live_context,
@@ -49,7 +50,7 @@ from shared.task_specs import (
 
 PLAN_SCHEMA_VERSION = "single-date-active-live-gap-plan-v1"
 RANGE_PLAN_SCHEMA_VERSION = "target-range-active-live-gap-plan-v1"
-PLATFORM_LIVE_TARGET_START_DATE = "2026-06-01"
+PLATFORM_LIVE_TARGET_START_DATE = LIVE_START_ISO
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VALID_ACTIONS = (
     "SKIP_PRESENT",

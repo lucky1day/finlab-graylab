@@ -4,9 +4,10 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass
 from datetime import date
+from shared.platform_dates import BACKTEST_START_ISO
 
 
-DEFAULT_BACKTEST_START_DATE = "2025-01-01"
+DEFAULT_BACKTEST_START_DATE = BACKTEST_START_ISO
 SIDE_EFFECT_ACTIONS = frozenset(
     {
         "backtest_persist",

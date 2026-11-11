@@ -7,6 +7,7 @@ import unicodedata
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from shared.platform_dates import DEFAULT_FACTOR_INPUT_MODE
 from shared.task_specs import (
     ALLOWED_DATA_FREQUENCIES,
     ALLOWED_FREQUENCIES,
@@ -293,7 +294,7 @@ def _validate_blackbox_config(raw: dict) -> list[str]:
     errors: list[str] = []
     if raw.get("input_source") != "data_bridge_current":
         errors.append("Blackbox V2 input_source must be data_bridge_current")
-    factor_input_mode = raw.get("factor_input_mode", "legacy_v1")
+    factor_input_mode = raw.get("factor_input_mode", DEFAULT_FACTOR_INPUT_MODE)
     if factor_input_mode not in {"legacy_v1", "algorithm_managed"}:
         errors.append(
             "Blackbox V2 factor_input_mode must be legacy_v1 or "

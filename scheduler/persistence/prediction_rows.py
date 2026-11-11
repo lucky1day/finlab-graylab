@@ -8,6 +8,7 @@ from datetime import date, datetime, timezone
 from typing import Iterable, Mapping
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
+from shared.platform_dates import BACKTEST_START_ISO
 from scheduler.discovery import SchemeConfig
 from scheduler.persistence.connections import dialect_name as _dialect_name
 from shared.blackbox_v2.contracts import REQUEST_FIELDS, request_from_mapping
@@ -15,7 +16,7 @@ from shared.blackbox_v2.contracts import REQUEST_FIELDS, request_from_mapping
 
 _PredictionBusinessKey = tuple[str, str, int, str]
 
-_BLACKBOX_BACKTEST_START_DATE = "2025-01-01"
+_BLACKBOX_BACKTEST_START_DATE = BACKTEST_START_ISO
 
 
 def _mysql_utc_datetime(value: datetime | None) -> datetime | None:
