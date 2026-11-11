@@ -534,3 +534,17 @@ def test_direct_operation_requires_canonical_dates() -> None:
             scheme_version="version-1",
             issued_by="operator",
         )
+
+
+def test_pinned_config_reload_reports_canonical_version_change(monkeypatch) -> None:
+    from harness.blackbox_v2 import gates as blackbox_gates
+
+    pinned = SimpleNamespace(path=Path("/unused"), scheme_version="v1")
+    monkeypatch.setattr(
+        blackbox_gates,
+        "load_scheme_config",
+        lambda _path: SimpleNamespace(scheme_version="v2"),
+    )
+
+    with pytest.raises(ValueError, match="canonical version changed during commit"):
+        blackbox_gates._reload_pinned_blackbox_config(pinned, phase="commit")

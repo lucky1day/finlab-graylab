@@ -272,7 +272,7 @@ def _open_runtime_input(bundle: BlackboxInputBundle):
 def _reload_pinned_blackbox_config(cfg: SchemeConfig, *, phase: str) -> SchemeConfig:
     current = load_scheme_config(cfg.path / "config.yaml")
     if current.scheme_version != cfg.scheme_version:
-        raise _CanonicalSchemeVersionChanged(
+        raise ValueError(
             "Blackbox canonical version changed during "
             f"{phase}: expected={cfg.scheme_version}, current={current.scheme_version}"
         )
