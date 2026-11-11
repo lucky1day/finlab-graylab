@@ -466,3 +466,63 @@ def test_auth_audit_reuses_the_response_request_id(monkeypatch, candidate):
         assert request_id == candidate
     else:
         assert re.fullmatch(r"[0-9a-f]{32}", request_id)
+
+
+def test_auth_body_limit_rejects_declared_8193_bytes_before_receive_or_service(
+    monkeypatch,
+):
+    service = Mock(side_effect=AssertionError("oversize body reached service"))
+    monkeypatch.setattr(routes, "_service", service)
+
+    status, _headers, response_body = _chunked_asgi_request(
+        "/api/auth/login",
+        headers=_safe_json_headers((b"content-length", b"8193")),
+        messages=[{"type": "http.disconnect"}],
+    )
+
+    assert status == 413
+    assert json.loads(response_body) == {"error_code": "request_body_too_large"}
+    service.assert_not_called()
+
+
+def test_auth_body_limit_times_out_slow_body_without_service():
+    downstream_called = False
+    sent: list[dict] = []
+
+    async def downstream(_scope, _receive, _send):
+        nonlocal downstream_called
+        downstream_called = True
+
+    async def receive():
+        await asyncio.sleep(1)
+        return {"type": "http.request", "body": b"{}", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    async def invoke():
+        middleware = AuthJSONBodyLimitMiddleware(
+            downstream,
+            body_read_timeout_seconds=0.01,
+        )
+        await middleware(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/auth/login",
+                "headers": [],
+            },
+            receive,
+            send,
+        )
+
+    asyncio.run(invoke())
+    start = next(item for item in sent if item["type"] == "http.response.start")
+    body = b"".join(
+        item.get("body", b"")
+        for item in sent
+        if item["type"] == "http.response.body"
+    )
+    assert start["status"] == 408
+    assert json.loads(body) == {"error_code": "request_body_timeout"}
+    assert downstream_called is False
