@@ -95,8 +95,8 @@ Dashboard 后端拆分（sql/rules/payload/service）等工作区中进行中的
 
 | 编号 | 内容 | 前置条件 |
 | --- | --- | --- |
-| D1 | 迁移 026：删除 017 账本 5 张表和其他退役表 | 两端行数与最后写入核查、备份、灰度重建工时评估 |
-| D2 | 迁移基线压缩为 `000_baseline_025`，删除逐版本恢复代码（约 8k 行） | 两端 `t_schema_migrations` 全部为 APPLIED；声明不支持回滚到 025 之前的 release |
+| D1 | ~~迁移 026：删除 017 账本表和其他退役表~~ 代码已完成（`8d64fdde`），**生产执行待办**，见第 8 节 | 第 8 节 |
+| D2 | ~~迁移基线压缩~~ 已完成（`8d64fdde`，2026-11-11 用户授权） | — |
 | D3 | liwei_0616_5y01 历史替换落库，删除运行时投影和兼容层 | 历史数据变更授权、探测、恢复证据 |
 | D4 | 删除 DataBridge v1/v2/四文件 current 分支和 v2 缓存兼容 | 核实两端 current/state 都是 v3 五文件 |
 | D5 | 下线 42 个 paused/draft 方案，之后删除 `deliveries:` 多期限写法 | 逐个确认 owner 和 Registry 状态 |
@@ -149,3 +149,45 @@ Dashboard 后端拆分（sql/rules/payload/service）等工作区中进行中的
 - **3F 共享 schema 夹具：** `t_scheme_registry` 的 6 份测试 DDL 是 6 种不同列集合（各测试只建所需列），其他表也类似。统一需要改写各测试的造数，暂缓。
 - **migrations/runner 与 intake 的"未使用"导入：** `scripts/apply_migrations.py` 通过 `globals()[handler_name]` 动态分派 16 个恢复函数，pyflakes 报的是误报；intake 按 B09 决定保留导出接口；runner 是迁移门面，生产机运维工具可能直接导入。不清理。
 - **`scheduler/persistence/predictions.py` 的 gray gap 拆分：** 测试在该模块上替换 10 个 gray gap 辅助函数，辅助函数又依赖模块内私有读写函数，拆出会形成循环导入并使补丁静默失效。这是写库路径，不做纯搬迁。
+
+## 8. D1/D2 基线压缩与 026 生产执行手册
+
+**已完成（代码，`8d64fdde`）。** 001..025 压缩为 `migrations/baseline/schema_025.sql`，删除逐版本恢复代码（净减约 1 万行）。新增可重跑迁移 026：
+
+- 删除 017 账本 5 张表、`t_harness_runs`、`t_harness_gate_results`、`t_backtest_reproduction_checks`、`v_latest_backtest_run`；
+- 删除 `t_scheme_runs` 上 9 个未用列（`schedule_item_id`、`attempt_no`、`trigger_origin`、`queued_at`、`failure_code`、`execution_token`、`process_id`、`process_group_id`、`harness_run_id`）及其外键、CHECK 和索引。
+
+`t_input_artifacts` 与 `t_scheme_run_log` 仍有代码读写，不在本次范围（前者随 D3 处理）。
+
+**本机验证（一次性 MySQL 8.4）：**
+
+- 基线与旧文件建出的 025 在 information_schema 层（表、列、索引、外键、CHECK、视图）和参考数据上完全一致；
+- 旧 runner 建到 025、再用新 runner 升级，与新库执行"基线 + 026"相比，schema 和 26 条历史逐行一致；
+- 026 连续执行两次安全；中途中断后可经 `--inspect-applying` / `--recover-applying` 完成；
+- 非 MySQL 测试 1089 passed，MySQL 集成测试 30 passed（新增 6 项迁移合同）。
+
+**Mac3 现场只读读回（2026-11-11）：**
+
+- 001..025 全部 APPLIED（001..016 为基线补录）；
+- `t_input_generations` 6 行（最后 2026-08-08），其余 4 张账本表为 0 行；
+- `t_harness_runs` 329 行、`t_harness_gate_results` 1802 行（最后 2026-08-23）；
+- `t_backtest_reproduction_checks` 9 行。
+
+ECS 读回尚未取得。
+
+**生产执行步骤（每台机器各一次，先 ECS 后 Mac3，需用户授权）：**
+
+1. **构建与安装：** 用含 `8d64fdde` 的提交构建 release，按部署手册安装为候选，暂不切 current。
+2. **执行前只读核对：** 读回 `t_schema_migrations`（1..25 全部 APPLIED、无 APPLYING），以及上述表的行数与 `t_scheme_runs` 9 列的非空计数。
+3. **选窗口：** 两端触发时间为 06:30、07:03（工作日）、08:30、18:00、19:00、23:45、周六 11:30。在工作日 14:00–17:00 执行，并确认没有在途 run。
+4. **备份：** `mysqldump --single-transaction --no-tablespaces` 导出上述 8 张表、`t_scheme_runs` 和 `t_schema_migrations`，存到 runtime 备份目录，记录 sha256。
+5. **执行迁移：** 在候选 release 内执行 `scripts/apply_migrations.py --apply --expected-database-name bond_db --expected-server-uuid <只读查得的 UUID>`。
+6. **执行后核对：**
+   - 历史 1..26 全部 APPLIED；
+   - 退役对象不存在；
+   - Dashboard 返回 200，且与执行前同口径数据一致；
+   - 随后一次自然调度（预测、Actuals、DataBridge）正常完成。
+7. **切换与更新状态：** 切换 current，并更新 `CURRENT_STATUS`（schema 改为 026，记录备份位置）。
+
+**兼容性：** 上一个 release 的运行时代码不读写被删除的对象，可以作为回退目标。但旧 release 的 `apply_migrations` 不认识 026 历史，回退后不要用它执行迁移。
+
