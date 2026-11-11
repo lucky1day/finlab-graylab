@@ -34,6 +34,9 @@ WIND_TABLES = (
     "api_wind_derivative_weekly api_wind_derivative_monthly"
 ).split()
 
+SOURCE_TABLES = ["api_wind_daily", "api_wind_derivative_daily"]  # W4 Native 方案读取的大体量源表（约 800MB）
+_SOURCE_CONFIG = Path("/Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json")
+
 _CNF_SNIPPET = r"""
 import os, sys
 root, runtime, out = sys.argv[1:4]
@@ -80,6 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--predict-date", required=True, help="要重放的日频预测日，生产当日须已有这些方案的预测")
     parser.add_argument("--scheme-id", action="append", required=True, dest="scheme_ids")
     parser.add_argument("--port", type=int, default=3396)
+    parser.add_argument("--with-source-tables", action="store_true", help="同时导出大体量 Wind 源表并配置 W4 源库（重放 W4 Native 方案时需要）")
     parser.add_argument("--keep", action="store_true", help="结束后保留临时目录与 MySQL 以便排查")
     args = parser.parse_args(argv)
     release = args.release.resolve()
@@ -110,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         prod_db = subprocess.run([SERVICE_PY, "-I", "-B", "-c", _CNF_SNIPPET, str(release), str(RUNTIME), str(cnf)], check=True, capture_output=True, text=True).stdout.strip()
         dump = work / "prod.sql"
         with dump.open("wb") as handle:
-            subprocess.run([str(MYSQLDUMP), f"--defaults-extra-file={cnf}", "--single-transaction", "--no-tablespaces", "--skip-triggers", "--set-gtid-purged=OFF", prod_db, *PLATFORM_TABLES, *WIND_TABLES], check=True, stdout=handle)
+            subprocess.run([str(MYSQLDUMP), f"--defaults-extra-file={cnf}", "--single-transaction", "--no-tablespaces", "--skip-triggers", "--set-gtid-purged=OFF", prod_db, *PLATFORM_TABLES, *WIND_TABLES, *(SOURCE_TABLES if args.with_source_tables else [])], check=True, stdout=handle)
         cnf.unlink()
         with dump.open("rb") as handle:
             subprocess.run([str(MYSQL_BIN / "mysql"), "--host=127.0.0.1", f"--port={port}", "--user=root", "bond_db"], check=True, stdin=handle)
@@ -138,6 +142,17 @@ def main(argv: list[str] | None = None) -> int:
             "BOND_ALGO_CONDA_ENV": "forecast_env", "PYTHONNOUSERSITE": "1", "CONDA_EXE": CONDA,
             "PATH": "/Users/macstudio0/miniconda3/condabin:/Users/macstudio0/miniconda3/bin:/usr/bin:/bin:/usr/sbin:/sbin",
         })
+        if args.with_source_tables:
+            import json
+            source_dir = work / "source-cfg"
+            source_dir.mkdir(mode=0o700)
+            template = json.loads(_SOURCE_CONFIG.read_text(encoding="utf-8"))
+            template.update({"user": "bfl_replay", "password": password, "host": "127.0.0.1", "port": port, "database": "bond_db"})
+            target = source_dir / "source-runtime-db.json"
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                json.dump(template, handle)
+            env.update({"BFL_SOURCE_DB_CONFIG_ROOT": str(source_dir), "BFL_SOURCE_DB_CONFIG_PATH": str(target)})
         refresh_date = subprocess.run(
             [SERVICE_PY, "-I", "-B", "-c", "import json,sys;print(json.load(open(sys.argv[1]))['refresh_date'])", str(sandbox / "data-bridge/refresh/state.json")],
             check=True, capture_output=True, text=True).stdout.strip()
