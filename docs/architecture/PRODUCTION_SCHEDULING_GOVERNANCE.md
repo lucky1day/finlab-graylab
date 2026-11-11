@@ -20,7 +20,7 @@ plist，ECS 独立灰度使用 systemd + installed unit/timer。Python runner �
 3. 同次日志、run、prediction、exact、三个日期及本机输入来源；
 4. Dashboard 与已发布事实一致；它不携带 exact，不能代替数据库版本读回。
 
-只有上述证据一致才可标记自然运行成功；仅有配置文件、环境标记、灰度补缺或人工模拟均不足以证明。
+只有上述证据一致才可标记自然运行成功；仅有配置文件、环境标记、补跑或人工模拟均不足以证明。
 DataBridge 的 `BFL_DATABRIDGE_PRODUCER` 在 Mac3 为 `launchd-one-shot`、ECS 为 `systemd-one-shot`；
 它只是防误 publish 的准入标记，不是宿主身份认证。同 UID 调用者属于受信任边界，仍须上述现场证据。
 

@@ -69,7 +69,7 @@ summary 摘要以及 raw/product 逐事实摘要共同唯一证明的历史 run�
 scheme，并复用 Dashboard Gate 的私有 session 文件或文件描述符入口；数据库必须通过显式
 `engine_factory` 绑定 HTTP 服务所在环境，不回退默认库。
 补缺复用既有 planner、executor 和 repository，支持范围只见
-[平台 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#6-灰度区间批量物化)，不属于入库 Gate。
+[平台 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#6-区间补跑)，不属于入库 Gate。
 
 ## 3. 业务事务与命令作用域
 

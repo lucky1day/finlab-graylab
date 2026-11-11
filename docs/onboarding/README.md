@@ -14,11 +14,11 @@ Blackbox 上游算法人员按[交付 SOP](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_
 
 | 场景 | 操作与验收去向 |
 |---|---|
-| 新算法、新 ID、新目标期限或新任务 | [平台 SOP 第 3 节](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#3-新方案逐步操作)：Intake → 定稿 canonical 与部署清单 → 候选 release → 持久化回测 → 激活 → gray_live 补缺 → 接管验收 → 自然运行观察 |
+| 新算法、新 ID、新目标期限或新任务 | [平台 SOP 第 3 节](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#3-新方案逐步操作)：Intake → 定稿 canonical 与部署清单 → 候选 release → 一次回测到最新日 → 激活 → 衔接补齐 → 接管验收 → 自然运行观察 |
 | 同 ID Blackbox 修订 | [平台 SOP 第 4 节](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#4-同-id-修订)，不重复 Intake；已有事实不得重算或覆盖 |
 | W4 九套固定 Native 版本运行、故障或漏跑 | [W4 运行维护](../sop/NATIVE_V1_MAINTENANCE_SOP.md)，接口见[存量契约](../native_v1/SCHEME_CONTRACT.md)；不做 Native 改版或重新准入 |
 | W4 算法升级、替代实现或能力扩展 | 另行确认独立 Blackbox V2 方案，不修改既有 W4 版本 |
-| 历史与灰度补齐 | 按[预测语义](../architecture/PREDICTION_SEMANTICS.md#52-历史批次与灰度区间批次)确定分界及 live-safe 条件，再按[平台 SOP 3.6 节](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#36-gray_live-补缺自-2026-06-01)选择已支持的区间或单日入口；在对应授权范围内执行 |
+| 漏跑补跑与入库衔接 | 按[平台 SOP 3.6 节](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#36-衔接补齐回测末尾--首次自然运行)选择已支持的区间或单日补跑入口，结果按[入库完整性](../architecture/PREDICTION_SEMANTICS.md#52-入库完整性)核对；在对应授权范围内执行 |
 | 判断方案是否已上线 | 只看本机数据库 exact 与 Registry，不看 `config.yaml` 的 `status`，见[平台 SOP 1.1](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#11-config-中的-status-不代表是否上线) |
 | 接管与观察 | [生产准备](../blackbox_v2/PRODUCTION_READINESS.md)核验接管证据；[调度治理](../architecture/PRODUCTION_SCHEDULING_GOVERNANCE.md)核验现场与真实时钟；Dashboard 可见性不证明 exact 或自然运行 |
 | 查迁移来源、保留身份或旧例外 | [当前状态](../CURRENT_STATUS.md#保留身份与恢复证据) → [保真与迁移边界](../architecture/SOURCE_ALGORITHM_FIDELITY.md#7-同算法-native--blackbox-迁移)及对应 Git/release；不恢复临时入口 |

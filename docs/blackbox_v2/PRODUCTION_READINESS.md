@@ -13,9 +13,9 @@
 | ☐ | 部署清单 | 部署矩阵含该方案及正确目标；输入审计目录绑定当前 exact 与脚本 SHA；入库相关测试通过 | [3.2](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#32-定稿-canonical-与部署清单) |
 | ☐ | release | 回测、激活、补缺均在同一已核准的不可变 release 中执行；current 已按授权切到包含该方案的 release | [3.3](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#33-候选-release-构建与安装) |
 | ☐ | 输入 | 本机 producer-ready generation 与匹配输入视图；方案流程未代建输入 | [DataBridge 契约](data_bridge_v1/README.md) |
-| ☐ | 回测证据 | 成功的 persisted run，exact、脚本校验策略、环境、generation 与 snapshot 与当前一致；`target_date < 2026-06-01` | [3.4](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#34-持久化回测) |
+| ☐ | 回测证据 | 成功的 persisted run，exact、脚本校验策略、环境、generation 与 snapshot 与当前一致；覆盖到给定的最新数据日 | [3.4](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#34-持久化回测一次覆盖到最新数据日) |
 | ☐ | 生命周期 | `activate` 读回 exact 与全部 composite Registry 为 active，owner 已经业务确认；**不以 config `status` 判断** | [1.1](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#11-config-中的-status-不代表是否上线)、[3.5](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#35-激活) |
-| ☐ | 历史与灰度 | 自 2026-06-01 起应发点无缺口，与历史 target 零交集，符合[预测语义](../architecture/PREDICTION_SEMANTICS.md#52-历史批次与灰度区间批次) | [3.6](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#36-gray_live-补缺自-2026-06-01) |
+| ☐ | 历史完整性 | 从 2025-01-01 到最新应发点，每个应有业务键恰好一条产品事实，符合[入库完整性](../architecture/PREDICTION_SEMANTICS.md#52-入库完整性) | [3.6](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#36-衔接补齐回测末尾--首次自然运行) |
 | ☐ | 增量状态（仅 `incremental_state: true`） | 首个自然窗口前已完成显式预热/重建并验收 | [5.1](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#51-增量方案的显式预热重建) |
 | ☐ | 产品读回 | `gate dashboard` 与 `gate data-consistency` 以有效会话通过；API 不携带 exact，版本另由数据库与 release 核验 | [3.8](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#38-接管验收) |
 | ☐ | 目标环境 | Schema 处于 release 要求的基线与增量迁移版本，解释器/依赖、installed/loaded 控制面和恢复边界满足[部署手册](../../deploy/README.md#数据库迁移) | — |
