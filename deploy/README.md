@@ -179,31 +179,42 @@ SOP 中的 `python -B -m harness ...` 只展示操作参数，**不会自动加�
 ## 数据库迁移
 
 [`migrations.runner`](../migrations/runner.py) 是唯一迁移实现，只接收 caller-supplied Engine，负责
-manifest、inspect、apply 和 APPLYING recovery；不承担环境变量、CLI 或授权解析。
+manifest、基线建库、增量 apply、inspect 和可重跑 recovery；不承担环境变量、CLI 或授权解析。
 [`scripts/apply_migrations.py`](../scripts/apply_migrations.py) 是生产/候选 schema 的唯一运维包装器，
 不得直跑 migration SQL 或在其他层复制 runner 行为。
 
-- `--inspect-applying-NNN` 只读分类中断状态，可使用 named advisory lock；不执行 DDL/DML，
-  不需要写入身份参数，也不接受 `--apply` 或 `--state-digest`。
+**基线加增量。** 历史 001..025 已压缩为 [`migrations/baseline/schema_025.sql`](../migrations/baseline/schema_025.sql)，
+[release manifest](../migrations/release_manifest.json) 保留这 25 个旧文件的文件名与 sha256：
+
+- 已有库的 `t_schema_migrations` 必须逐行等于这些身份且全部 APPLIED，才视为处于基线；之后只执行 026 起的增量迁移。
+- 空库（不含任何基线表、无迁移历史）先执行基线，再以 `baseline_bootstrap=1` 登记 001..025。基线执行中断时，
+  该库只含部分基线表且无历史，runner 会拒绝继续；删除这个新库后重建即可。
+- 历史停在 025 之前、身份漂移或已有平台表却无历史的库一律拒绝。这类库须先用仍包含逐版本迁移的
+  archived release 升级到 025，本 release 不再提供 001..025 的逐版本执行与恢复。
+
+**命令。**
+
 - `--apply` 必须同时显式提供 `--expected-database-name` 和 `--expected-server-uuid`。
-- `--recover-applying-NNN` 支持 **017、018、019、021、022、023、024、025**；每次须同时提供
-  `--apply`、上述两个身份参数，以及先前同机只读 inspect 返回的 `--state-digest`（64 位小写 hex）。
+- `--inspect-applying` 只读报告唯一 APPLYING 迁移、是否声明可重跑及状态摘要，可使用 named advisory lock；
+  不执行 DDL/DML，不需要写入身份参数，也不接受 `--apply` 或 `--state-digest`。
+- `--recover-applying` 只重跑首行带 `-- bfl-migration: rerunnable` 标记、且身份与 manifest 一致的 APPLYING 迁移；
+  须同时提供 `--apply`、上述两个身份参数和先前只读 inspect 返回的 `--state-digest`。未声明可重跑的迁移中断后从备份恢复。
 - CLI 在创建 Engine 前校验参数，并在首个写动作前精确比较 `DATABASE()` 与 `@@server_uuid`。
   UUID 只能取自只读 inspect/identity 查询；文档、提交和示例不保存生产 UUID、DSN 或凭据。
 
 执行前取得目标环境的明确授权，核对 manifest、当前 schema、在途任务、可恢复备份和 current/previous
-兼容性；隔离 MySQL 测试通过不等于生产已迁移。失败或状态漂移时保留原始证据，先 inspect 再选择对应
-recovery，不手工改迁移历史。
+兼容性；隔离 MySQL 测试通过不等于生产已迁移。失败或状态漂移时保留原始证据，先 inspect 再选择
+recovery，不手工改迁移历史。新增迁移应尽量写成可重跑（每条 DDL 先查 information_schema），使中断后可经
+`--recover-applying` 完成。
 
-Migration [021](../migrations/021_registry_owner.sql) 的历史 owner authority 只服务一次性回填：DDL 前须证明
-Registry 与该 authority 双向闭集，已有非空 owner 冲突即拒绝；只接受缺列、精确 nullable partial 或完整终态，
-其他状态不恢复。完成后 owner 为 VARCHAR(64) NOT NULL，运行时不保留第二份映射，新写入须提供/保留合法 owner。
+Migration [026](../migrations/026_retire_schedule_ledger_and_audit_tables.sql) 删除已无代码读写的 017 日调度账本
+5 张表、`t_harness_runs`/`t_harness_gate_results`/`t_backtest_reproduction_checks` 与视图 `v_latest_backtest_run`，
+并删除 `t_scheme_runs` 上对应的 9 个未用列及其外键、CHECK 和索引。生产执行前须导出这些表与列的备份；
+执行后不得回滚到仍读写这些对象的 release。
 
-Migration [025](../migrations/025_drop_platform_confidence.sql) 删除两张预测表的统一 confidence 列，不改其他属性或
-JSON 审计。两表闭世界校验覆盖列类型、空值/默认值、主键、索引、外键和 check；除 confidence 两列分别存在/缺失外，
-任何 schema 漂移都拒绝，校验与恢复实现见 [runner](../migrations/runner.py)。删列前须有独立授权及兼容 current/previous 的可恢复备份；
-删后不得回滚到仍依赖该列的 release。已执行批次的备份位置、原始 JSON 精度保护与实际恢复限制只在
-[当前状态](../docs/CURRENT_STATUS.md)维护，恢复前必须读取；备份与 immutable 原件不随文档清理删除。
+025 已删除两张预测表的统一 confidence 列；不得回滚到仍依赖该列的 release。已执行批次的备份位置、
+原始 JSON 精度保护与实际恢复限制只在[当前状态](../docs/CURRENT_STATUS.md)维护，恢复前必须读取；
+备份与 immutable 原件不随文档清理删除。
 
 ## 回滚与认证部署
 

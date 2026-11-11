@@ -163,10 +163,9 @@ W4 源包的私有副本准备与解释器选择由 `shared._native_source` 统�
 
 内部持久化按职责分为 `scheduler.persistence.lifecycle`、`prediction_rows` 和 `predictions`；
 业务调用方仍只通过 `scheduler.repository`，内部实现保持同一 connection、锁和事务。
-迁移的类型、SQL 解析、manifest、schema 检查和纯恢复判定分别放在内部模块，
-唯一 owner lock、SQL 执行与恢复编排仍由 `migrations.runner` 管理。
-逐版本恢复身份与共用错误文本集中在 `migrations.recovery_orchestration`；
-各版本的受审 filename/SHA 保持显式冻结，不根据当前 SQL 字节自动生成可信身份。
+迁移由 001..025 压缩成的基线加增量文件组成：`_contracts`（类型与错误）、`_sql`（SQL 拆分）、
+`_manifest`（基线与增量的摘要清单、历史身份比对），owner lock、执行与可重跑恢复由 `migrations.runner` 管理。
+已退役 001..025 的受审 filename/SHA 作为数据保留在 release manifest，用于识别已有库的历史。
 Harness 的固定 Gate 分派和状态重建命令由现有 CLI 直接编排，不维护额外注册层。
 
 ## 6. 代码导航

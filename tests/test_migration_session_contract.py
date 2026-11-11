@@ -232,7 +232,7 @@ def test_migration_executor_stops_before_next_statement_after_owner_loss() -> No
     )
 
 
-def test_migration_024_dynamic_ddl_failure_is_reported_as_partial() -> None:
+def test_dynamic_ddl_failure_is_reported_as_partial() -> None:
     class FailingConnection(_LockConnection):
         def execute(self, statement: object, parameters=None):
             if "FAIL_AFTER_DYNAMIC_DDL" in str(statement):
@@ -242,14 +242,6 @@ def test_migration_024_dynamic_ddl_failure_is_reported_as_partial() -> None:
     connection = FailingConnection()
     with (
         patch("migrations.runner.preflight_migration_session"),
-        patch(
-            "migrations.runner.read_scheme_prediction_fact_state",
-            return_value={},
-        ),
-        patch(
-            "migrations.runner.classify_scheme_prediction_fact_state",
-            return_value="COMPATIBLE_PARTIAL",
-        ),
         pytest.raises(
             MigrationPartialApplyError,
             match="may be partially applied",
@@ -259,8 +251,8 @@ def test_migration_024_dynamic_ddl_failure_is_reported_as_partial() -> None:
             _LockEngine(connection),
             [
                 (
-                    Path("024_scheme_prediction_fact_source.sql"),
-                    ("SELECT 'FAIL_AFTER_DYNAMIC_DDL'",),
+                    Path("026_dynamic_ddl_test.sql"),
+                    ("EXECUTE retire_stmt", "SELECT 'FAIL_AFTER_DYNAMIC_DDL'"),
                 )
             ],
         )
@@ -282,22 +274,6 @@ def test_general_migration_accepts_supported_identifier_modes(
     mode: int,
 ) -> None:
     validate_mysql_session_contract(_safe_facts(mode))
-
-
-def test_migration_017_keeps_reviewed_constraint_namespace_gate() -> None:
-    with pytest.raises(
-        MigrationPreflightError,
-        match="migration 017 requires lower_case_table_names=2",
-    ):
-        validate_mysql_session_contract(
-            _safe_facts(0),
-            require_reviewed_constraint_namespace=True,
-        )
-
-    validate_mysql_session_contract(
-        _safe_facts(2),
-        require_reviewed_constraint_namespace=True,
-    )
 
 
 def test_general_migration_rejects_unknown_identifier_mode() -> None:

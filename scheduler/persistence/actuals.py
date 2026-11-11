@@ -684,10 +684,10 @@ def _assert_weekly_actuals_target_rule_unique_key(conn: Connection) -> None:
         raise RuntimeError(
             "t_scheme_weekly_actuals missing unique key "
             "uk_weekly_actual_predict_rule(tenor,predict_date,target_rule); "
-            "run migrations/014_weekly_average_actuals.sql before weekly actual writes"
+            "apply database migrations (scripts/apply_migrations.py) before weekly actual writes"
         )
     if legacy in unique_columns:
         raise RuntimeError(
             "t_scheme_weekly_actuals still has legacy unique key on (tenor,predict_date); "
-            "run migrations/014_weekly_average_actuals.sql before weekly actual writes"
+            "apply database migrations (scripts/apply_migrations.py) before weekly actual writes"
         )

@@ -50,9 +50,9 @@ jobs:
 
   mysql-contracts:
     name: MySQL 8.4 integration contracts
-    # Migration 017 intentionally requires lower_case_table_names=2. Oracle
-    # MySQL does not support that mode on Linux, so this disposable service
-    # must run on the same case-insensitive platform contract as production.
+    # Mac3 production runs lower_case_table_names=2, which Oracle MySQL only
+    # supports on case-insensitive platforms, so the disposable service runs
+    # on macOS to match the production identifier contract.
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4

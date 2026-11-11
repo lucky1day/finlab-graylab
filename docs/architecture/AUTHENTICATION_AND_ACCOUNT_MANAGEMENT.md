@@ -125,8 +125,8 @@ body 完成前中断，必须在 JSON 解析和认证 Service 之前拒绝；完
 
 ## 存储与模块边界
 
-物理 schema 唯一来源为 [Migration 022](../../migrations/022_authentication.sql)和
-[Migration 023](../../migrations/023_auth_user_profiles.sql)及后续相关迁移；迁移操作统一走部署手册。
+物理 schema 唯一来源为[迁移基线](../../migrations/baseline/schema_025.sql)（含原 022/023 认证三表）及后续增量迁移；
+迁移操作统一走部署手册。
 三表各自职责：
 
 - `t_auth_users`：稳定账户身份、资料、密码哈希、角色/状态和受保护管理员标记；

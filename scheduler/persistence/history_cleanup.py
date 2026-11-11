@@ -175,14 +175,7 @@ def _legacy_backtest_only_scope(
         ).bindparams(bindparam("product_ids", expanding=True)),
         {"run_id": run_id, "product_ids": product_ids},
     ).scalar_one()
-    schedule_references = connection.execute(
-        text(
-            "SELECT COUNT(*) FROM t_schedule_item_targets "
-            "WHERE accepted_prediction_id IN :product_ids"
-        ).bindparams(bindparam("product_ids", expanding=True)),
-        {"product_ids": product_ids},
-    ).scalar_one()
-    if int(references) or int(schedule_references):
+    if int(references):
         raise ValueError("legacy backtest has references outside cleanup scope")
     backtest_runs = _select_ids(
         connection, table="t_backtest_runs", column="id",
@@ -706,11 +699,7 @@ def _delete_unreferenced_live_runs(
     for run_id in sorted(run_ids):
         references = connection.execute(
             text(
-                "SELECT "
-                "(SELECT COUNT(*) FROM t_scheme_predictions WHERE run_id=:run_id) + "
-                "(SELECT COUNT(*) FROM t_schedule_items WHERE current_run_id=:run_id) + "
-                "(SELECT COUNT(*) FROM t_schedule_item_targets "
-                " WHERE accepted_run_id=:run_id)"
+                "SELECT COUNT(*) FROM t_scheme_predictions WHERE run_id=:run_id"
             ),
             {"run_id": run_id},
         ).scalar_one()
