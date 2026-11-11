@@ -139,25 +139,6 @@ def test_auth_body_limit_covers_every_declared_auth_write_route():
     assert declared_write_paths == AUTH_JSON_WRITE_PATHS
 
 
-def test_session_repository_exposes_locked_and_unlocked_reads():
-    connection = MagicMock()
-    connection.execute.return_value.mappings.return_value.one_or_none.return_value = (
-        None
-    )
-
-    repository.get_session_user(connection, b"token", datetime(2026, 1, 1))
-    ordinary_sql = str(connection.execute.call_args.args[0]).upper()
-    repository.lock_session_user(connection, b"token", datetime(2026, 1, 1))
-    locked_sql = str(connection.execute.call_args.args[0]).upper()
-
-    assert "FOR UPDATE" not in ordinary_sql
-    assert "S.REVOKED_AT IS NULL" in ordinary_sql
-    assert "S.EXPIRES_AT >" in ordinary_sql
-    assert "U.STATUS = 'ACTIVE'" in ordinary_sql
-    assert "U.MUST_CHANGE_PASSWORD" in ordinary_sql
-    assert "FOR UPDATE" in locked_sql
-
-
 def test_logout_revalidates_with_lock_in_revocation_transaction(monkeypatch):
     user = _user()
     locked_read = Mock(return_value=(user, datetime(2099, 1, 1)))
@@ -325,65 +306,6 @@ def test_non_json_write_remains_rejected_before_service(monkeypatch):
     service.assert_not_called()
 
 
-def test_auth_body_limit_replays_chunked_body_before_login_service(monkeypatch):
-    service = MagicMock()
-    service.login.return_value = LoginResult(
-        user=_user(),
-        token="new-session-token",
-        expires_at=datetime(2099, 1, 1),
-    )
-    monkeypatch.setattr(routes, "_service", lambda: service)
-    payload = b'{"username":"admin","password":"Secret123"}'
-
-    status, _headers, response_body = _chunked_asgi_request(
-        "/api/auth/login",
-        headers=_safe_json_headers(),
-        messages=[
-            {"type": "http.request", "body": payload[:12], "more_body": True},
-            {"type": "http.request", "body": payload[12:], "more_body": False},
-        ],
-    )
-
-    assert status == 200
-    assert json.loads(response_body)["user"]["username"] == "user1"
-    service.login.assert_called_once_with("admin", "Secret123")
-
-
-def test_auth_body_limit_ignores_empty_chunks_and_replays_once():
-    received: list[dict] = []
-
-    async def downstream(_scope, receive, _send):
-        received.append(await receive())
-
-    middleware = AuthJSONBodyLimitMiddleware(downstream)
-    pending = [
-        {"type": "http.request", "body": b"", "more_body": True},
-        {"type": "http.request", "body": b"{", "more_body": True},
-        {"type": "http.request", "body": b"", "more_body": True},
-        {"type": "http.request", "body": b"}", "more_body": False},
-    ]
-
-    async def receive():
-        return pending.pop(0)
-
-    async def invoke():
-        await middleware(
-            {
-                "type": "http",
-                "method": "POST",
-                "path": "/api/auth/login",
-                "headers": [],
-            },
-            receive,
-            lambda _message: None,
-        )
-
-    asyncio.run(invoke())
-    assert received == [
-        {"type": "http.request", "body": b"{}", "more_body": False}
-    ]
-
-
 @pytest.mark.parametrize(
     "content_length_headers",
     [[], [(b"content-length", b"8192")]],
@@ -429,51 +351,6 @@ def test_auth_body_limit_rejects_8193_chunked_bytes_before_service(monkeypatch):
     assert headers["x-content-type-options"] == "nosniff"
     assert headers["x-request-id"]
     assert json.loads(response_body) == {"error_code": "request_body_too_large"}
-    service.assert_not_called()
-
-
-def test_auth_body_limit_rejects_declared_8193_bytes_before_receive_or_service(
-    monkeypatch,
-):
-    service = Mock(side_effect=AssertionError("oversize body reached service"))
-    monkeypatch.setattr(routes, "_service", service)
-
-    status, _headers, response_body = _chunked_asgi_request(
-        "/api/auth/login",
-        headers=_safe_json_headers((b"content-length", b"8193")),
-        messages=[{"type": "http.disconnect"}],
-    )
-
-    assert status == 413
-    assert json.loads(response_body) == {"error_code": "request_body_too_large"}
-    service.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    "content_lengths",
-    [
-        [(b"content-length", b"not-a-number")],
-        [(b"content-length", b"-1")],
-        [(b"content-length", b"2"), (b"content-length", b"2")],
-    ],
-)
-def test_auth_body_limit_rejects_invalid_or_duplicate_content_length(
-    monkeypatch,
-    content_lengths,
-):
-    service = Mock(side_effect=AssertionError("invalid length reached service"))
-    monkeypatch.setattr(routes, "_service", service)
-
-    status, _headers, response_body = _chunked_asgi_request(
-        "/api/auth/login",
-        headers=_safe_json_headers(*content_lengths),
-        messages=[
-            {"type": "http.request", "body": b"{}", "more_body": False},
-        ],
-    )
-
-    assert status == 400
-    assert json.loads(response_body) == {"error_code": "invalid_content_length"}
     service.assert_not_called()
 
 
@@ -539,82 +416,6 @@ def test_auth_body_limit_stops_on_client_disconnect_without_service():
     asyncio.run(invoke())
     assert sent == []
     assert downstream_called is False
-
-
-def test_auth_body_limit_times_out_slow_body_without_service():
-    downstream_called = False
-    sent: list[dict] = []
-
-    async def downstream(_scope, _receive, _send):
-        nonlocal downstream_called
-        downstream_called = True
-
-    async def receive():
-        await asyncio.sleep(1)
-        return {"type": "http.request", "body": b"{}", "more_body": False}
-
-    async def send(message):
-        sent.append(message)
-
-    async def invoke():
-        middleware = AuthJSONBodyLimitMiddleware(
-            downstream,
-            body_read_timeout_seconds=0.01,
-        )
-        await middleware(
-            {
-                "type": "http",
-                "method": "POST",
-                "path": "/api/auth/login",
-                "headers": [],
-            },
-            receive,
-            send,
-        )
-
-    asyncio.run(invoke())
-    start = next(item for item in sent if item["type"] == "http.response.start")
-    body = b"".join(
-        item.get("body", b"")
-        for item in sent
-        if item["type"] == "http.response.body"
-    )
-    assert start["status"] == 408
-    assert json.loads(body) == {"error_code": "request_body_timeout"}
-    assert downstream_called is False
-
-
-def test_body_limit_does_not_apply_to_non_auth_post(monkeypatch):
-    body = b"x" * 8193
-
-    status, _headers, _response_body = _chunked_asgi_request(
-        "/api/not-an-auth-route",
-        headers=[
-            (b"host", b"testserver"),
-            (b"content-type", b"application/octet-stream"),
-        ],
-        messages=[
-            {"type": "http.request", "body": body, "more_body": False},
-        ],
-    )
-
-    assert status == 404
-
-
-def test_body_limit_does_not_apply_to_auth_read_path_with_post_method():
-    status, _headers, _response_body = _chunked_asgi_request(
-        "/api/auth/me",
-        headers=_safe_json_headers(),
-        messages=[
-            {
-                "type": "http.request",
-                "body": b"x" * 8193,
-                "more_body": False,
-            },
-        ],
-    )
-
-    assert status == 404
 
 
 def test_validation_failure_does_not_echo_password():

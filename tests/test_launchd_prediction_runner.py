@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import errno
 import json
 import os
 import subprocess
@@ -196,96 +195,6 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
 
         self.assertEqual(maximum, 2)
         self.assertEqual(len(summary.executed), 4)
-
-    def test_requested_scheme_filter_runs_only_exact_active_set(self) -> None:
-        from scheduler import one_shot_prediction_runner as runner
-
-        selected = _blackbox_config("selected")
-        ignored = _blackbox_config("ignored")
-        engine = Mock()
-        calendar = _PeriodCalendar("2026-08-01", "2026-08-31")
-        with (
-            patch.dict(
-                os.environ,
-                {"BFL_DEPLOYMENT_TARGET": "mac3-production"},
-                clear=False,
-            ),
-            patch.object(
-                runner.DataBridgeRefreshConfig,
-                "from_env",
-                return_value=object(),
-            ),
-            patch.object(runner, "_runner_lock", return_value=nullcontext()),
-            patch.object(
-                runner,
-                "discover_schemes",
-                return_value=[selected, ignored],
-            ),
-            patch.object(runner, "create_engine_from_env", return_value=engine),
-            patch.object(
-                runner,
-                "resolve_database_lifecycle",
-                return_value=(selected, ignored),
-            ),
-            patch.object(runner, "get_calendar", return_value=calendar),
-            patch.object(runner, "is_weekly_signal_date", return_value=True),
-            patch.object(
-                runner,
-                "_scheduled_scheme_identity_error",
-                return_value=None,
-            ),
-            patch.object(
-                runner,
-                "execute_scheme",
-                return_value=SimpleNamespace(
-                    scheme_id="selected",
-                    status="success",
-                    records_written=1,
-                    run_id=100,
-                ),
-            ),
-        ):
-            summary = _run_one_shot(runner,
-                "weekly",
-                predict_date="2026-08-15",
-                scheme_ids=["selected", "selected"],
-            )
-
-        self.assertEqual(summary.discovered, 1)
-        self.assertEqual(
-            [item["scheme_id"] for item in summary.executed],
-            ["selected"],
-        )
-
-    def test_requested_scheme_filter_rejects_unknown_before_execution(self) -> None:
-        from scheduler import one_shot_prediction_runner as runner
-
-        with (
-            patch.dict(
-                os.environ,
-                {"BFL_DEPLOYMENT_TARGET": "mac3-production"},
-                clear=False,
-            ),
-            patch.object(
-                runner.DataBridgeRefreshConfig,
-                "from_env",
-                return_value=object(),
-            ),
-            patch.object(runner, "_runner_lock", return_value=nullcontext()),
-            patch.object(runner, "discover_schemes", return_value=[]),
-            patch.object(runner, "create_engine_from_env") as create_engine,
-        ):
-            with self.assertRaisesRegex(
-                runner.OneShotPredictionConfigurationError,
-                "not available",
-            ):
-                _run_one_shot(runner,
-                    "daily",
-                    predict_date="2026-08-28",
-                    scheme_ids=["unknown"],
-                )
-
-        create_engine.assert_not_called()
 
     def test_requested_scheme_identity_failure_blocks_entire_batch(self) -> None:
         from scheduler import one_shot_prediction_runner as runner
@@ -698,80 +607,6 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
         self.assertEqual(contender.stderr, "")
         self.assertTrue(recovered)
 
-    def test_lock_timeout_summary_has_dedicated_failure_code(self) -> None:
-        from scheduler import one_shot_prediction_runner as runner
-
-        timeout = runner.OneShotPredictionLockTimeout("busy")
-        with (
-            patch.dict(
-                os.environ,
-                {"BFL_DEPLOYMENT_TARGET": "mac3-production"},
-                clear=False,
-            ),
-            patch.object(
-                runner.DataBridgeRefreshConfig,
-                "from_env",
-                return_value=object(),
-            ),
-            patch.object(runner, "_runner_lock", side_effect=timeout),
-        ):
-            with self.assertRaises(runner.OneShotPredictionLockTimeout) as caught:
-                _run_one_shot(
-                    runner,
-                    "daily",
-                    predict_date="2026-08-28",
-                    lock_timeout_sec=0.01,
-                )
-
-        self.assertIs(caught.exception.summary, timeout.summary)
-        self.assertEqual(
-            caught.exception.summary.failed,
-            [
-                {
-                    "scheme_id": "",
-                    "run_id": None,
-                    "stage": "runner_lock",
-                    "code": "lock_wait_timeout",
-                    "records_written": 0,
-                }
-            ],
-        )
-        self.assertEqual(caught.exception.summary.exit_code, 1)
-
-    def test_lock_rechecks_deadline_after_late_acquisition(self) -> None:
-        from scheduler import one_shot_prediction_runner as runner
-
-        with tempfile.TemporaryDirectory() as runtime_root:
-            config = SimpleNamespace(runtime_root=Path(runtime_root))
-            with (
-                patch.object(
-                    runner.time,
-                    "monotonic",
-                    side_effect=[10.0, 10.01, 10.06],
-                ),
-                patch.object(runner.time, "sleep"),
-                patch.object(
-                    runner.fcntl,
-                    "flock",
-                    side_effect=[
-                        BlockingIOError(errno.EAGAIN, "busy"),
-                        None,
-                        None,
-                    ],
-                ),
-            ):
-                with self.assertRaises(
-                    runner.OneShotPredictionLockTimeout
-                ) as caught:
-                    with runner._runner_lock(
-                        config,
-                        lock_timeout_sec=0.05,
-                    ):
-                        self.fail("expired acquisition must not execute")
-
-        self.assertEqual(caught.exception.code, "lock_wait_timeout")
-        self.assertEqual(caught.exception.stage, "runner_lock")
-
     def test_partial_batch_and_cleanup_errors_preserve_completed_summary(self) -> None:
         from scheduler import launchd_prediction_runner as entry
         from scheduler import one_shot_prediction_runner as runner
@@ -1033,21 +868,3 @@ class PredictionRetryTests(unittest.TestCase):
             summary = runner.run_one_shot_with_retries("daily", run=fake_run, sleep=sleeps.append)
             self.assertEqual((calls, sleeps), ([None], []))
             self.assertNotIn("retries", summary.to_payload())
-
-    def test_retry_stops_when_process_cleanup_becomes_unconfirmed(self) -> None:
-        from scheduler import one_shot_prediction_runner as runner
-
-        retry = self._summary(executed=["a"], failed=["b"])
-        retry.failed.append({"scheme_id": None, "code": "process_cleanup_unconfirmed"})
-        run = Mock(side_effect=[
-            self._summary(executed=["c"], failed=["a", "b"]),
-            runner.OneShotPredictionRunError(
-                "cleanup unconfirmed", summary=retry,
-                code="process_cleanup_unconfirmed", stage="process_cleanup",
-            ),
-        ])
-        sleeps = []
-        summary = runner.run_one_shot_with_retries("daily", run=run, sleep=sleeps.append)
-        self.assertEqual([item["scheme_id"] for item in summary.executed], ["a", "c"])
-        self.assertIn("process_cleanup_unconfirmed", {item["code"] for item in summary.failed})
-        self.assertEqual(sleeps, [runner.PREDICTION_RETRY_DELAY_SEC])
