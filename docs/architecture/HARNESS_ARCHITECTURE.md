@@ -62,6 +62,13 @@ positive，并逐分区请求真实 Detail 对账；不得调用 Dashboard build
 summary 摘要以及 raw/product 逐事实摘要共同唯一证明的历史 run。Gate 仅在整批证据同时命中时从版本行恢复
 该 run 的只读解释；不更新数据库、不接受部分事实，也不对未登记 run 放宽血缘要求。
 
+早于 exact 记录发布的回测产品事实（`scheme_version` 为空，且来自回测 run）按决定不补写 exact。
+[`unversioned_backtest_facts_v1.json`](../../deploy/unversioned_backtest_facts_v1.json) 冻结其
+方案、期限、horizon、条数与规范事实摘要。血缘检查按组逐一核对：与清单完全一致的记为一条已知
+authority gap（结论保持 BLOCKED，不是通过）；清单之外的空 exact、条数或摘要变化、无法规范化的事实
+判错误，且不中断同一范围内其它方案的检查。实盘事实的空 exact 仍直接失败。清单随历史冻结，
+不为新事实提供例外；修订必须两端只读重新生成并逐项核对。
+
 一次一致性验收先读取一个 repeatable-read 只读数据库快照，再获取一次真实 Summary 和所需 Detail；HTTP
 对账后重读同一选定范围的摘要围栏。若末次重读失败、首尾摘要不同，或上海展示日跨界，本次返回
 `blocked`，要求在稳定输入窗口重试，不能把可观测到的自然增长误报为事实或展示错误；该围栏不是 CDC，

@@ -202,6 +202,9 @@ target_date  = T + horizon
 权威，只能通过 Harness 的精确兼容清单绑定完整旧事实摘要、日期差异摘要和纠正版身份，在只读验收中显式标为
 `legacy_migration`；这不改变旧行的原始来源、三日期或 insert-only 边界，也不为新事实提供例外。
 
+回测来源、exact 为空的旧产品事实由[冻结清单](../../deploy/unversioned_backtest_facts_v1.json)按方案/期限/horizon
+登记条数与规范事实摘要；Gate 将其作为已知缺口汇总，不据此推断或补写 exact。
+
 入库回测一次覆盖 `2025-01-01` 至操作时给定的最新可用数据日，激活时把全部结果发布为产品事实；之后由自然调度续写。结果分区一律按 §2.0 的 `feature_date` 规则判定，回测覆盖到分界日之后不构成违规。与已存在产品事实相同业务键的回测行保持原事实不变（insert-only），不重算、搬移或改写既有事实。
 
 `target_date` 是回测明细的必填事实字段。runner 的回测证据指标按 `target_date` 确定月份，Dashboard 则按 §7 的 `feature_date` 展示月份；如果 `t_backtest_predictions` 明细缺 `target_date`，必须 fail-closed。禁止用 `predict_date`、`feature_date`、月份字段或旧 `monthly_metrics` 表推断、替代或回填 `target_date`。
