@@ -480,6 +480,8 @@ def resolve_stable_databridge_current_authority(
             feature_dates=normalized_dates,
             connection=connection,
             schema_path=config.schema_path,
+            # cutoffs 层的周期键向前承接同时服务 legacy v1 current 与 v3 producer
+            # bootstrap；后者是现行 one-shot publisher 链路，不能按 legacy 清理。
             allow_legacy_v1_period_fallback=(
                 legacy_v1_period_fallback
                 or producer_v3_period_bootstrap

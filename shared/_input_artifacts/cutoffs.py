@@ -420,6 +420,8 @@ def _resolve_period_cutoffs_bulk(
             raise ValueError(f"platform as-of data has no {key_column} for {feature_date}")
         selected = latest
         if selected not in available_keys:
+            # 名称沿用 legacy，但这是通用的周期键向前承接：authority 层在 legacy v1
+            # current 与 v3 producer bootstrap 两种情形下都会打开，属于现行生产语义。
             if allow_legacy_v1_period_fallback:
                 prior_keys = [
                     key for key in available_keys if key <= selected
