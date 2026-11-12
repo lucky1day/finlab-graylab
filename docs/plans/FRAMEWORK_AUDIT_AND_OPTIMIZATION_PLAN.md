@@ -257,3 +257,14 @@ ECS 读回尚未取得。
 1. **谁产出九套 V2 交付？** Blackbox 内部保真按根规范由上游负责；若由我们代为包装，则须按"源算法保真"逐套证明与源码包等价（并且命中「内嵌运行时外壳」类交付时要先停下报告，见入库 skill）。
 2. **等价标准。** 方向逐日完全一致，还是允许在已解释的口径差异内不一致？这决定了能否切 Writer。
 3. **历史处理。** 默认保留既有 Native 事实不动，只切未来；若希望新 exact 也回填同一历史区间，需要单独授权。
+
+### 13.1 试点前置核查结果（2026-11-12，`daily_5y_lgbm_5y10_0629`，只读）
+
+结论：**按第 13 节方案 1 无法由我们单方完成，须先解决"算法只有二进制"这个前置问题。**
+
+- 算法核心是上游以 CPython 3.13 darwin arm64 编译的 `.so` 交付（`fixed_lgbm`、`strategy_signals`、`combo_overlay`、特征构建、`data_service`、`db_writer` 等）；可读的 `run.py`/`run_daily.py` 均为 "Auto-generated encrypted entry shim"。批次 manifest 自述"platform treats it as a source-original binary runner"。仓库里没有算法源码，因此不能"改写"成 V2 的单文件可读脚本，也不能在不具备源码的情况下声称保真。
+- 该二进制与数据库深度耦合：`data_service` 从 MySQL 读 `api_wind_*` 并重建 `check_data`，`run_daily.sh` 直接用 pymysql 查 `t_trade_calendar`，`db_writer` 写预测表（dry-run 只跳过写）。而 V2 沙箱只提供 `--data-dir` 文件、禁止联网与连库。要让它在 V2 里运行，必须替换其编译的数据层，而该接口没有文档。
+- V2 合同对交付的限制：目录只含两个普通文件，脚本通过静态策略（禁 `subprocess`、`sqlalchemy`、`pymysql`、`socket` 等及 `eval/exec/compile/__import__`）。把编译产物嵌入自解压外壳属于入库 skill 所说"内嵌运行时外壳"，须停止并经明确批准与隔离解包审计，且仍然解决不了上一条的数据库耦合。
+- **安全问题（已确认存在，未做任何修改）：** 三个源码包（`daily_0629`、`monthly_0629`、`model_muti_0529/weekly_average_0529`）的 `forecast_project/db_config.py` 各含一份明文 root 数据库口令，自提交 `0120988e` 起进入仓库历史。不能直接改文件：源码包的树哈希是 W4 冻结身份的一部分。处置应是轮换该口令（若仍有效）并确认生产只通过外置配置文件取凭据。
+
+可选路径见对话回复；选定前不改动任何代码。
