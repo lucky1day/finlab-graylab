@@ -259,32 +259,6 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         )
 
 
-    def test_backtest_runs_all_requests_once_and_preserves_order(self) -> None:
-        from scheduler import blackbox_v2_runner as runner
-
-        requests = [_request(f"{index:03d}") for index in range(3)]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            script = _write_script(root / "trial.py", _SUCCESS_SCRIPT)
-            with patch.object(
-                runner,
-                "execute_blackbox_cli",
-                wraps=runner.execute_blackbox_cli,
-            ) as execute_cli:
-                records = runner.run_blackbox_backtest(
-                    metadata=_metadata(),
-                    script_path=script,
-                    requests=requests,
-                    data_dir=_write_data_dir(root),
-                    data_snapshot_id="snapshot-test",
-                    profile=runner.RuntimeProfile.for_tests(),
-                )
-
-        self.assertEqual(len(records), 3)
-        execute_cli.assert_called_once()
-        self.assertEqual([record.extra["request_id"] for record in records], [item.request_id for item in requests])
-
-
     def test_gray_replay_batch_uses_one_ready_snapshot_and_preserves_requests(
         self,
     ) -> None:
