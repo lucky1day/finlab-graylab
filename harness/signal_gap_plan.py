@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
@@ -302,11 +303,14 @@ def plan_signal_gap_target_range(
             "TARGET_RANGE_SCHEME_REQUIRED",
             "target range requires one exact base scheme id",
         )
+    blocked_plan = partial(
+        _blocked_range_plan,
+        target_date_from=normalized_from,
+        target_date_before=normalized_before,
+        base_scheme_id=normalized_base,
+    )
     if normalized_from < PLATFORM_LIVE_TARGET_START_DATE:
-        return _blocked_range_plan(
-            target_date_from=normalized_from,
-            target_date_before=normalized_before,
-            base_scheme_id=normalized_base,
+        return blocked_plan(
             failure_code="TARGET_RANGE_BEFORE_PLATFORM_LIVE_START",
         )
     configs = tuple(
@@ -319,10 +323,7 @@ def plan_signal_gap_target_range(
         base_scheme_id=normalized_base,
     )
     if selection_error is not None:
-        return _blocked_range_plan(
-            target_date_from=normalized_from,
-            target_date_before=normalized_before,
-            base_scheme_id=normalized_base,
+        return blocked_plan(
             failure_code=selection_error,
         )
     if len(authority) != 1 or (
@@ -335,10 +336,7 @@ def plan_signal_gap_target_range(
         ("blackbox_v2", "daily", "T+1", 1),
         ("blackbox_v2", "daily", "T+5", 5),
     }:
-        return _blocked_range_plan(
-            target_date_from=normalized_from,
-            target_date_before=normalized_before,
-            base_scheme_id=normalized_base,
+        return blocked_plan(
             failure_code="TARGET_RANGE_CONTRACT_UNSUPPORTED",
         )
 
@@ -357,10 +355,7 @@ def plan_signal_gap_target_range(
                 targeted=True,
             )
             if blockers:
-                return _blocked_range_plan(
-                    target_date_from=normalized_from,
-                    target_date_before=normalized_before,
-                    base_scheme_id=normalized_base,
+                return blocked_plan(
                     failure_code=str(blockers[0]["code"]),
                     blockers=blockers,
                 )
@@ -371,10 +366,7 @@ def plan_signal_gap_target_range(
                 target_date_before=normalized_before,
             )
             if not cases:
-                return _blocked_range_plan(
-                    target_date_from=normalized_from,
-                    target_date_before=normalized_before,
-                    base_scheme_id=normalized_base,
+                return blocked_plan(
                     failure_code="TARGET_RANGE_EMPTY",
                 )
             expected_keys = {item.business_key for item in cases}
@@ -386,10 +378,7 @@ def plan_signal_gap_target_range(
             )
             observed = _index_observations(live_signals)
             if any(observed.get(item.business_key) for item in cases):
-                return _blocked_range_plan(
-                    target_date_from=normalized_from,
-                    target_date_before=normalized_before,
-                    base_scheme_id=normalized_base,
+                return blocked_plan(
                     failure_code="TARGET_RANGE_BUSINESS_KEY_PRESENT",
                 )
             try:
@@ -739,57 +728,33 @@ def _build_signal_gap_plan(
         ):
             actions.append(_not_due_action(target, predict_date=predict_date))
 
-    action_counts = {
-        action: sum(row["action"] == action for row in actions)
-        for action in VALID_ACTIONS
-    }
+    action_counts = _count_actions(actions)
     unexpected_count = len(unexpected)
     blocked = (
         action_counts["BLOCKED_NO_GENERATION"]
         + action_counts["BLOCKED_DATA_CONTRACT"]
         + unexpected_count
     )
-    status = "BLOCKED" if blocked else "READY"
-    failure_code = None
-    if unexpected_count:
-        failure_code = "OBSERVED_SIGNAL_TARGET_DRIFT"
-    if failure_code is None:
-        failure_code = next(
-            (
-                str(row["reason"])
-                for row in actions
-                if row["action"].startswith("BLOCKED_")
-            ),
-            None,
-        )
-    return {
-        "schema_version": PLAN_SCHEMA_VERSION,
-        "status": status,
-        "failure_code": failure_code,
-        "predict_date": predict_date,
-        "base_scheme_id": base_scheme_id,
-        "control_plane": {
-            "read_only": True,
-            "transaction_isolation": "REPEATABLE READ",
-            "consistent_snapshot": True,
-            "business_key_fields": [
-                "base_scheme_id",
-                "target_tenor",
-                "horizon",
-                "target_date",
-            ],
-            "blockers": [],
-        },
-        "counts": {
-            "active_target": len(snapshot.registry_targets),
-            "expected": len(snapshot.expected_cases),
-            "present": action_counts["SKIP_PRESENT"],
-            "actionable": action_counts["GRAY_LIVE_GAP"],
-            "blocked": blocked,
-            **action_counts,
-        },
-        "actions": actions,
-    }
+    failure_code = (
+        "OBSERVED_SIGNAL_TARGET_DRIFT"
+        if unexpected_count
+        else _first_blocked_reason(actions)
+    )
+    return _plan_document(
+        PLAN_SCHEMA_VERSION,
+        {"predict_date": predict_date},
+        base_scheme_id=base_scheme_id,
+        status="BLOCKED" if blocked else "READY",
+        failure_code=failure_code,
+        counts=_plan_counts(
+            action_counts,
+            active_target=len(snapshot.registry_targets),
+            expected=len(snapshot.expected_cases),
+            present=action_counts["SKIP_PRESENT"],
+            blocked=blocked,
+        ),
+        actions=actions,
+    )
 
 
 def _target_range_cases(
@@ -894,15 +859,37 @@ def _build_signal_gap_range_plan(
                 business_key_present=False,
             )
         )
-    action_counts = {
-        action: sum(row["action"] == action for row in actions)
-        for action in VALID_ACTIONS
-    }
+    action_counts = _count_actions(actions)
     blocked = (
         action_counts["BLOCKED_NO_GENERATION"]
         + action_counts["BLOCKED_DATA_CONTRACT"]
     )
-    failure_code = next(
+    return _plan_document(
+        RANGE_PLAN_SCHEMA_VERSION,
+        _range_scope(target_date_from, target_date_before),
+        base_scheme_id=base_scheme_id,
+        status="BLOCKED" if blocked else "READY",
+        failure_code=_first_blocked_reason(actions),
+        counts=_plan_counts(
+            action_counts,
+            active_target=len(snapshot.registry_targets),
+            expected=len(snapshot.expected_cases),
+            present=0,
+            blocked=blocked,
+        ),
+        actions=actions,
+    )
+
+
+def _count_actions(actions: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    return {
+        action: sum(row["action"] == action for row in actions)
+        for action in VALID_ACTIONS
+    }
+
+
+def _first_blocked_reason(actions: Sequence[Mapping[str, Any]]) -> str | None:
+    return next(
         (
             str(row["reason"])
             for row in actions
@@ -910,54 +897,51 @@ def _build_signal_gap_range_plan(
         ),
         None,
     )
+
+
+def _plan_counts(
+    action_counts: Mapping[str, int],
+    *,
+    active_target: int,
+    expected: int,
+    present: int,
+    blocked: int,
+) -> dict[str, int]:
     return {
-        "schema_version": RANGE_PLAN_SCHEMA_VERSION,
-        "status": "BLOCKED" if blocked else "READY",
-        "failure_code": failure_code,
-        "predict_date": None,
-        "target_date_from": target_date_from,
-        "target_date_before": target_date_before,
-        "base_scheme_id": base_scheme_id,
-        "control_plane": {
-            "read_only": True,
-            "transaction_isolation": "REPEATABLE READ",
-            "consistent_snapshot": True,
-            "business_key_fields": [
-                "base_scheme_id",
-                "target_tenor",
-                "horizon",
-                "target_date",
-            ],
-            "blockers": [],
-        },
-        "counts": {
-            "active_target": len(snapshot.registry_targets),
-            "expected": len(snapshot.expected_cases),
-            "present": 0,
-            "actionable": action_counts["GRAY_LIVE_GAP"],
-            "blocked": blocked,
-            **action_counts,
-        },
-        "actions": actions,
+        "active_target": active_target,
+        "expected": expected,
+        "present": present,
+        "actionable": action_counts["GRAY_LIVE_GAP"],
+        "blocked": blocked,
+        **action_counts,
     }
 
 
-def _blocked_range_plan(
-    *,
-    target_date_from: str,
-    target_date_before: str,
-    base_scheme_id: str,
-    failure_code: str,
-    blockers: Sequence[Mapping[str, Any]] = (),
-) -> dict[str, Any]:
-    counts = {action: 0 for action in VALID_ACTIONS}
+def _range_scope(target_date_from: str, target_date_before: str) -> dict[str, Any]:
     return {
-        "schema_version": RANGE_PLAN_SCHEMA_VERSION,
-        "status": "BLOCKED",
-        "failure_code": failure_code,
         "predict_date": None,
         "target_date_from": target_date_from,
         "target_date_before": target_date_before,
+    }
+
+
+def _plan_document(
+    schema_version: str,
+    scope: Mapping[str, Any],
+    *,
+    base_scheme_id: str | None,
+    status: str,
+    failure_code: str | None,
+    counts: Mapping[str, int],
+    actions: list[dict[str, Any]],
+    blockers: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """单日与区间计划共用的文档外壳；键按固定顺序输出，哈希另行规范化。"""
+    return {
+        "schema_version": schema_version,
+        "status": status,
+        "failure_code": failure_code,
+        **scope,
         "base_scheme_id": base_scheme_id,
         "control_plane": {
             "read_only": True,
@@ -971,16 +955,31 @@ def _blocked_range_plan(
             ],
             "blockers": [dict(item) for item in blockers],
         },
-        "counts": {
-            "active_target": 0,
-            "expected": 0,
-            "present": 0,
-            "actionable": 0,
-            "blocked": 1,
-            **counts,
-        },
-        "actions": [],
+        "counts": dict(counts),
+        "actions": actions,
     }
+
+
+def _blocked_range_plan(
+    *,
+    target_date_from: str,
+    target_date_before: str,
+    base_scheme_id: str,
+    failure_code: str,
+    blockers: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    return _plan_document(
+        RANGE_PLAN_SCHEMA_VERSION,
+        _range_scope(target_date_from, target_date_before),
+        base_scheme_id=base_scheme_id,
+        status="BLOCKED",
+        failure_code=failure_code,
+        blockers=blockers,
+        counts=_plan_counts(
+            _count_actions(()), active_target=0, expected=0, present=0, blocked=1
+        ),
+        actions=[],
+    )
 
 
 def _blackbox_gap_action(
@@ -1080,35 +1079,18 @@ def _blocked_plan(
     failure_code: str,
     blockers: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
-    counts = {action: 0 for action in VALID_ACTIONS}
-    return {
-        "schema_version": PLAN_SCHEMA_VERSION,
-        "status": "BLOCKED",
-        "failure_code": failure_code,
-        "predict_date": predict_date,
-        "base_scheme_id": base_scheme_id,
-        "control_plane": {
-            "read_only": True,
-            "transaction_isolation": "REPEATABLE READ",
-            "consistent_snapshot": True,
-            "business_key_fields": [
-                "base_scheme_id",
-                "target_tenor",
-                "horizon",
-                "target_date",
-            ],
-            "blockers": [dict(item) for item in blockers],
-        },
-        "counts": {
-            "active_target": 0,
-            "expected": 0,
-            "present": 0,
-            "actionable": 0,
-            "blocked": 1,
-            **counts,
-        },
-        "actions": [],
-    }
+    return _plan_document(
+        PLAN_SCHEMA_VERSION,
+        {"predict_date": predict_date},
+        base_scheme_id=base_scheme_id,
+        status="BLOCKED",
+        failure_code=failure_code,
+        blockers=blockers,
+        counts=_plan_counts(
+            _count_actions(()), active_target=0, expected=0, present=0, blocked=1
+        ),
+        actions=[],
+    )
 
 
 def _action_row(
