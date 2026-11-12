@@ -181,6 +181,14 @@ def run_signal_gap_fill(
                 groups,
                 project_root=Path(project_root),
             )
+        except _MultiTargetUnsupported as exc:
+            return _report(
+                "BLOCKED",
+                normalized_plan,
+                groups=groups,
+                failure_code="MULTI_TARGET_GAP_FILL_UNSUPPORTED",
+                errors=[f"{exc}: multi-target Blackbox schemes cannot be gap-filled; fill other schemes with --scheme-id"],
+            )
         except (OSError, UnicodeError, TypeError, ValueError) as exc:
             return _report(
                 "BLOCKED",
@@ -694,6 +702,10 @@ def _build_groups(plan: Mapping[str, Any]) -> tuple[_GapGroup, ...]:
     return tuple(result)
 
 
+class _MultiTargetUnsupported(ValueError):
+    """补跑执行层只支持单 delivery 方案；多目标方案须在任何 run 写入前拒绝。"""
+
+
 def _load_and_validate_configs(
     groups: Sequence[_GapGroup],
     *,
@@ -730,6 +742,8 @@ def _load_and_validate_configs(
             raise ValueError(
                 f"discovery identity drift for {group.base_scheme_id}"
             )
+        if len(getattr(cfg, "blackbox_deliveries", ())) > 1:
+            raise _MultiTargetUnsupported(group.base_scheme_id)
         configs[group.identity] = cfg
     return configs
 

@@ -628,3 +628,34 @@ def test_signal_gap_fill_lock_scope_separates_dates(
 
     with pytest.raises(ValueError, match="scope is invalid"):
         signal_gap_fill._signal_gap_fill_singleton_lock("///")
+
+
+def test_multi_delivery_blackbox_is_blocked_before_any_run_is_created(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from harness.signal_gap_fill import run_signal_gap_fill
+
+    missing = _action("demo_bb", runtime_type="blackbox_v2")
+    plan = _plan([missing])
+    cfg = _config("demo_bb", runtime_type="blackbox_v2")
+    cfg.blackbox_deliveries = (object(), object())
+    repository = _repository()
+    engine, _ = _install(
+        monkeypatch,
+        repository=repository,
+        plan=plan,
+        runner=Mock(),
+        configs={"demo_bb": cfg},
+    )
+
+    report = run_signal_gap_fill(
+        plan=plan,
+        project_root=tmp_path,
+        engine_factory=lambda: engine,
+        databridge_config=SimpleNamespace(),
+    )
+
+    assert report["status"] == "BLOCKED"
+    assert report["failure_code"] == "MULTI_TARGET_GAP_FILL_UNSUPPORTED"
+    repository.create_scheme_run.assert_not_called()
