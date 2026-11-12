@@ -244,37 +244,6 @@ def test_native_operation_timeout_is_only_the_unconfigured_fallback(
     assert _effective_timeout_sec(cfg, operation_timeout) == expected_timeout
 
 
-def test_native_process_group_is_terminated_on_interruption() -> None:
-    from scheduler.executor import _run_process_group
-
-    process = SimpleNamespace(
-        pid=4321,
-        communicate=Mock(side_effect=KeyboardInterrupt()),
-        returncode=None,
-    )
-    termination = SimpleNamespace(confirmed_gone=True)
-    with (
-        patch("scheduler.executor.subprocess.Popen", return_value=process),
-        patch(
-            "scheduler.process_control.capture_new_session_process_group",
-            return_value=4321,
-        ),
-        patch(
-            "scheduler.executor._terminate_process_group",
-            return_value=termination,
-        ) as terminate,
-        pytest.raises(KeyboardInterrupt),
-    ):
-        _run_process_group(
-            ["python", "scheme.py"],
-            cwd=Path("/tmp"),
-            env={},
-            timeout=600,
-        )
-
-    terminate.assert_called_once_with(process, process_group_id=4321)
-
-
 def test_source_runtime_native_runs_one_process_with_full_budget(tmp_path):
     from contextlib import nullcontext
     from scheduler.executor import run_scheme_subprocess

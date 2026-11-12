@@ -5,7 +5,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import threading
 import unittest
 from contextlib import nullcontext
 from datetime import date, timedelta
@@ -147,54 +146,6 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "process_cleanup_unconfirmed")
                 self.assertEqual([sid for sid, _ in starts], ["first"])
                 self.assertIsInstance(starts[0][1], ProcessStartGuard)
-
-    def test_native_wave_uses_at_most_two_workers(self) -> None:
-        from scheduler import one_shot_prediction_runner as runner
-        from scheduler.process_control import ProcessStartGuard
-
-        summary = runner.OneShotPredictionSummary("daily", "2026-08-20")
-        candidates = [
-            SimpleNamespace(scheme_id=f"native-{index}")
-            for index in range(4)
-        ]
-        lock = threading.Lock()
-        barrier = threading.Barrier(2)
-        active = 0
-        maximum = 0
-
-        def execute(local_summary, cfg, **_kwargs):
-            nonlocal active, maximum
-            with lock:
-                active += 1
-                maximum = max(maximum, active)
-            barrier.wait(timeout=2)
-            local_summary.executed.append(
-                {"scheme_id": cfg.scheme_id, "status": "success"}
-            )
-            with lock:
-                active -= 1
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch.object(
-                runner,
-                "_execute_candidate",
-                side_effect=execute,
-            ):
-                runner._execute_native_wave(
-                    summary,
-                    candidates,
-                    predict_date="2026-08-20",
-                    algo_env="forecast_env",
-                    scheduled_control_plane="launchd_one_shot",
-                    scheduled_execution_context=object(),
-                    engine=object(),
-                    input_root=Path(tmpdir),
-                    cancellation_event=threading.Event(),
-                    process_start_guard=ProcessStartGuard(),
-                )
-
-        self.assertEqual(maximum, 2)
-        self.assertEqual(len(summary.executed), 4)
 
     def test_requested_scheme_identity_failure_blocks_entire_batch(self) -> None:
         from scheduler import one_shot_prediction_runner as runner

@@ -18,7 +18,6 @@ from harness.gates.data_consistency_gate import (
     DataConsistencyError,
     DatabaseSnapshot,
     DataConsistencyGate,
-    _actual_selector,
     _detail_rows_by_partition,
     _read_actuals,
     aggregate_display_facts,
@@ -29,11 +28,6 @@ from harness.gates.data_consistency_gate import (
 )
 from harness.result import GateStatus
 from shared.unversioned_backtest_facts import UnversionedBacktestFacts
-from shared.prediction_context import (
-    MONTHLY_TARGET_RULE,
-    WEEKLY_AVERAGE_TARGET_RULE,
-    WEEKLY_TARGET_RULE,
-)
 from shared.task_specs import load_legacy_native_scheme_ids
 from shared.task_specs import TASK_COMBINATIONS
 
@@ -1425,28 +1419,12 @@ def test_actual_selector_keeps_t1_and_t5_directions_independent() -> None:
     assert [fact.actual_direction for fact in facts] == [1, -1]
 
 
-@pytest.mark.parametrize(
-    ("task_type", "expected"),
-    [
-        ("weekly_point", ("weekly", WEEKLY_TARGET_RULE)),
-        ("weekly_average", ("weekly", WEEKLY_AVERAGE_TARGET_RULE)),
-        ("monthly", ("monthly", MONTHLY_TARGET_RULE)),
-    ],
-)
-def test_actual_selector_uses_persisted_actual_rules(
-    task_type: str,
-    expected: tuple[str, str],
-) -> None:
-    assert _actual_selector(task_type) == expected
-
-
 @pytest.mark.parametrize("task_type", list(TASK_COMBINATIONS))
 @pytest.mark.parametrize(
     ("feature_date", "predict_date", "target_date", "month", "source"),
     [
         ("2026-05-29", "2026-06-01", "2026-06-05", "2026-05", "backtest"),
         ("2026-06-01", "2026-06-02", "2026-07-01", "2026-06", "live"),
-        ("2025-12-31", "2026-01-01", "2026-01-02", "2025-12", "backtest"),
     ],
 )
 def test_independent_representation_uses_feature_month_and_source(

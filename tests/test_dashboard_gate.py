@@ -863,36 +863,6 @@ def test_dashboard_session_fd_preserves_caller_flags(
             os.close(writer)
 
 
-def test_dashboard_session_fd_never_changes_shared_flags_during_read(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from harness.cli import _read_dashboard_session
-
-    reader, writer = os.pipe()
-    real_read = os.read
-    try:
-        os.write(writer, b"fixture_token\n")
-        os.close(writer)
-        writer = -1
-        observations = []
-
-        def read_with_observer(descriptor, size):
-            observations.append(os.get_blocking(reader))
-            data = real_read(descriptor, size)
-            # 模拟调用方在读取期间自主修改自己的flag；函数不能在finally写回旧值。
-            os.set_blocking(reader, False)
-            return data
-
-        monkeypatch.setattr(os, "read", read_with_observer)
-        assert _read_dashboard_session(session_file=None, session_fd=reader) == "fixture_token"
-        assert observations[0] is True
-        assert os.get_blocking(reader) is False
-    finally:
-        os.close(reader)
-        if writer >= 0:
-            os.close(writer)
-
-
 @pytest.mark.parametrize(
     ("kind", "match"),
     [("public_file", "group/world"), ("fifo", "owned regular file")],

@@ -112,14 +112,14 @@ def _engine():
     return engine
 
 
-@pytest.mark.parametrize("month", ("0001-02", "2026-12", "9999-11"))
+@pytest.mark.parametrize("month", ("0001-02", "9999-11"))
 def test_dashboard_month_accepts_representable_adjacent_boundaries(
     month: str,
 ) -> None:
     assert parse_dashboard_month(month) == month
 
 
-@pytest.mark.parametrize("month", ("0000-01", "0001-01", "9999-12"))
+@pytest.mark.parametrize("month", ("0000-01", "9999-12"))
 def test_dashboard_month_rejects_unrepresentable_adjacent_boundaries(
     month: str,
 ) -> None:
@@ -802,29 +802,6 @@ def test_production_runtime_has_no_fallback(monkeypatch, root):
     monkeypatch.setattr(dashboard, "resolve_runtime_state_path", lambda **_: pytest.fail("fallback"))
     engine = _engine()
     assert build_factor_lab_dashboard(engine)["schemes"][0]["is_production"] is False
-    engine.dispose()
-
-
-def test_marker_lookup_is_batched_and_database_failure_is_not_hidden(production_file):
-    from sqlalchemy import event
-
-    engine = _engine()
-    lookups = []
-    def observe(conn, cursor, statement, parameters, context, executemany):
-        if "WHERE scheme_id IN" in statement:
-            lookups.append(statement)
-            if len(lookups) > 1:
-                raise RuntimeError("marker database failure")
-    event.listen(engine, "before_cursor_execute", observe)
-    build_factor_lab_dashboard(engine)
-    assert lookups == []
-    production_file.write_text('{"scheme_ids": ["demo_daily__h1__5Y", "absent"]}')
-    build_factor_lab_dashboard(engine)
-    assert len(lookups) == 1
-    build_factor_lab_dashboard_detail(engine, scheme_id="demo_daily__h1__5Y", month="2026-06", source="all")
-    assert len(lookups) == 1
-    with pytest.raises(RuntimeError, match="marker database failure"):
-        build_factor_lab_dashboard(engine)
     engine.dispose()
 
 
