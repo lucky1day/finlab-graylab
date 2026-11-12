@@ -8,6 +8,7 @@ MySQL 内，不触碰生产。用于在不等待自然窗口的情况下验证�
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -80,13 +81,17 @@ def _sql(port: int, statement: str) -> list[list[str]]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release", type=Path, default=(PROD / "current").resolve())
-    parser.add_argument("--predict-date", required=True, help="要重放的日频预测日，生产当日须已有这些方案的预测")
+    parser.add_argument("--predict-date", required=True, help="要重放的日频预测日，必须等于 DataBridge current 的 refresh_date，且生产当日已有这些方案的预测")
     parser.add_argument("--scheme-id", action="append", required=True, dest="scheme_ids")
     parser.add_argument("--port", type=int, default=3396)
     parser.add_argument("--with-source-tables", action="store_true", help="同时导出大体量 Wind 源表并配置 W4 源库（重放 W4 Native 方案时需要）")
     parser.add_argument("--keep", action="store_true", help="结束后保留临时目录与 MySQL 以便排查")
     args = parser.parse_args(argv)
     release = args.release.resolve()
+    current_refresh = json.loads((RUNTIME / "data-bridge" / "refresh" / "state.json").read_text(encoding="utf-8"))["refresh_date"]
+    if current_refresh != args.predict_date:
+        print(f"--predict-date {args.predict_date} 与 DataBridge current 的 refresh_date {current_refresh} 不一致：重放只能使用当前数据日", file=sys.stderr)
+        return 2
     work = Path(tempfile.mkdtemp(prefix="bfl-replay-", dir=Path.home() / ".cache"))
     port, mysqld = args.port, None
     in_list = ",".join(f"'{s}'" for s in args.scheme_ids)
@@ -143,7 +148,6 @@ def main(argv: list[str] | None = None) -> int:
             "PATH": "/Users/macstudio0/miniconda3/condabin:/Users/macstudio0/miniconda3/bin:/usr/bin:/bin:/usr/sbin:/sbin",
         })
         if args.with_source_tables:
-            import json
             source_dir = work / "source-cfg"
             source_dir.mkdir(mode=0o700)
             template = json.loads(_SOURCE_CONFIG.read_text(encoding="utf-8"))
