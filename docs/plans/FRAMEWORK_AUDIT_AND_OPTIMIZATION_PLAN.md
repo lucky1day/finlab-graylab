@@ -328,3 +328,10 @@ ECS 读回尚未取得。
 - G6 DataBridge 06:30 窗口耗时与磁盘占用在预算内（旁路产物按 generation 保留最近两代）。
 
 **风险与对策。** 旁路导出耗时拖长 DataBridge 刷新 → 放在标准发布之后、失败不阻断；磁盘占用 → 只保留 current 与 previous 两代；二进制对 Python 3.13 darwin arm64 的绑定 → 与 `forecast_env_blackbox_v1` 同版本，环境指纹已纳入 exact；外壳静态策略 → 经批准的内嵌运行时例外，隔离解包审计后入库。
+
+### 14.1 实施进度
+
+- **已完成（2026-11-13，未发布，无生产影响）：** ① 合同字段 `input_profile`（`standard` 缺省 | `raw_wind_v1`），严格校验、测试与上游合同文档；② 导出器 `shared/data_bridge/raw_wind.py`：9 张表按二进制实际读取的列确定性导出，内容寻址、只读，manifest 记录每列类型、行数、字节数与 sha256，附参考读取实现 `read_raw_wind_frame`；单元测试 12 项加 MySQL 集成测试（DECIMAL/DATETIME/JSON/NULL 与流式游标）。
+- **G1 在真实数据上通过：** Mac3 生产库副本上导出 16.6 秒，合计 108MB（日 61.2、日衍生 29.3、周 4.6、周衍生 10.0、月 0.5、月衍生 0.3、日期/日历/目录 2.0）；9 张表读回后与 `pandas.read_sql` 的 dtype 与值逐位相同。
+- **格式约定（交付外壳须自行实现等价读取）：** UTF-8、LF、标准 CSV；`\N` 表示 NULL，以反斜杠开头的字符串多加一个反斜杠；浮点按精确解析（逐值 `float()`，不得用 pandas 默认快速解析器）；每列类型见 manifest。
+- **下一步：** 输入组装（`compose_blackbox_input_bundle` 的 `input_profile`、`expected_filenames` 扩展、`combined_snapshot_id`、运行视图封存校验）与生产者钩子（G3、G4），然后是交付外壳（G2）。
