@@ -5,30 +5,19 @@ import shutil
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
-import pytest
 from sqlalchemy import create_engine, event, text
 
 from harness.context import GateContext
-from harness.gates.data_consistency_gate import (
-    ConsistencyFact,
-    DataConsistencyError,
-    DatabaseSnapshot,
-    DataConsistencyGate,
-    _detail_rows_by_partition,
-    _read_actuals,
-    aggregate_display_facts,
-    build_representation_facts,
-    validate_snapshot_completeness,
-    validate_snapshot_lineage,
-    validate_and_join_facts,
-)
+from harness.gates.consistency.common import DatabaseSnapshot
+from harness.gates.consistency.completeness import validate_snapshot_completeness
+from harness.gates.consistency.lineage import validate_snapshot_lineage
+from harness.gates.consistency.snapshot import _read_actuals
+from harness.gates.data_consistency_gate import DataConsistencyGate
 from harness.result import GateStatus
 from shared.unversioned_backtest_facts import UnversionedBacktestFacts
-from shared.task_specs import load_legacy_native_scheme_ids
 from shared.task_specs import TASK_COMBINATIONS
 
 
@@ -519,9 +508,13 @@ def _context(tmp_path: Path, engine) -> GateContext:
     )
 
 
-def _gate(fetcher) -> DataConsistencyGate:
+def _gate(fetcher, **kwargs) -> DataConsistencyGate:
+    details = _details()
     return DataConsistencyGate(
         fetcher=fetcher,
+        **kwargs,
+        summary_builder=lambda _engine: _summary(),
+        detail_builder=lambda _engine, *, scheme_id, month, source: details.get((month, source)),
         clock=lambda: datetime(
             2026,
             6,
@@ -626,45 +619,6 @@ def test_live_fact_must_reference_a_run_that_produced_its_business_key(
     assert any("live product run binding drift" in error for error in result.errors)
 
 
-def test_representation_remains_independent_when_lineage_dates_fail(
-    tmp_path: Path,
-) -> None:
-    engine = _engine(tmp_path)
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                "UPDATE t_scheme_predictions SET predict_date = '2026-05-18' "
-                "WHERE id = 1"
-            )
-        )
-        connection.execute(
-            text(
-                "UPDATE t_backtest_predictions SET predict_date = '2026-05-18' "
-                "WHERE id = 1"
-            )
-        )
-    base_fetcher, _calls = _fetcher()
-
-    def fetcher(url, **kwargs):
-        payload, status, metadata = base_fetcher(url, **kwargs)
-        query = parse_qs(urlsplit(url).query)
-        if query.get("month") == ["2026-05"]:
-            payload = {**payload, "rows": [list(row) for row in payload["rows"]]}
-            payload["rows"][0][1] = "2026-05-18"
-        return payload, status, metadata
-
-    result = _gate(fetcher).run(_context(tmp_path, engine))
-
-    evidence = {item.key: item.value for item in result.evidence}
-    assert result.status is GateStatus.FAILED
-    assert evidence["completeness"]["status"] == "PASSED"
-    assert evidence["lineage"]["status"] == "FAILED"
-    assert evidence["representation"]["status"] == "PASSED"
-    assert evidence["joined_fact_count"] == 3
-    assert evidence["business_contract_validated_fact_count"] == 0
-    assert any("feature <= predict <= target" in error for error in result.errors)
-
-
 def test_data_consistency_gate_detects_missing_expected_live_prediction(
     tmp_path: Path,
 ) -> None:
@@ -696,7 +650,6 @@ def test_data_consistency_gate_detects_prediction_exact_drift(
     assert evidence["completeness"]["status"] == "PASSED"
     assert evidence["lineage"]["status"] == "FAILED"
     assert evidence["representation"]["status"] == "PASSED"
-    assert evidence["business_contract_validated_fact_count"] == 3
     assert any("exact" in error and "drift" in error for error in result.errors)
 
 
@@ -1146,17 +1099,7 @@ def test_data_consistency_gate_applies_one_total_http_budget(tmp_path: Path) -> 
         elapsed["value"] += 6.0
         return response
 
-    gate = DataConsistencyGate(
-        fetcher=slow_fetcher,
-        clock=lambda: datetime(
-            2026,
-            6,
-            30,
-            12,
-            tzinfo=ZoneInfo("Asia/Shanghai"),
-        ),
-        monotonic=lambda: elapsed["value"],
-    )
+    gate = _gate(slow_fetcher, monotonic=lambda: elapsed["value"])
     ctx = replace(_context(tmp_path, engine), timeout_sec=10)
 
     result = gate.run(ctx)
@@ -1175,7 +1118,7 @@ def test_data_consistency_gate_detects_summary_count_drift(tmp_path: Path) -> No
     result = _gate(fetcher).run(_context(tmp_path, engine))
 
     assert result.status is GateStatus.FAILED
-    assert any("Summary monthly rows mismatch" in error for error in result.errors)
+    assert any("Summary scheme mismatch" in error and "monthly_rows" in error for error in result.errors)
 
 
 def test_data_consistency_gate_detects_actual_join_drift_in_detail(
@@ -1187,50 +1130,7 @@ def test_data_consistency_gate_detects_actual_join_drift_in_detail(
     result = _gate(fetcher).run(_context(tmp_path, engine))
 
     assert result.status is GateStatus.FAILED
-    assert any("Detail rows mismatch" in error for error in result.errors)
-
-
-def test_data_consistency_gate_rejects_duplicate_business_key_even_when_exact_differs(
-    tmp_path: Path,
-) -> None:
-    engine = _engine(tmp_path)
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                """
-                INSERT INTO t_scheme_predictions
-                    (id, run_id, backtest_run_id, scheme_version, scheme_id,
-                     target_tenor, horizon, predict_date, feature_date,
-                     target_date, predicted_direction, backtest_actual_direction)
-                VALUES (4, 11, NULL, 'exact-b', :scheme_id, '5Y', 1,
-                        '2026-06-12', '2026-06-10', '2026-06-11', 1, NULL)
-                """
-            ),
-            {"scheme_id": BASE_SCHEME_ID},
-        )
-    fetcher, _calls = _fetcher()
-
-    result = _gate(fetcher).run(_context(tmp_path, engine))
-
-    assert result.status is GateStatus.FAILED
-    assert any("exact version is not part" in error for error in result.errors)
-
-
-def test_data_consistency_gate_rejects_conflicting_actual_facts(tmp_path: Path) -> None:
-    engine = _engine(tmp_path)
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                "INSERT INTO t_scheme_actuals VALUES "
-                "('5Y', '2026-06-10', 1, NULL)"
-            )
-        )
-    fetcher, _calls = _fetcher()
-
-    result = _gate(fetcher).run(_context(tmp_path, engine))
-
-    assert result.status is GateStatus.FAILED
-    assert any("conflicting Actual facts" in error for error in result.errors)
+    assert any("Detail mismatch" in error and "rows" in error for error in result.errors)
 
 
 def test_data_consistency_gate_requires_run_reference_to_same_scheme(
@@ -1249,7 +1149,7 @@ def test_data_consistency_gate_requires_run_reference_to_same_scheme(
     result = _gate(fetcher).run(_context(tmp_path, engine))
 
     assert result.status is GateStatus.FAILED
-    assert any("another scheme's live run" in error for error in result.errors)
+    assert any("scheme drift" in error for error in result.errors)
 
 
 def test_data_consistency_gate_blocks_if_selected_facts_change_during_http_window(
@@ -1332,249 +1232,6 @@ def test_database_change_takes_precedence_over_http_probe_failure(
 
     assert result.status is GateStatus.BLOCKED
     assert all("probe failed" not in error for error in result.errors)
-
-
-def test_actual_selector_keeps_t1_and_t5_directions_independent() -> None:
-    rule = "target_date_yield_vs_feature_date_yield"
-    snapshot = DatabaseSnapshot(
-        registry_rows=(
-            {
-                "scheme_id": "daily_1__h1__5Y",
-                "base_scheme_id": "daily_1",
-                    "horizon": 1,
-                    "task_type": "T+1",
-                    "runtime_type": "blackbox_v2",
-                    "frequency": "daily",
-                "target_tenor": "5Y",
-                "status": "active",
-            },
-            {
-                "scheme_id": "daily_5__h5__5Y",
-                "base_scheme_id": "daily_5",
-                    "horizon": 5,
-                    "task_type": "T+5",
-                    "runtime_type": "blackbox_v2",
-                    "frequency": "daily",
-                "target_tenor": "5Y",
-                "status": "active",
-            },
-        ),
-        prediction_rows=(
-            {
-                "id": 1,
-                "run_id": 1,
-                "backtest_run_id": None,
-                "scheme_version": "a",
-                "scheme_id": "daily_1",
-                "target_tenor": "5Y",
-                "horizon": 1,
-                "predict_date": "2026-06-10",
-                "feature_date": "2026-06-09",
-                "target_date": "2026-06-10",
-                "predicted_direction": 1,
-                "backtest_actual_direction": None,
-            },
-            {
-                "id": 2,
-                "run_id": 2,
-                "backtest_run_id": None,
-                "scheme_version": "b",
-                "scheme_id": "daily_5",
-                "target_tenor": "5Y",
-                "horizon": 5,
-                "predict_date": "2026-06-10",
-                "feature_date": "2026-06-09",
-                "target_date": "2026-06-16",
-                "predicted_direction": -1,
-                "backtest_actual_direction": None,
-            },
-        ),
-        actual_rows=(
-            {
-                "actual_kind": "daily_1d",
-                "target_tenor": "5Y",
-                "target_date": "2026-06-10",
-                "target_rule": rule,
-                "actual_direction": 1,
-            },
-            {
-                "actual_kind": "daily_5d",
-                "target_tenor": "5Y",
-                "target_date": "2026-06-16",
-                "target_rule": rule,
-                "actual_direction": -1,
-            },
-        ),
-        live_runs=(
-            {"reference_id": 1, "scheme_id": "daily_1", "status": "success"},
-            {"reference_id": 2, "scheme_id": "daily_5", "status": "success"},
-        ),
-        backtest_runs=(),
-        calendar_rows=_calendar_rows(date(2026, 6, 1), date(2026, 6, 30)),
-        digest="fixture",
-    )
-
-    facts = validate_and_join_facts(snapshot, display_until="2026-06-30")
-
-    assert [fact.actual_direction for fact in facts] == [1, -1]
-
-
-@pytest.mark.parametrize("task_type", list(TASK_COMBINATIONS))
-@pytest.mark.parametrize(
-    ("feature_date", "predict_date", "target_date", "month", "source"),
-    [
-        ("2026-05-29", "2026-06-01", "2026-06-05", "2026-05", "backtest"),
-        ("2026-06-01", "2026-06-02", "2026-07-01", "2026-06", "live"),
-    ],
-)
-def test_independent_representation_uses_feature_month_and_source(
-    task_type: str,
-    feature_date: str,
-    predict_date: str,
-    target_date: str,
-    month: str,
-    source: str,
-) -> None:
-    fact = ConsistencyFact(
-        scheme_id="feature-axis__h1__5Y",
-        target_tenor="5Y",
-        horizon=1,
-        task_type=task_type,
-        predict_date=predict_date,
-        feature_date=feature_date,
-        target_date=target_date,
-        predicted_direction=-1,
-        actual_direction=-1,
-    )
-
-    assert aggregate_display_facts([fact]) == {
-        fact.scheme_id: [
-            [month, source, 1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1]
-        ]
-    }
-    assert _detail_rows_by_partition([fact]) == {
-        (fact.scheme_id, month, source): [
-            [source, predict_date, feature_date, target_date, -1, -1]
-        ]
-    }
-
-    earlier_feature = replace(fact, feature_date=f"{month}-01")
-    later_feature = replace(
-        fact,
-        feature_date=f"{month}-02",
-        target_date=(date.fromisoformat(target_date) - timedelta(days=1)).isoformat(),
-    )
-    rows = _detail_rows_by_partition([later_feature, earlier_feature])[
-        (fact.scheme_id, month, source)
-    ]
-    assert [row[2:4] for row in rows] == [
-        [earlier_feature.feature_date, earlier_feature.target_date],
-        [later_feature.feature_date, later_feature.target_date],
-    ]
-
-
-@pytest.mark.parametrize(
-    "builder", [build_representation_facts, validate_and_join_facts]
-)
-@pytest.mark.parametrize(
-    ("feature_date", "predict_date", "display_until", "included"),
-    [
-        ("2024-12-31", "2025-01-01", "2025-01-02", False),
-        ("2025-01-01", "2025-01-02", "2025-01-02", True),
-        ("2025-01-01", "2025-01-02", "2025-01-01", False),
-    ],
-)
-def test_representation_history_uses_feature_start_and_signal_visibility(
-    builder: Callable[..., list[ConsistencyFact]],
-    feature_date: str,
-    predict_date: str,
-    display_until: str,
-    included: bool,
-) -> None:
-    snapshot = _date_contract_snapshot(
-        "T+1", predict_date, feature_date, predict_date
-    )
-    snapshot = replace(
-        snapshot,
-        calendar_rows=_calendar_rows(date(2024, 12, 1), date(2025, 2, 1)),
-    )
-
-    facts = builder(snapshot, display_until=display_until)
-
-    assert bool(facts) is included
-
-
-@pytest.mark.parametrize(
-    ("base_scheme_id", "task_type", "horizon", "frequency"),
-    [
-        ("weekly_avg_5y_lgbm_0529", "weekly_average", 6, "weekly"),
-        ("monthly_5y_knn_top20_0629", "monthly", 30, "monthly"),
-    ],
-)
-def test_registered_w4_native_runtime_contract_is_accepted(
-    base_scheme_id: str,
-    task_type: str,
-    horizon: int,
-    frequency: str,
-) -> None:
-    snapshot = DatabaseSnapshot(
-        registry_rows=(
-            {
-                "scheme_id": f"{base_scheme_id}__h{horizon}__5Y",
-                "base_scheme_id": base_scheme_id,
-                "horizon": horizon,
-                "task_type": task_type,
-                "runtime_type": "native_adapter",
-                "frequency": frequency,
-                "target_tenor": "5Y",
-                "status": "active",
-            },
-        ),
-        prediction_rows=(),
-        actual_rows=(),
-        live_runs=(),
-        backtest_runs=(),
-        calendar_rows=_calendar_rows(date(2026, 1, 1), date(2026, 2, 1)),
-        digest="native-contract",
-    )
-
-    assert validate_and_join_facts(
-        snapshot,
-        display_until="2026-02-01",
-        legacy_native_scheme_ids=load_legacy_native_scheme_ids(
-            Path(__file__).resolve().parents[1]
-        ),
-    ) == []
-
-
-def test_unregistered_native_and_blackbox_h6_are_rejected() -> None:
-    base = {
-        "scheme_id": "unknown__h6__5Y",
-        "base_scheme_id": "unknown",
-        "horizon": 6,
-        "task_type": "weekly_point",
-        "target_tenor": "5Y",
-        "status": "active",
-        "frequency": "weekly",
-    }
-    for runtime_type in ("native_adapter", "blackbox_v2"):
-        snapshot = DatabaseSnapshot(
-            registry_rows=({**base, "runtime_type": runtime_type},),
-            prediction_rows=(),
-            actual_rows=(),
-            live_runs=(),
-            backtest_runs=(),
-            calendar_rows=_calendar_rows(date(2026, 1, 1), date(2026, 2, 1)),
-            digest="invalid-runtime-contract",
-        )
-        with pytest.raises(DataConsistencyError, match="task contract mismatch"):
-            validate_and_join_facts(
-                snapshot,
-                display_until="2026-02-01",
-                legacy_native_scheme_ids=load_legacy_native_scheme_ids(
-                    Path(__file__).resolve().parents[1]
-                ),
-            )
 
 
 def _pre_lineage_backtest_snapshot() -> DatabaseSnapshot:
@@ -1677,26 +1334,6 @@ def test_missing_backtest_lineage_is_an_authority_gap_not_an_error() -> None:
     ]
 
 
-def test_cross_scheme_backtest_reference_is_an_error() -> None:
-    snapshot = _pre_lineage_backtest_snapshot()
-    snapshot = replace(
-        snapshot,
-        backtest_runs=(
-            {**snapshot.backtest_runs[0], "scheme_id": "other_source"},
-        ),
-    )
-
-    errors, _details = validate_snapshot_lineage(snapshot)
-    assert (
-        "unapproved backtest lineage source: "
-        "prediction=legacy_blackbox source=other_source"
-    ) in errors
-    with pytest.raises(
-        DataConsistencyError, match="another scheme's backtest run"
-    ):
-        validate_and_join_facts(snapshot, display_until="2026-06-30")
-
-
 def test_backtest_lineage_drift_is_an_error() -> None:
     snapshot = _pre_lineage_backtest_snapshot()
     snapshot = replace(
@@ -1719,122 +1356,6 @@ def test_backtest_lineage_drift_is_an_error() -> None:
 
     assert errors == ["backtest lineage drift: run_id=9 field=code_hash"]
     assert details["authority_gaps"] == []
-
-
-@pytest.mark.parametrize(
-    ("task_type", "predict_date", "feature_date", "target_date"),
-    [
-        ("T+1", "2026-06-10", "2026-06-09", "2026-06-11"),
-        ("T+5", "2026-06-10", "2026-06-09", "2026-06-17"),
-        ("weekly_point", "2026-06-13", "2026-06-12", "2026-06-26"),
-        ("weekly_average", "2026-06-13", "2026-06-11", "2026-06-19"),
-        ("monthly", "2026-06-15", "2026-06-12", "2026-07-15"),
-        ("monthly_average", "2026-06-12", "2026-06-12", "2026-06-13"),
-        ("quarterly_average", "2026-06-29", "2026-06-29", "2026-06-30"),
-        ("annual_average", "2027-02-04", "2027-02-04", "2027-02-05"),
-    ],
-)
-def test_fact_validation_rejects_ordered_dates_outside_task_business_contract(
-    task_type: str,
-    predict_date: str,
-    feature_date: str,
-    target_date: str,
-) -> None:
-    snapshot = _date_contract_snapshot(
-        task_type,
-        predict_date,
-        feature_date,
-        target_date,
-    )
-
-    with pytest.raises(DataConsistencyError, match="business contract"):
-        validate_and_join_facts(snapshot, display_until="2027-03-31")
-
-
-@pytest.mark.parametrize(
-    ("task_type", "predict_date", "feature_date", "target_date"),
-    [
-        ("T+1", "2026-06-10", "2026-06-09", "2026-06-10"),
-        ("T+5", "2026-06-10", "2026-06-09", "2026-06-16"),
-        ("weekly_point", "2026-06-13", "2026-06-12", "2026-06-19"),
-        ("weekly_average", "2026-06-13", "2026-06-12", "2026-06-19"),
-        ("monthly", "2026-06-15", "2026-06-15", "2026-07-15"),
-        ("monthly_average", "2026-06-15", "2026-06-15", "2026-06-16"),
-        ("quarterly_average", "2026-06-30", "2026-06-30", "2026-07-01"),
-        ("annual_average", "2027-02-05", "2027-02-05", "2027-02-06"),
-    ],
-)
-def test_fact_validation_accepts_each_task_business_date_contract(
-    task_type: str,
-    predict_date: str,
-    feature_date: str,
-    target_date: str,
-) -> None:
-    snapshot = _date_contract_snapshot(
-        task_type,
-        predict_date,
-        feature_date,
-        target_date,
-    )
-
-    facts = validate_and_join_facts(snapshot, display_until="2027-03-31")
-
-    assert len(facts) == 1
-    assert facts[0].task_type == task_type
-
-
-def test_daily_live_rejects_ordered_dates_when_predict_date_is_not_trading_day() -> None:
-    snapshot = _date_contract_snapshot(
-        "T+1",
-        "2026-06-14",
-        "2026-06-12",
-        "2026-06-15",
-    )
-
-    with pytest.raises(DataConsistencyError, match="trading day"):
-        validate_and_join_facts(snapshot, display_until="2026-06-30")
-
-
-def test_daily_backtest_rejects_ordered_dates_when_feature_is_not_trading_day() -> None:
-    snapshot = _date_contract_snapshot(
-        "T+1",
-        "2026-06-14",
-        "2026-06-14",
-        "2026-06-15",
-        is_live=False,
-    )
-
-    with pytest.raises(DataConsistencyError, match="trading day"):
-        validate_and_join_facts(snapshot, display_until="2026-06-30")
-
-
-def test_monthly_backtest_keeps_natural_fifteenth_on_non_trading_day() -> None:
-    snapshot = _date_contract_snapshot(
-        "monthly",
-        "2026-02-15",
-        "2026-02-13",
-        "2026-03-13",
-        is_live=False,
-    )
-
-    facts = validate_and_join_facts(snapshot, display_until="2026-06-30")
-
-    assert len(facts) == 1
-    assert facts[0].predict_date == "2026-02-15"
-    assert facts[0].feature_date == "2026-02-13"
-    assert facts[0].target_date == "2026-03-13"
-
-
-def test_weekly_live_rejects_ordered_dates_when_predict_date_is_not_saturday() -> None:
-    snapshot = _date_contract_snapshot(
-        "weekly_point",
-        "2026-06-12",
-        "2026-06-11",
-        "2026-06-19",
-    )
-
-    with pytest.raises(DataConsistencyError, match="natural Saturday"):
-        validate_and_join_facts(snapshot, display_until="2026-06-30")
 
 
 def test_data_consistency_cli_accepts_repeated_selected_schemes() -> None:
@@ -1956,3 +1477,41 @@ def test_unversioned_rows_do_not_mask_other_lineage_results() -> None:
         for gap in details["authority_gaps"]
     )
 
+
+
+def test_representation_partitions_follow_expected_monthly_rows_of_selected_schemes() -> None:
+    from harness.gates.consistency.representation import detail_partitions
+
+    summary = _summary()
+    summary["schemes"].append({**summary["schemes"][0], "scheme_id": "other__h1__5Y"})
+
+    assert detail_partitions(summary, [REGISTRY_ID]) == [
+        (REGISTRY_ID, "2026-05", "backtest"),
+        (REGISTRY_ID, "2026-06", "live"),
+    ]
+
+
+def test_representation_ignores_unselected_schemes_but_not_top_level_fields() -> None:
+    from harness.gates.consistency.representation import compare_summary
+
+    expected = _summary()
+    actual = _summary()
+    actual["schemes"].append({"scheme_id": "unselected__h1__5Y", "monthly_rows": [["x"]]})
+    assert compare_summary(actual, expected, registry_ids=[REGISTRY_ID]) == []
+
+    actual["display_until"] = "2026-07-01"
+    errors = compare_summary(actual, expected, registry_ids=[REGISTRY_ID])
+    assert errors == ["Dashboard Summary top-level mismatch: fields=['display_until']"]
+
+
+def test_representation_reports_missing_scheme_and_volatile_fields_are_ignored() -> None:
+    from harness.gates.consistency.representation import compare_detail, compare_summary
+
+    expected = _summary()
+    actual = {**expected, "snapshot_id": "another-snapshot", "schemes": []}
+    errors = compare_summary(actual, expected, registry_ids=[REGISTRY_ID])
+    assert errors == [f"Dashboard Summary scheme count mismatch: scheme_id={REGISTRY_ID} api=0 database=1"]
+
+    detail = _details()[("2026-05", "backtest")]
+    assert compare_detail({**detail, "snapshot_id": "x"}, detail, scheme_id=REGISTRY_ID, month="2026-05", source="backtest") == []
+    assert "absent in the database" in compare_detail(detail, None, scheme_id=REGISTRY_ID, month="2026-05", source="backtest")[0]

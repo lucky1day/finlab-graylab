@@ -18,49 +18,11 @@ from shared.prediction_context import (
 from shared.task_specs import TASK_COMBINATIONS
 
 
-HISTORY_START_DATE = "2025-01-01"
 # 运行证据的取数边界独立于 Dashboard 展示分区。
 LIVE_RUN_EVIDENCE_START_DATE = LIVE_START_DATE
-LIVE_FEATURE_START_DATE = LIVE_START_DATE
 MAX_RESPONSE_BYTES = 1_500_000
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-MONTHLY_ROW_FIELDS = (
-    "month",
-    "source",
-    "samples",
-    "metric_samples",
-    "correct",
-    "predicted_up",
-    "predicted_down",
-    "predicted_flat",
-    "actual_up",
-    "actual_down",
-    "actual_flat",
-    "up_true_positive",
-    "down_true_positive",
-)
-DETAIL_ROW_FIELDS = (
-    "source",
-    "predict_date",
-    "feature_date",
-    "target_date",
-    "predicted_direction",
-    "actual_direction",
-)
-
-
-@dataclass(frozen=True, slots=True)
-class ConsistencyFact:
-    scheme_id: str
-    target_tenor: str
-    horizon: int
-    task_type: str
-    predict_date: str
-    feature_date: str
-    target_date: str
-    predicted_direction: int
-    actual_direction: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,10 +125,6 @@ def _remaining_budget(
     return remaining
 
 
-def _display_month(fact: ConsistencyFact) -> str:
-    return fact.feature_date[:7]
-
-
 def _actual_selector(task_type: str) -> tuple[str, str]:
     expected = TASK_COMBINATIONS.get(task_type)
     if expected is None:
@@ -194,10 +152,6 @@ def _clock_display_date(clock: Callable[[], datetime]) -> str:
     return value.astimezone(SHANGHAI_TIMEZONE).date().isoformat()
 
 
-def _source(value: str) -> str:
-    return "live" if date.fromisoformat(value) >= LIVE_FEATURE_START_DATE else "backtest"
-
-
 def _required_text(value: Any, *, field: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise DataConsistencyError(f"{field} must be a non-empty canonical string")
@@ -222,12 +176,6 @@ def _positive_int(value: Any, *, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise DataConsistencyError(f"{field} must be a positive integer")
     return value
-
-
-def _optional_positive_int(value: Any, *, field: str) -> int | None:
-    if value is None:
-        return None
-    return _positive_int(value, field=field)
 
 
 def _direction(

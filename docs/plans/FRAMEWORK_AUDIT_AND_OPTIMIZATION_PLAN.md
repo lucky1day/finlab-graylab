@@ -220,3 +220,11 @@ ECS 读回尚未取得。
 | 两个 launchd/systemd 薄入口（各约 55 行）、四个 actuals updater 薄模块（58–164 行）、`backtests/` 小包（723 行） | 模块名被已安装的 plist/unit、AGENTS 的写库单点条款引用 | 合并会改变已安装控制面或根规范，收益小，**不做** |
 | 发布包含 `tests/`（78 个文件）与 `source_evidence/`（约 12MB） | 两端共用同一 archive 是既定原则；`source_evidence` 是 W4 运行输入 | 不动 |
 | 概念面 | 已于迁移 028 收敛；剩余 `gray_replay`（已写入事实的溯源标识）、`t_scheme_registry.status` 的 `archived` 未使用 | 前者属历史事实不能改；后者收益很小 |
+
+## 12. 数据一致性 Gate 瘦身（2026-11-12 用户决定并已实施）
+
+- 决定：保留完整性与血缘检查；展示对账改为复用后端语义。
+- 删除 `harness/gates/consistency/facts.py` 与 `frozen_calendar.py`（独立重算聚合与日期口径）及 `common.py` 中随之无引用的名字；新增 `consistency/representation.py`（约 100 行）：HTTP 响应必须等于 `build_factor_lab_dashboard`/`build_factor_lab_dashboard_detail` 在同一数据库上的输出（忽略 `snapshot_id`/`generated_at`）。预期载荷来源以构造参数注入，测试里替换为手写载荷。
+- 被删除的独立检查及其替代：业务键重复（库内 `uk_scheme_tenor_target`）、不可变 Actual 存在性（completeness）、run 存在/成功/同方案（lineage）、冲突 Actual（库内约束）。**不再独立验证**的只有：特征日 ≤ 预测日 ≤ 目标日的顺序，以及各任务类型的日期口径（由写入侧与 completeness 的预期键推导保证）；展示聚合口径不再被第二套实现交叉验证，只由 Dashboard 自身测试保护。
+- 验证：Mac3 生产库上以进程内 API 分别运行新旧 Gate，两组方案（共 7 个，含多目标、周频、月频、W4、修订方案）的 completeness、lineage 子结果逐字一致，representation 均 PASSED（69 与 160 次 Detail 请求），耗时相同。
+- 规模：实现 -1480 行（含 gate 主模块 -205）、测试 -545 行，净增 representation.py 约 100 行。

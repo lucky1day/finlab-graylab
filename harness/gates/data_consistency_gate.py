@@ -13,134 +13,27 @@ from harness.result import Evidence, GateResult, GateStatus, redact_gate_result
 from scheduler.discovery import load_scheme_config
 from scheduler.repository import registry_scheme_id
 from shared.unversioned_backtest_facts import load_unversioned_backtest_facts
-from shared.task_specs import load_legacy_native_scheme_ids
 from harness.gates.consistency.common import (
-    ConsistencyFact,
-    DETAIL_ROW_FIELDS,
     DataConsistencyAuthorityUnavailable,
     DataConsistencyError,
     DataConsistencyTimeout,
     DatabaseSnapshot,
-    HISTORY_START_DATE,
-    LIVE_FEATURE_START_DATE,
-    LIVE_RUN_EVIDENCE_START_DATE,
     MAX_RESPONSE_BYTES,
-    MONTHLY_ROW_FIELDS,
-    PROJECT_ROOT,
     SHANGHAI_TIMEZONE,
-    _actual_selector,
-    _backtest_source_key,
-    _canonical_json_sha256,
     _clock_display_date,
-    _direction,
-    _display_month,
-    _is_sha256,
-    _is_snapshot_id,
     _iso_date,
-    _json_mapping,
-    _optional_positive_int,
-    _positive_int,
-    _product_business_key,
-    _product_reference_key,
     _remaining_budget,
-    _required_text,
-    _source,
 )
-from harness.gates.consistency.frozen_calendar import (
-    _FrozenCalendar,
-    _next_month_anchor,
-    _validate_task_date_contract,
-)
-from harness.gates.consistency.completeness import (
-    validate_snapshot_completeness,
-)
+from harness.gates.consistency.completeness import validate_snapshot_completeness
 from harness.gates.consistency.lineage import validate_snapshot_lineage
-from harness.gates.consistency.facts import (
-    _compare_detail,
-    _compare_summary,
-    _detail_rows_by_partition,
-    aggregate_display_facts,
-    build_representation_facts,
-    validate_and_join_facts,
+from harness.gates.consistency.representation import (
+    compare_detail,
+    compare_summary,
+    default_detail,
+    default_summary,
+    detail_partitions,
 )
-from harness.gates.consistency.snapshot import (
-    _capture_snapshot,
-    _chunks,
-    _execute_budgeted,
-    _read_actual_watermarks,
-    _read_actuals,
-    _read_authoritative_live_run_ids,
-    _read_backtest_predictions,
-    _read_connection,
-    _read_input_artifacts,
-    _read_predictions,
-    _read_references,
-    _read_versions,
-    _snapshot_digest,
-)
-
-
-__all__ = [
-    "ConsistencyFact",
-    "DETAIL_ROW_FIELDS",
-    "DataConsistencyAuthorityUnavailable",
-    "DataConsistencyError",
-    "DataConsistencyTimeout",
-    "DatabaseSnapshot",
-    "HISTORY_START_DATE",
-    "LIVE_FEATURE_START_DATE",
-    "LIVE_RUN_EVIDENCE_START_DATE",
-    "MAX_RESPONSE_BYTES",
-    "MONTHLY_ROW_FIELDS",
-    "PROJECT_ROOT",
-    "SHANGHAI_TIMEZONE",
-    "_FrozenCalendar",
-    "_actual_selector",
-    "_backtest_source_key",
-    "_canonical_json_sha256",
-    "_capture_snapshot",
-    "_chunks",
-    "_clock_display_date",
-    "_compare_detail",
-    "_compare_summary",
-    "_detail_rows_by_partition",
-    "_direction",
-    "_display_month",
-    "_execute_budgeted",
-    "_is_sha256",
-    "_is_snapshot_id",
-    "_iso_date",
-    "_json_mapping",
-    "_next_month_anchor",
-    "_optional_positive_int",
-    "_positive_int",
-    "_product_business_key",
-    "_product_reference_key",
-    "_read_actual_watermarks",
-    "_read_actuals",
-    "_read_authoritative_live_run_ids",
-    "_read_backtest_predictions",
-    "_read_connection",
-    "_read_input_artifacts",
-    "_read_predictions",
-    "_read_references",
-    "_read_versions",
-    "_remaining_budget",
-    "_required_text",
-    "_snapshot_digest",
-    "_source",
-    "_validate_task_date_contract",
-    "aggregate_display_facts",
-    "build_representation_facts",
-    "validate_and_join_facts",
-    "validate_snapshot_completeness",
-    "validate_snapshot_lineage",
-    "_subresult",
-    "_merge_subresult_error",
-    "DataConsistencyGate",
-    "_selected_registry_ids",
-    "_fetch_json_object",
-]
+from harness.gates.consistency.snapshot import _capture_snapshot
 
 
 def _subresult(
@@ -153,25 +46,8 @@ def _subresult(
     return {"status": status, "errors": list(errors), **details}
 
 
-def _merge_subresult_error(
-    result: Mapping[str, Any],
-    error: str,
-    status: str,
-) -> dict[str, Any]:
-    merged = dict(result)
-    merged["status"] = status
-    merged["errors"] = [*result.get("errors", []), error]
-    return merged
-
-
-_EVIDENCE_LOADERS = (
-    ("unversioned_facts", load_unversioned_backtest_facts),
-    ("legacy_native_ids", load_legacy_native_scheme_ids),
-)
-_LINEAGE_EVIDENCE = (
-    "unversioned_facts",
-    "legacy_native_ids",
-)
+_EVIDENCE_LOADERS = (("unversioned_facts", load_unversioned_backtest_facts),)
+_LINEAGE_EVIDENCE = ("unversioned_facts",)
 
 
 def _missing_evidence(
@@ -181,7 +57,7 @@ def _missing_evidence(
 
 
 class DataConsistencyGate(Gate):
-    """独立对账预测、Actual 与 Dashboard Summary/Detail。"""
+    """校验产品事实的完整性与血缘，并核对 Dashboard HTTP 响应等于后端在同一数据库上的构建结果。"""
 
     name = "data-consistency"
 
@@ -191,7 +67,11 @@ class DataConsistencyGate(Gate):
         fetcher=fetch_json,
         clock: Callable[[], datetime] | None = None,
         monotonic: Callable[[], float] | None = None,
+        summary_builder: Callable[[Any], Mapping[str, Any]] = default_summary,
+        detail_builder: Callable[..., Mapping[str, Any] | None] = default_detail,
     ) -> None:
+        self._summary_builder = summary_builder
+        self._detail_builder = detail_builder
         self._fetcher = fetcher
         self._clock = clock or (lambda: datetime.now(SHANGHAI_TIMEZONE))
         self._monotonic = monotonic or time.monotonic
@@ -220,8 +100,6 @@ class DataConsistencyGate(Gate):
         operation_error: Exception | None = None
         summary: Mapping[str, Any] | None = None
         summary_metadata: Mapping[str, Any] = {}
-        validated_facts: list[ConsistencyFact] = []
-        representation_facts: list[ConsistencyFact] = []
         detail_metadata: list[dict[str, Any]] = []
         completeness = _subresult("BLOCKED", ["completeness not evaluated"])
         lineage = _subresult("BLOCKED", ["lineage not evaluated"])
@@ -248,7 +126,6 @@ class DataConsistencyGate(Gate):
                         f"{label} evidence unavailable: {type(exc).__name__}"
                     )
             unversioned_backtest_facts = loaded.get("unversioned_facts")
-            legacy_native_ids = loaded.get("legacy_native_ids")
             lineage_missing = _missing_evidence(
                 load_errors, _LINEAGE_EVIDENCE
             )
@@ -310,25 +187,7 @@ class DataConsistencyGate(Gate):
                 lineage = _subresult("FAILED", [str(exc)])
 
             try:
-                if lineage_missing:
-                    raise DataConsistencyAuthorityUnavailable(
-                        "; ".join(lineage_missing)
-                    )
-                validated_facts = validate_and_join_facts(
-                    snapshot,
-                    display_until=display_until,
-                    legacy_native_scheme_ids=legacy_native_ids,
-                )
-            except DataConsistencyAuthorityUnavailable:
-                pass  # 缺失证据已由 lineage 子结果以 BLOCKED 报告
-            except DataConsistencyError as exc:
-                lineage = _merge_subresult_error(lineage, str(exc), "FAILED")
-
-            try:
-                representation_facts = build_representation_facts(
-                    snapshot,
-                    display_until=display_until,
-                )
+                expected_summary = self._summary_builder(engine)
                 summary, summary_metadata = _fetch_json_object(
                     self._fetcher,
                     summary_url,
@@ -340,14 +199,9 @@ class DataConsistencyGate(Gate):
                     summary.get("display_until"),
                     field="summary display_until",
                 )
-                expected_monthly = aggregate_display_facts(
-                    representation_facts
-                )
                 _remaining_budget(deadline, self._monotonic)
-                representation_errors = _compare_summary(
-                    summary,
-                    registry_ids=registry_ids,
-                    expected=expected_monthly,
+                representation_errors = compare_summary(
+                    summary, expected_summary, registry_ids=registry_ids
                 )
                 if summary_display_until != display_until:
                     representation_errors.append(
@@ -355,12 +209,10 @@ class DataConsistencyGate(Gate):
                         "independent Shanghai business date"
                     )
 
-                expected_details = _detail_rows_by_partition(
-                    representation_facts
-                )
-                for (scheme_id, month, source), rows in sorted(
-                    expected_details.items()
+                for scheme_id, month, source in detail_partitions(
+                    expected_summary, registry_ids
                 ):
+                    _remaining_budget(deadline, self._monotonic)
                     detail_url = summary_url + "?" + urlencode(
                         {
                             "scheme-id": scheme_id,
@@ -376,13 +228,17 @@ class DataConsistencyGate(Gate):
                         monotonic=self._monotonic,
                     )
                     representation_errors.extend(
-                        _compare_detail(
+                        compare_detail(
                             detail,
+                            self._detail_builder(
+                                engine,
+                                scheme_id=scheme_id,
+                                month=month,
+                                source=source,
+                            ),
                             scheme_id=scheme_id,
                             month=month,
                             source=source,
-                            expected_rows=rows,
-                            display_until=display_until,
                         )
                     )
                     detail_metadata.append(
@@ -428,11 +284,6 @@ class DataConsistencyGate(Gate):
             Evidence("registry_ids", list(registry_ids)),
             Evidence("database_snapshot_digest", snapshot.digest),
             Evidence("prediction_fact_count", len(snapshot.prediction_rows)),
-            Evidence("joined_fact_count", len(representation_facts)),
-            Evidence(
-                "business_contract_validated_fact_count",
-                len(validated_facts),
-            ),
             Evidence(
                 "summary_snapshot_id",
                 summary.get("snapshot_id") if summary is not None else None,

@@ -277,7 +277,7 @@ Dashboard V7 以 `feature_date`（特征基准日）统一确定筛选、区间�
 
 每日/周度验证表同时显示“特征基准日”“预测日”“目标日/目标周期”：特征基准日解释归属和统计范围，预测日解释信号发出时点，目标日/周期解释预测对象及验证结果。actual join 与业务去重使用底层 `target_date`，不会随展示轴变化。例如特征基准日为 5 月 29 日、预测日为 6 月 1 日、目标日为 6 月 5 日的记录，展示在五月回测段，仍按 6 月 5 日关联实际结果；结果分区不能证明它由历史回测或自然调度产生。
 
-实现见[Dashboard 编排](../../backend/factor_lab_dashboard.py)，公共合同见[Dashboard 测试](../../tests/test_dashboard_builder.py)与[独立数据一致性对账](../../tests/test_data_consistency_gate.py)。
+实现见[Dashboard 编排](../../backend/factor_lab_dashboard.py)，公共合同见[Dashboard 测试](../../tests/test_dashboard_builder.py)与[数据一致性对账](../../tests/test_data_consistency_gate.py)。
 
 前端展示的部署时间只能来自 active `t_scheme_registry.deployed_at`。`deployed_at` 的业务语义是该注册业务方案激活并进入业务可见状态的日期，不是定时任务已生产挂载的证据；缺失时说明 registry 数据不完整，后端 API 和前端都必须 fail-closed。生产调度挂载必须另由对应 installed plist、`launchctl` loaded state 和任务日志共同证明。禁止 hardcode 默认部署日、scheme_id override 或在前端用灰度起点/正式实盘起点替代部署时间。
 

@@ -181,14 +181,13 @@ pipe 会立即失败而不会在 Gate 总预算开始前无限等待。传入 FD
 空白、空描述转空字符串，与 API 表示一致，不从 canonical 推断新身份。每个方案分别输出通过/失败，并引用相同
 的 response `snapshot_id`、获取时间和 request ID。一个方案失败不会抹掉其他方案的结果，但整次 Gate 失败。
 普通方案没有 live 月度计数合法，但仍须有回测分区。唯一已登记且旧回测已清除的 5Y/h5 范围可无回测分区，
-前提是 Summary 至少有一行 `samples > 0` 的 live 月度计数；该结构检查不能替代独立 DataConsistency
-对冻结的 78 条 live 事实逐值核验。非 200、响应超限或非法结构均失败。`GateContext.engine_factory` 必须显式绑定该 HTTP
+前提是 Summary 至少有一行 `samples > 0` 的 live 月度计数；该结构检查不能替代 DataConsistency
+对冻结的 78 条 live 事实的完整性与血缘核验。非 200、响应超限或非法结构均失败。`GateContext.engine_factory` 必须显式绑定该 HTTP
 服务的本机数据库，执行前按[手工环境绑定](../../deploy/README.md#手工-harness-的目标环境绑定)核实；未提供
 或查询失败则 Gate 失败，不回退默认库。gzip/no-store/响应头由 API 合同测试保护。
 
 预测值、Actual 与统计数的完整对账使用独立 `DataConsistencyGate`，不能以 Dashboard schema 校验替代。
-该 Gate 从显式绑定的只读数据库快照独立检查业务键、三日期、方向、run 引用与 Actual 事实，并按特征基准日独立形成
-月份/source 计数后对照真实 Summary 及逐分区 Detail；标准答案不得调用 Dashboard builder 或其聚合 helper。
+该 Gate 从显式绑定的只读数据库快照检查产品事实的完整性与血缘，并要求真实 Summary 及逐分区 Detail 的 HTTP 响应等于后端构建函数在同一数据库上的输出。
 `timeout_sec` 是整次对账共享的总预算；Summary、各 Detail 和首尾数据库快照都从同一单调时钟 deadline 扣减，
 不会按方案或月份重新获得完整预算。
 末次重读失败、选定数据库范围首尾摘要不同或上海展示日跨界时结果为 `blocked`，不把可观测到的自然增长
