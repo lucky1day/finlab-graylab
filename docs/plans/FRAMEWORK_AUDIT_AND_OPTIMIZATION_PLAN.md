@@ -228,3 +228,32 @@ ECS 读回尚未取得。
 - 被删除的独立检查及其替代：业务键重复（库内 `uk_scheme_tenor_target`）、不可变 Actual 存在性（completeness）、run 存在/成功/同方案（lineage）、冲突 Actual（库内约束）。**不再独立验证**的只有：特征日 ≤ 预测日 ≤ 目标日的顺序，以及各任务类型的日期口径（由写入侧与 completeness 的预期键推导保证）；展示聚合口径不再被第二套实现交叉验证，只由 Dashboard 自身测试保护。
 - 验证：Mac3 生产库上以进程内 API 分别运行新旧 Gate，两组方案（共 7 个，含多目标、周频、月频、W4、修订方案）的 completeness、lineage 子结果逐字一致，representation 均 PASSED（69 与 160 次 Detail 请求），耗时相同。
 - 规模：实现 -1480 行（含 gate 主模块 -205）、测试 -545 行，净增 representation.py 约 100 行。
+
+## 13. 把 W4 九套 V1（Native）迁移到 Blackbox V2，只维护一套系统（2026-11-12 用户提出，评估）
+
+**为什么值得做。** V1 不是一个小岛：它同时占用源码、测试、运维与文档四个面，且是上面第 11 节里所有"无法再删"项的共同原因（W4 `predict.py` 字节固定，导致其依赖路径不能动）。下面是只读统计的下限。
+
+| 面 | 体量 |
+|---|---|
+| 整文件只服务 Native 的源码 | 约 3400 行（`shared` 的 source 运行器/证据/适配器、`source_runtime_database`、`_native_source`、`native_output`、`_input_artifacts/native`，加 `scripts/run_close_predictions.py`、`scheduler/scheme_runner.py`） |
+| 混在其他文件里的 Native 分支 | 约 400 行起（`complete_active_native_run`、`_execute_native_wave`、补跑的 `_run_native_wave`、`active_native_identity_error` 等，按函数名统计的下限） |
+| 方案目录与证据 | 9 个 W4 方案目录 72 个文件；`source_evidence/` 207 个文件约 12MB（发布包里两端都带） |
+| 测试 | 36 个测试文件提到 Native；整文件专属的约 1500 行（`test_native_executor`、`test_close_prediction_runner`、`test_native_input_artifacts`、`test_source_runner_database_isolation` 等），其余是夹在通用测试里的 Native 用例 |
+| 运维面 | Mac3 月度 launchd 任务（`run_close_predictions`，仅 W4 月频/周均值）、源库凭据配置、`forecast_env` conda 环境、`BFL_SOURCE_DB_CONFIG*`、`legacy_native_scheme_ids` 清单与 Gate/Dashboard 的 legacy 血缘分支 |
+| 文档 | `docs/native_v1/`、`NATIVE_V1_MAINTENANCE_SOP.md`、`MAC_ECS_PARITY_DRAFT.md`（358 行）及 parity 台账 |
+
+**技术上可行的依据。** Blackbox V2 合同已支持 W4 用到的全部任务类型（`T+1`、`monthly`、`weekly_average`，见 `shared/task_specs.py`）；根规范已规定迁移方式："同算法运行时升级保留原 base/Registry ID，以真实新 exact 区分版本，只切未来唯一 Writer，不重算、覆盖或搬删既有历史"（[保真与迁移边界](../architecture/SOURCE_ALGORITHM_FIDELITY.md)）。ECS 不运行 W4，迁移只影响 Mac3。
+
+**迁移后能删什么、必须留什么。** 可删：上表中"整文件只服务 Native"的源码、Native 执行分支、W4 方案目录的 `core/`/`predict.py`、`source_evidence/`、月度 launchd 任务与源库凭据/conda 环境、专属测试与文档。必须留（历史只读）：`t_scheme_versions`/`t_scheme_runs` 里 `native_adapter` 的既有行与其 exact（insert-only 事实不能改），因此 Gate 的 legacy 血缘判定、冻结清单 `deploy/unversioned_backtest_facts_v1.json` 与 Dashboard 对旧事实的读取要保留，预计约 500 行。
+
+**分阶段（每一步独立授权、独立回退）。**
+1. **试点一套。** 选 `daily_*_0629`（日频 T+1，三套之一）。由算法方交付 `{scheme_id}.py` + `.json`（把源码包的预测逻辑改为读 DataBridge 五文件），保持原 base ID，走 SOP 第 4 节「同 ID 修订」：持久化回测到最新数据日 → 激活 → 单日补跑。
+2. **同输入对等验证。** 在 Mac3 上让 Native 与新 V2 对同一批历史日（建议最近 20–40 个交易日）产出，逐日比对方向；差异必须逐条解释（源码包读库 vs DataBridge 导出的口径差异是主要风险）。通过才切 Writer。
+3. **切 Writer。** 同一窗口内：新 exact 成为唯一 active，Native 版本退役（Registry 保留历史）；自然运行首个窗口以真实宿主时钟的 run 为准。
+4. **复制到其余八套。** 月频三套、周均值三套在对应调度窗口各自试点；周均值与月频的 Actual 链路（`period_average`/`monthly` updater）保留，因为 V2 同样产出这两类任务。
+5. **删除 Native 代码与运维面。** 九套全部切完并观察至少一个完整周期后，一次性删除上表可删部分，并同步 AGENTS、部署矩阵、`onboarding_policy_v1.json`（`native_v1_mode` 改为 retired）与文档。
+
+**需要您决定的事。**
+1. **谁产出九套 V2 交付？** Blackbox 内部保真按根规范由上游负责；若由我们代为包装，则须按"源算法保真"逐套证明与源码包等价（并且命中「内嵌运行时外壳」类交付时要先停下报告，见入库 skill）。
+2. **等价标准。** 方向逐日完全一致，还是允许在已解释的口径差异内不一致？这决定了能否切 Writer。
+3. **历史处理。** 默认保留既有 Native 事实不动，只切未来；若希望新 exact 也回填同一历史区间，需要单独授权。
