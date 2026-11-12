@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
-from scheduler.repository import upsert_monthly_actuals, upsert_period_average_actuals
+from scheduler.persistence.actuals import upsert_monthly_actuals_detailed, upsert_period_average_actuals_detailed
 from shared.actual_facts import build_period_average_actual_records_from_rows
 from shared.models import MonthlyActualRecord, PeriodAverageActualRecord
 
@@ -139,8 +139,8 @@ def test_period_average_repository_writes_one_generic_table() -> None:
                 )
             )
         selected = next(item for item in records if item.predict_date == "2024-02-15")
-        assert upsert_period_average_actuals(engine, [selected]) == 1
-        assert upsert_period_average_actuals(engine, [selected]) == 1
+        assert upsert_period_average_actuals_detailed(engine, [selected]).attempted == 1
+        assert upsert_period_average_actuals_detailed(engine, [selected]).attempted == 1
         with engine.connect() as connection:
             original_id = connection.execute(
                 text(
@@ -157,9 +157,9 @@ def test_period_average_repository_writes_one_generic_table() -> None:
             price_signal="空",
             extra={"revision": "same-business-key"},
         )
-        assert upsert_period_average_actuals(engine, [updated]) == 1
+        assert upsert_period_average_actuals_detailed(engine, [updated]).attempted == 1
         other_rule = replace(updated, target_rule="other_target_rule")
-        assert upsert_period_average_actuals(engine, [other_rule]) == 1
+        assert upsert_period_average_actuals_detailed(engine, [other_rule]).attempted == 1
         with engine.connect() as connection:
             stored = connection.execute(
                 text(
@@ -223,7 +223,7 @@ def test_period_average_repository_rolls_back_batch_on_invalid_second_row() -> N
         )
 
         with pytest.raises(IntegrityError):
-            upsert_period_average_actuals(engine, [valid, invalid])
+            upsert_period_average_actuals_detailed(engine, [valid, invalid])
 
         with engine.connect() as connection:
             assert connection.execute(
@@ -277,8 +277,8 @@ def test_monthly_actual_repository_sqlite_upsert_matches_mysql_contract() -> Non
                 )
             )
         original = _monthly_record("2024-02-15")
-        assert upsert_monthly_actuals(engine, [original]) == 1
-        assert upsert_monthly_actuals(engine, [original]) == 1
+        assert upsert_monthly_actuals_detailed(engine, [original]).attempted == 1
+        assert upsert_monthly_actuals_detailed(engine, [original]).attempted == 1
         with engine.connect() as connection:
             original_id = connection.execute(
                 text(
@@ -294,11 +294,11 @@ def test_monthly_actual_repository_sqlite_upsert_matches_mysql_contract() -> Non
             price_signal="空",
             extra={"revision": "same-business-key"},
         )
-        assert upsert_monthly_actuals(engine, [updated]) == 1
-        assert upsert_monthly_actuals(
+        assert upsert_monthly_actuals_detailed(engine, [updated]).attempted == 1
+        assert upsert_monthly_actuals_detailed(
             engine,
             [replace(updated, target_rule="other_target_rule")],
-        ) == 1
+        ).attempted == 1
 
         with engine.connect() as connection:
             rows = connection.execute(
@@ -358,7 +358,7 @@ def test_monthly_actual_repository_rolls_back_batch_on_invalid_second_row() -> N
         )
 
         with pytest.raises(IntegrityError):
-            upsert_monthly_actuals(engine, [valid, invalid])
+            upsert_monthly_actuals_detailed(engine, [valid, invalid])
 
         with engine.connect() as connection:
             assert connection.execute(

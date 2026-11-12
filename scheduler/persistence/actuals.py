@@ -201,11 +201,6 @@ def claim_and_classify_actual_rows_conn(
     )
 
 
-def upsert_actuals(engine: Engine, records: Iterable[ActualRecord]) -> int:
-    """兼容入口：UPSERT 日频 Actual，并返回本批处理条数。"""
-    return upsert_actuals_detailed(engine, records).attempted
-
-
 def upsert_actuals_detailed(
     engine: Engine,
     records: Iterable[ActualRecord],
@@ -416,15 +411,6 @@ def delete_actuals_after_source_watermark(
         return deleted
 
 
-def repair_actuals_after_source_watermark(
-    engine: Engine,
-    plan: ActualTailRepairPlan,
-) -> tuple[int, int]:
-    """兼容入口：执行日频 Actual 修复并返回处理数与删除数。"""
-    stats = repair_actuals_after_source_watermark_detailed(engine, plan)
-    return stats.attempted, stats.deleted
-
-
 def repair_actuals_after_source_watermark_detailed(
     engine: Engine,
     plan: ActualTailRepairPlan,
@@ -444,11 +430,6 @@ def repair_actuals_after_source_watermark_detailed(
                 f"expected={len(plan.business_keys)}, actual={deleted}"
             )
     return replace(stats, deleted=deleted)
-
-
-def upsert_weekly_actuals(engine: Engine, records: Iterable[WeeklyActualRecord]) -> int:
-    """兼容入口：UPSERT 周度 Actual，并返回本批处理条数。"""
-    return upsert_weekly_actuals_detailed(engine, records).attempted
 
 
 def upsert_weekly_actuals_detailed(
@@ -516,11 +497,6 @@ def upsert_weekly_actuals_detailed(
         if write_rows:
             conn.execute(sql, write_rows)
     return stats
-
-
-def upsert_monthly_actuals(engine: Engine, records: Iterable[MonthlyActualRecord]) -> int:
-    """兼容入口：UPSERT 月度 Actual，并返回本批处理条数。"""
-    return upsert_monthly_actuals_detailed(engine, records).attempted
 
 
 def upsert_monthly_actuals_detailed(
@@ -596,14 +572,6 @@ def upsert_monthly_actuals_detailed(
         if write_rows:
             conn.execute(sql, write_rows)
     return stats
-
-
-def upsert_period_average_actuals(
-    engine: Engine,
-    records: Iterable[PeriodAverageActualRecord],
-) -> int:
-    """兼容入口：UPSERT 周期均值 Actual，并返回本批处理条数。"""
-    return upsert_period_average_actuals_detailed(engine, records).attempted
 
 
 def upsert_period_average_actuals_detailed(

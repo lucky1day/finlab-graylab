@@ -4,10 +4,8 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
 from scheduler.daily_actuals_updater import update_actuals_detailed
-from scheduler.repository import (
-    plan_actuals_tail_repair,
-    repair_actuals_after_source_watermark,
-)
+from scheduler.persistence.actuals import repair_actuals_after_source_watermark_detailed
+from scheduler.repository import plan_actuals_tail_repair
 from shared.actual_facts import read_actual_source_snapshot
 from shared.tenor_mapping import TENOR_TO_INDICATOR
 
@@ -157,7 +155,7 @@ def test_tail_repair_rolls_back_upserts_when_delete_fails() -> None:
             )
 
         try:
-            repair_actuals_after_source_watermark(engine, plan)
+            repair_actuals_after_source_watermark_detailed(engine, plan)
         except IntegrityError:
             pass
         else:
@@ -195,7 +193,7 @@ def test_tail_repair_rejects_a_plan_after_the_source_snapshot_changes() -> None:
         _insert_source(engine, ("2024-01-02", 2.1))
 
         try:
-            repair_actuals_after_source_watermark(engine, plan)
+            repair_actuals_after_source_watermark_detailed(engine, plan)
         except RuntimeError as exc:
             assert "source snapshot changed" in str(exc)
         else:
@@ -227,7 +225,8 @@ def test_tail_repair_applies_the_previewed_business_keys() -> None:
             )
         plan = plan_actuals_tail_repair(engine, tenors=("10Y",))
 
-        assert repair_actuals_after_source_watermark(engine, plan) == (1, 1)
+        stats = repair_actuals_after_source_watermark_detailed(engine, plan)
+        assert (stats.attempted, stats.deleted) == (1, 1)
 
         with engine.connect() as connection:
             stored = connection.execute(

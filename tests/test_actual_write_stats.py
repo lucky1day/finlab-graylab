@@ -10,7 +10,6 @@ from scheduler.actuals_errors import ActualSourceIncompleteError
 from scheduler.actuals_runner import ActualsJobError, run_actuals_job
 from scheduler.repository import (
     ActualWriteStats,
-    upsert_actuals,
     upsert_actuals_detailed,
     upsert_period_average_actuals_detailed,
 )
@@ -76,7 +75,7 @@ def test_daily_actual_detailed_write_is_observable_noop_then_change() -> None:
         assert stored[2] != "2000-01-01 00:00:00"
 
         # 旧入口继续返回本批处理条数，不把该数值解释为新增数。
-        assert upsert_actuals(engine, [changed]) == 1
+        assert upsert_actuals_detailed(engine, [changed]).attempted == 1
     finally:
         engine.dispose()
 

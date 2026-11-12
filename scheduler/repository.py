@@ -6,12 +6,8 @@ from scheduler.persistence.actuals import (
     ActualWriteStats,
     _upsert_actuals_detailed_conn,
     plan_actuals_tail_repair,
-    repair_actuals_after_source_watermark,
-    upsert_actuals,
     upsert_actuals_detailed,
-    upsert_monthly_actuals,
     upsert_monthly_actuals_detailed,
-    upsert_period_average_actuals,
     upsert_period_average_actuals_detailed,
     upsert_weekly_actuals_detailed,
 )
