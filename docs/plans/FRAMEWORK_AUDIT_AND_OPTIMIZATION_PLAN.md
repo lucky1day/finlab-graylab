@@ -268,3 +268,18 @@ ECS 读回尚未取得。
 - **安全问题（已确认存在，未做任何修改）：** 三个源码包（`daily_0629`、`monthly_0629`、`model_muti_0529/weekly_average_0529`）的 `forecast_project/db_config.py` 各含一份明文 root 数据库口令，自提交 `0120988e` 起进入仓库历史。不能直接改文件：源码包的树哈希是 W4 冻结身份的一部分。处置应是轮换该口令（若仍有效）并确认生产只通过外置配置文件取凭据。
 
 可选路径见对话回复；选定前不改动任何代码。
+
+### 13.2 包一层二进制：可行性已验证（2026-11-13，`daily_0629` 三套）
+
+用户决定：W4 本来就是黑盒，把二进制包装成 V2 交付，只保证每天能产出预测。验证过程与结论：
+
+1. **抓取二进制的全部 SQL。** 重放工具新增 `--general-log`，在一次性库上真实运行一次。二进制只读 9 张源表：`api_wind_daily`、`api_wind_derivative_daily`、`api_wind_weekly`、`api_wind_derivative_weekly`、`api_wind_monthly`、`api_wind_derivative_monthly`、`api_wind_date`、`t_trade_calendar`、`api_wind_indicators_all`（完整目录，26 列），且都是 `SELECT <列> FROM <表> [WHERE indicators_code IN (...) [AND indicators_value IS NOT NULL] [AND rdate <= 日期]]` 这一族；不写库（dry-run）。日频两张长表请求同一组 773 个指标代码，两表键无重叠。
+2. **DataBridge 不能直接喂它。** DataBridge 的 `daily_output.csv` 覆盖全部 773 个代码，但是平台加工后的宽表：与数据库原始长表相比，仅 DataBridge 有 1 万行、仅数据库有 6.7 万行，另有 39 万行数值不同（134/773 个代码几乎所有日期都不同，量级可差几十倍）。`factor_catalog.csv` 只有 3 列，不含二进制读取的目录元数据。因此**必须向它提供原始长表**，否则输入变了，预测就不是原算法。
+3. **无数据库原型成功。** 在 `forecast_env`（Python 3.13.12，与 `forecast_env_blackbox_v1` 同版本且同样带 lightgbm/xgboost/shap）里，进程内拦截 `pandas.read_sql*`、`sqlalchemy.create_engine`、`pymysql`，用上述 9 张表的导出回答它的查询（未知形态一律报错），运行 `daily.run_daily 2026-11-12 --dry-run`：44 秒跑完整套流程。D1Y/D5Y/D10Y 三套的方向与 `prob_up`（完整双精度）与生产当日发布的事实**逐位一致**。原型见 `docs/plans/attachments/w4_daily_0629_nodb_prototype.py`。
+4. **体量。** 二进制包 3.6MB（`.so` 约 3.5MB）；V2 交付目录限 64MiB、两个文件，可容纳自解压外壳。
+
+**还没解决的（决定设计）：**
+- **原始数据如何进入 V2 沙箱。** 现有 V2 输入只有 DataBridge 标准文件，runner 会校验文件集合。需要新增一份由平台生成、内容寻址并随快照封存的"原始源表导出"（9 张表的相关切片，约 100–200MB），仅对声明需要它的交付挂载。这是平台侧新增，约数百行，但替代的是 Native 的 DB 直读输入链路。
+- **外壳形态。** 交付的 `.py` 须自解压二进制并安装上述拦截层；属于入库 skill 所说"内嵌运行时外壳"，须经批准（本次用户已批准）并做隔离解包审计。
+- **三套共享一次运行。** 二进制一次跑完 D1Y/D5Y/D10Y；若拆成三个独立交付会各自重跑 44 秒（可接受），或在外壳里缓存。
+- **多日对等验证与回测口径。** 下一步用原型对最近若干交易日逐日对比生产事实，再设计 V2 backtest 如何驱动二进制。

@@ -86,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=3396)
     parser.add_argument("--with-source-tables", action="store_true", help="同时导出大体量 Wind 源表并配置 W4 源库（重放 W4 Native 方案时需要）")
     parser.add_argument("--gap-fill", action="store_true", help="改用补跑入口 harness signal-gap-fill 补回被删除的当日事实（验证 gap_fill 写入路径），而不是自然调度入口")
+    parser.add_argument("--general-log", action="store_true", help="在一次性库上开启 general_log（日志写入临时目录，需配合 --keep 读取），用于抓取算法实际执行的 SQL")
     parser.add_argument("--keep", action="store_true", help="结束后保留临时目录与 MySQL 以便排查")
     args = parser.parse_args(argv)
     release = args.release.resolve()
@@ -103,6 +104,7 @@ def main(argv: list[str] | None = None) -> int:
             str(MYSQL_BIN / "mysqld"), "--no-defaults", f"--datadir={data}", "--lower-case-table-names=2", "--bind-address=127.0.0.1",
             f"--port={port}", "--mysqlx=OFF", f"--socket={sock}", f"--pid-file={work / 'mysql.pid'}", f"--log-error={work / 'mysql.log'}",
             "--sql-mode=STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION",
+            *(["--general-log=0", f"--general-log-file={work / 'general.log'}"] if args.general_log else []),
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(90):
             if subprocess.run([str(MYSQL_BIN / "mysqladmin"), "--host=127.0.0.1", f"--port={port}", "--user=root", "ping"], capture_output=True).returncode == 0:
@@ -124,6 +126,10 @@ def main(argv: list[str] | None = None) -> int:
         cnf.unlink()
         with dump.open("rb") as handle:
             subprocess.run([str(MYSQL_BIN / "mysql"), "--host=127.0.0.1", f"--port={port}", "--user=root", "bond_db"], check=True, stdin=handle)
+
+        if args.general_log:
+            _sql(port, "SET GLOBAL general_log = 'ON'")
+            print("general_log 已开启（载入之后）", file=sys.stderr)
 
         # 1b) 候选 release 带有生产库尚未应用的迁移时先在沙箱库应用（同时在真实数据副本上验证迁移）
         server_uuid = _sql(port, "SELECT @@server_uuid")[0][0]
