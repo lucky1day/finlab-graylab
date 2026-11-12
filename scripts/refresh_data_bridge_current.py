@@ -58,8 +58,6 @@ from shared.one_shot_control_plane import (  # noqa: E402
 _logger = logging.getLogger("scripts.refresh_data_bridge_current")
 Mode = Literal["dry-run", "publish", "check-only"]
 DATABRIDGE_PRODUCER_ENV = "BFL_DATABRIDGE_PRODUCER"
-LAUNCHD_PUBLISHER_ENV = DATABRIDGE_PRODUCER_ENV
-LAUNCHD_PUBLISHER_VALUE = DATABRIDGE_LAUNCHD_PRODUCER
 PUBLISH_REFRESH_INITIAL_RETRY_DELAY_SEC = 30
 PUBLISH_REFRESH_MAX_RETRY_DELAY_SEC = 120
 _CHECK_ONLY_STATE_FIELDS = (

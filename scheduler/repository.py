@@ -3,20 +3,16 @@
 from __future__ import annotations
 
 from scheduler.persistence.actuals import (
-    ActualTailRepairPlan,
     ActualWriteStats,
     _upsert_actuals_detailed_conn,
-    delete_actuals_after_source_watermark,
     plan_actuals_tail_repair,
     repair_actuals_after_source_watermark,
-    repair_actuals_after_source_watermark_detailed,
     upsert_actuals,
     upsert_actuals_detailed,
     upsert_monthly_actuals,
     upsert_monthly_actuals_detailed,
     upsert_period_average_actuals,
     upsert_period_average_actuals_detailed,
-    upsert_weekly_actuals,
     upsert_weekly_actuals_detailed,
 )
 

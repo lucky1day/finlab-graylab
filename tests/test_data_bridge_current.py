@@ -624,8 +624,8 @@ class DataBridgeCurrentTests(unittest.TestCase):
                 patch.dict(
                     os.environ,
                     {
-                        refresh_script.LAUNCHD_PUBLISHER_ENV: (
-                            refresh_script.LAUNCHD_PUBLISHER_VALUE
+                        refresh_script.DATABRIDGE_PRODUCER_ENV: (
+                            refresh_script.DATABRIDGE_LAUNCHD_PRODUCER
                         )
                     },
                 ),
