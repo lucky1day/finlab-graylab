@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
-from scheduler.daily_actuals_updater import update_actuals
+from scheduler.daily_actuals_updater import update_actuals_detailed
 from scheduler.repository import (
     plan_actuals_tail_repair,
     repair_actuals_after_source_watermark,
@@ -85,7 +85,7 @@ def test_normal_refresh_does_not_delete_actuals_after_a_source_retreat() -> None
                 )
             )
 
-        assert update_actuals(engine=engine, tenors=("10Y",)) == 1
+        assert update_actuals_detailed(engine=engine, tenors=("10Y",)).attempted == 1
 
         with engine.connect() as connection:
             dates = connection.execute(
@@ -249,8 +249,8 @@ def test_normal_refresh_is_idempotent_and_updates_the_existing_business_key() ->
             ("2024-01-01", 2.0),
             ("2024-01-02", 2.1),
         )
-        assert update_actuals(engine=engine, tenors=("10Y",)) == 2
-        assert update_actuals(engine=engine, tenors=("10Y",)) == 2
+        assert update_actuals_detailed(engine=engine, tenors=("10Y",)).attempted == 2
+        assert update_actuals_detailed(engine=engine, tenors=("10Y",)).attempted == 2
         with engine.begin() as connection:
             connection.execute(
                 text(
@@ -261,7 +261,7 @@ def test_normal_refresh_is_idempotent_and_updates_the_existing_business_key() ->
                     """
                 )
             )
-        assert update_actuals(engine=engine, tenors=("10Y",)) == 2
+        assert update_actuals_detailed(engine=engine, tenors=("10Y",)).attempted == 2
 
         with engine.connect() as connection:
             stored = connection.execute(
