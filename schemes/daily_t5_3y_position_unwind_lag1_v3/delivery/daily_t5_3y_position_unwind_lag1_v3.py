@@ -24,7 +24,7 @@ import pandas as pd
 
 SEED=RANDOM_STATE=20261020
 SCHEME_ID='daily_t5_3y_position_unwind_lag1_v3'
-ALGORITHM_VERSION='20261022.sopv3.1'
+ALGORITHM_VERSION='20261112.sopv3.2'
 REQUEST_FIELDS=('request_id','predict_date','feature_date','target_date','daily_cutoff_key','weekly_cutoff_key','monthly_cutoff_key')
 RESULT_FIELDS=('request_id','predict_date','feature_date','target_date','predicted_direction')
 CASH=('TB5YWI00','TB5YWI0H','TB5YWI0L','TB5YWI0C','TB5YWI0V')
@@ -125,9 +125,10 @@ class DataSource:
         frame.index=pd.DatetimeIndex(pd.to_datetime(frame.pop('date'),format='%Y-%m-%d',errors='raise'))
         return frame
 
-def bar_features(raw:pd.DataFrame,fields:tuple[str,...])->tuple[np.ndarray,np.ndarray]:
+def bar_features(raw:pd.DataFrame,fields:tuple[str,...],volume_required:bool=True)->tuple[np.ndarray,np.ndarray]:
     o,h,l,c,v=(raw[name].shift(CONFIG['lag']) for name in fields)
-    valid=(h>=l)&(h>=c)&(c>=l)&(h>=o)&(o>=l)&(v>0)
+    valid=(h>=l)&(h>=c)&(c>=l)&(h>=o)&(o>=l)
+    if volume_required:valid=valid&(v>0)
     scale=c.diff().rolling(CONFIG['volatility_window'],min_periods=CONFIG['volatility_min_periods']).std(ddof=CONFIG['standard_deviation_ddof']).shift(1).replace(0,np.nan)
     relative=v/v.rolling(CONFIG['volume_window'],min_periods=CONFIG['volume_min_periods']).median().shift(1).replace(0,np.nan)
     intraday=((c-o)/scale).clip(-CONFIG['intraday_clip'],CONFIG['intraday_clip']).where(valid)
@@ -135,7 +136,7 @@ def bar_features(raw:pd.DataFrame,fields:tuple[str,...])->tuple[np.ndarray,np.nd
     return intraday.to_numpy('float64'),volume.to_numpy('float64')
 
 def scores(raw:pd.DataFrame)->np.ndarray:
-    cash_intraday,_=bar_features(raw,CASH)
+    cash_intraday,_=bar_features(raw,CASH,volume_required=False)
     future_intraday,relative_volume=bar_features(raw,FUTURE)
     oi_change=raw['TCFE000I'].shift(CONFIG['lag']).diff().to_numpy('float64')
     with np.errstate(invalid='ignore'):

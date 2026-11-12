@@ -4,7 +4,7 @@
   "name": "减仓压力滞后",
   "owner": "guozhai",
   "description": "使用滞后一个实际交易日的10年国债期货日内变动、成交量与持仓变化，以5年活跃券OHLC作原规则有效性校验，按10日减仓压力累计值符号输出3年活跃券原值T+5方向。窗口10、阈值0，无再训练。保留原策略不出手语义，0有SOP语义例外。",
-  "algorithm_version": "20261022.sopv3.1",
+  "algorithm_version": "20261112.sopv3.2",
   "target_tenor": "3Y",
   "task_type": "T+5",
   "horizon": 5,
