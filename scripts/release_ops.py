@@ -6,6 +6,8 @@
     python -B scripts/release_ops.py probe refresh-date
     python -B scripts/release_ops.py probe facts --scheme-id X --since 2026-11-10
     python -B scripts/release_ops.py probe dashboard-digest --out /tmp/dash.json
+    python -B scripts/release_ops.py probe db-identity | migration-state | backup-tables --out DIR
+    python -B scripts/release_ops.py script apply_migrations.py -- --apply --expected-database-name N --expected-server-uuid U
 
 环境来源与部署手册一致：release 的 `.bfl-release.env`（提交、runtime、cache）、本机服务解释器与
 conda、固定的数据库配置文件路径。不读取或打印数据库凭据；不设置自然控制面标记，手工运行不会被当作自然触发。
@@ -15,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -38,7 +41,8 @@ TARGETS = {
         "database_env_file": "/etc/bond-factor-lab/bond-factor-lab.env",
     },
 }
-_PROBES = {"refresh-date", "facts", "dashboard-digest"}
+_PROBES = {"refresh-date", "facts", "dashboard-digest", "db-identity", "migration-state", "backup-tables"}
+_SCRIPT_NAME = re.compile(r"[a-z][a-z0-9_]*\.py")
 
 
 def detect_target(explicit: str | None) -> str:
@@ -85,7 +89,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     harness = sub.add_parser("harness", help="在绑定环境中运行 python -B -m harness ...")
     harness.add_argument("args", nargs=argparse.REMAINDER)
-    probe = sub.add_parser("probe", help="只读探针")
+    script = sub.add_parser("script", help="在绑定环境中运行本 release scripts/ 下的脚本（如 apply_migrations.py）")
+    script.add_argument("name")
+    script.add_argument("args", nargs=argparse.REMAINDER)
+    probe = sub.add_parser("probe", help="探针（backup-tables 会写备份文件，其余只读）")
     probe.add_argument("name", choices=sorted(_PROBES))
     probe.add_argument("args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
@@ -100,6 +107,11 @@ def main(argv: list[str] | None = None) -> int:
     rest = [item for item in args.args if item != "--"] if args.args else []
     if args.command == "harness":
         command = [python, "-B", "-m", "harness", *rest]
+    elif args.command == "script":
+        if not _SCRIPT_NAME.fullmatch(args.name) or not (release / "scripts" / args.name).is_file():
+            print(f"release ops configuration error: unknown script {args.name}", file=sys.stderr)
+            return 2
+        command = [python, "-B", str(release / "scripts" / args.name), *rest]
     else:
         command = [python, "-B", str(release / "scripts" / "release_probes.py"), args.name, *rest]
     os.chdir(release)
