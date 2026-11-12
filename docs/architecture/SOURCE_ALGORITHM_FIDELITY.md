@@ -85,7 +85,7 @@ snapshot 身份；不一致时先归类为输入 vintage 差异，不能据此�
 
 历史默认口径是 `source_original_reproduction`。`platform_live_pit_variant` 须有当时明确批准或原始 source 要求；不能从字段名推断。已有 PIT 变体也必须区分其可见数据截止、测试上下文与 source-original 输出，不将平台变体冒充原算法复现。
 
-历史回测与实盘逐日调度必须分开验收。若 source-original batch 使用了晚于某个样本 `feature_date` 的固定 `source_end`、未来 test window、selector/streak 状态或同批次未来样本，那么这些内部数值只能作为 source-original backtest/benchmark 的真值，不能直接要求 `gray_live` / `scheduled_live` 逐日记录相等；实盘记录必须保持 `feature_date` 硬截止，只能与同一 live-safe 数据截止和同一外层上下文生成的 live-safe oracle 对齐。反过来，也不得把 live-safe PIT 输出冒充 source-original batch reproduction。
+历史回测与实盘逐日调度必须分开验收。若 source-original batch 使用了晚于某个样本 `feature_date` 的固定 `source_end`、未来 test window、selector/streak 状态或同批次未来样本，那么这些内部数值只能作为 source-original backtest/benchmark 的真值，不能直接要求 `gap_fill` / `scheduled_live` 逐日记录相等；实盘记录必须保持 `feature_date` 硬截止，只能与同一 live-safe 数据截止和同一外层上下文生成的 live-safe oracle 对齐。反过来，也不得把 live-safe PIT 输出冒充 source-original batch reproduction。
 
 ## 4. 验收标准
 
