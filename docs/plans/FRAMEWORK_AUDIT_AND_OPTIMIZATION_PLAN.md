@@ -207,3 +207,16 @@ ECS 读回尚未取得。
 - 入库改为一次回测到最新数据日 + 激活 + 少量衔接补齐，不再从 2026-06-01 做 gray_live 补缺；DataConsistency 完整性改为"每个应有业务键恰好一条产品事实（不论来源）"。
 - 原记录的"32 个方案以回测身份发布分界日后事实"在新模型下合规，无需处理；run 205 的 completeness 误报随之消除。
 - 遗留：`tests/test_active_scheme_contracts.py` 以 config `status == active` 选方案，未覆盖 Registry 已生效但 config 仍为 paused 的方案。
+
+## 11. 模块级评估（2026-11-12，只读）
+
+**依赖分层已干净**：`shared`（1.5 万行）← `scheduler`（1.0 万）← `harness`（0.9 万），`backend` 只依赖 `shared`，包级别无循环；跨包导入只有 8 类，其中 `harness → backend` 仅 2 处（Dashboard Gate 复用展示构建）。函数级几乎没有重复（跨模块同实现函数只有 3 处共 20 行），无引用函数、常量、模块、孤儿文件均已清理。因此下面的方向都是**结构性取舍**，不再是"删冗余代码"。
+
+| 方向 | 事实 | 判断 |
+|---|---|---|
+| W4 Native 源码运行器/证据/适配器（`shared/` 顶层约 3100 行） | 自成一岛，但九个冻结方案的 `predict.py` 直接 `import shared.<x>_predict_adapter`；改路径会改 W4 的 `predict.py` 字节与 exact | **不搬**。边界只在文档中标明为冻结岛 |
+| 数据一致性 Gate（`harness/gates` 约 3400 行 + 测试约 2000 行，最大单一子系统） | 只在入库验收（SOP 3.8）手工运行；`facts.py` 以 DB 重新实现一份 Dashboard 聚合再与 API 比对，语义每改一次要改两处 | 有意的独立验证，但维护权重最高。是否瘦身取决于对验收严格度的取舍，**需产品决定** |
+| 超大模块（`signal_gap_plan` 2000、`predictions.py` 1780、`lifecycle` 1510、`executor` 1510、`blackbox_v2_runner` 1280、`one_shot_prediction_runner` 1250、`data_bridge/refresh` 1370 行） | 多为合同校验与事务编排；测试大量 `monkeypatch` 模块属性，按职责拆分会引起成片测试改动 | 只有可读性收益，无功能收益；建议只在触及该模块时顺带拆分 |
+| 两个 launchd/systemd 薄入口（各约 55 行）、四个 actuals updater 薄模块（58–164 行）、`backtests/` 小包（723 行） | 模块名被已安装的 plist/unit、AGENTS 的写库单点条款引用 | 合并会改变已安装控制面或根规范，收益小，**不做** |
+| 发布包含 `tests/`（78 个文件）与 `source_evidence/`（约 12MB） | 两端共用同一 archive 是既定原则；`source_evidence` 是 W4 运行输入 | 不动 |
+| 概念面 | 已于迁移 028 收敛；剩余 `gray_replay`（已写入事实的溯源标识）、`t_scheme_registry.status` 的 `archived` 未使用 | 前者属历史事实不能改；后者收益很小 |
