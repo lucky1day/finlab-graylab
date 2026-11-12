@@ -11,7 +11,7 @@ import yaml
 from scheduler.deployment_scope import filter_schemes_for_configured_target
 from shared.blackbox_v2.versioning import compute_blackbox_config_hash
 from shared.platform_dates import DEFAULT_FACTOR_INPUT_MODE
-from shared.blackbox_v2.contracts import BlackboxDelivery, BlackboxMetadata
+from shared.blackbox_v2.contracts import INPUT_PROFILE_RAW_WIND_V1, BlackboxDelivery, BlackboxMetadata
 from shared.scheme_config_schema import resolve_fact_horizon, validate_config
 from shared.versioning import (
     compute_code_hash,
@@ -86,6 +86,23 @@ def blackbox_deliveries(cfg: SchemeConfig) -> tuple[BlackboxDelivery, ...]:
     if not isinstance(metadata, BlackboxMetadata):
         metadata = load_metadata(cfg.delivery_metadata)
     return (BlackboxDelivery(cfg.delivery_script, cfg.delivery_metadata, metadata),)
+
+
+def blackbox_input_profile(cfg: SchemeConfig) -> str:
+    """一个方案的各 delivery 必须使用同一个 input_profile；返回该 profile。"""
+    profiles = {delivery.metadata.input_profile for delivery in blackbox_deliveries(cfg)}
+    if len(profiles) != 1:
+        raise ValueError("Blackbox deliveries of one scheme must share one input_profile")
+    return profiles.pop()
+
+
+def deployment_requires_raw_wind() -> bool:
+    """本部署（按 BFL_DEPLOYMENT_TARGET 过滤后）是否有声明 raw_wind_v1 的 Blackbox 方案。"""
+    return any(
+        config.runtime_type == "blackbox_v2"
+        and blackbox_input_profile(config) == INPUT_PROFILE_RAW_WIND_V1
+        for config in discover_schemes()
+    )
 
 
 def _require_mapping(value: Any, path: Path) -> dict[str, Any]:

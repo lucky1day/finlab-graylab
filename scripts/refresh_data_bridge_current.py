@@ -22,6 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from scheduler.discovery import deployment_requires_raw_wind  # noqa: E402
 from scheduler.v2_daily_gate import write_gate_record  # noqa: E402
 from shared.calendar_service import get_calendar  # noqa: E402
 from shared.data_bridge.refresh import (  # noqa: E402
@@ -48,7 +49,9 @@ from shared.data_bridge.validation import DataBridgeValidationError  # noqa: E40
 from shared.data_service import create_sqlalchemy_engine  # noqa: E402
 from shared.input_artifacts import (  # noqa: E402
     invalidate_ready_blackbox_snapshot,
+    invalidate_raw_wind_sidecar,
     prepare_blackbox_generation_snapshot,
+    prepare_raw_wind_sidecar,
 )
 from shared.one_shot_control_plane import (  # noqa: E402
     DATABRIDGE_LAUNCHD_PRODUCER,
@@ -119,6 +122,7 @@ def refresh_current(
     try:
         if publish:
             invalidate_ready_blackbox_snapshot()
+            invalidate_raw_wind_sidecar()
         continuity_authority = (
             resolve_databridge_continuity_authority_from_engine(
                 config,
@@ -148,9 +152,30 @@ def refresh_current(
                 dataset=result.dataset,
                 schema_path=config.schema_path,
             )
+            _prepare_raw_wind_sidecar_best_effort(
+                state=result.state,
+                engine=engine,
+                schema_path=config.schema_path,
+            )
         return result
     finally:
         engine.dispose()
+
+
+def _prepare_raw_wind_sidecar_best_effort(*, state, engine, schema_path):
+    """仅当本部署有声明 raw_wind_v1 的方案时导出旁路产物；失败只记录，不影响标准 DataBridge 发布。
+
+    相关方案在取用时会因旁路产物未就绪而 fail-closed，其余方案不受影响。
+    """
+    try:
+        if not deployment_requires_raw_wind():
+            return None
+        artifact = prepare_raw_wind_sidecar(state=state, engine=engine, schema_path=schema_path)
+    except Exception:  # noqa: BLE001 — 旁路产物失败不得阻断标准发布
+        _logger.exception("raw_wind_sidecar_unavailable")
+        return None
+    _logger.info("raw_wind_sidecar_ready artifact_id=%s", artifact.artifact_id)
+    return artifact
 
 
 def check_current(*, refresh_date: str):

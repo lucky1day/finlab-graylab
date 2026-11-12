@@ -18,8 +18,7 @@ pytestmark = pytest.mark.mysql_integration
 _LONG = "id VARCHAR(40) PRIMARY KEY, rdate VARCHAR(10), {}indicators_name VARCHAR(256), indicators_code VARCHAR(128), indicators_value DECIMAL(30,12), create_time DATETIME"
 
 
-def test_export_round_trips_real_mysql_types(empty_mysql_engine, tmp_path) -> None:
-    engine = empty_mysql_engine
+def _create_source_tables(engine) -> None:
     with engine.begin() as c:
         for name in ("api_wind_daily", "api_wind_derivative_daily", "api_wind_monthly"):
             c.execute(text(f"CREATE TABLE {name} ({_LONG.format('')})"))
@@ -38,6 +37,10 @@ def test_export_round_trips_real_mysql_types(empty_mysql_engine, tmp_path) -> No
         c.execute(text("""INSERT INTO api_wind_indicators_all VALUES
             ('a','A','',JSON_OBJECT('k',1),'2026-01-31 16:58:48','5'),('b','B',NULL,NULL,NULL,'\\\\N')"""))
 
+
+def test_export_round_trips_real_mysql_types(empty_mysql_engine, tmp_path) -> None:
+    engine = empty_mysql_engine
+    _create_source_tables(engine)
     with engine.connect() as connection:
         connection.exec_driver_sql("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
         artifact = export_raw_wind(connection, tmp_path, generation_id="g", refresh_date="2026-11-12")
@@ -51,3 +54,23 @@ def test_export_round_trips_real_mysql_types(empty_mysql_engine, tmp_path) -> No
             pd.testing.assert_frame_equal(
                 read_raw_wind_frame(artifact.path, table.name), pd.read_sql(sql, connection), check_dtype=True, check_exact=True
             )
+
+
+def test_prepare_raw_wind_sidecar_publishes_a_ready_artifact_for_the_generation(empty_mysql_engine, tmp_path) -> None:
+    from shared.input_artifacts import (
+        get_ready_blackbox_snapshot, get_ready_raw_wind_artifact, prepare_blackbox_generation_snapshot, prepare_raw_wind_sidecar,
+    )
+    from tests.test_factor_versioned_inputs import _dataset_and_state, _frames
+
+    engine = empty_mysql_engine
+    _create_source_tables(engine)
+    dataset, state = _dataset_and_state(_frames(include_v2=True))
+    cache = tmp_path / "cache"
+    prepare_blackbox_generation_snapshot(state=state, dataset=dataset, cache_root=cache)
+    snapshot = get_ready_blackbox_snapshot(snapshot_date="2026-08-28", cache_root=cache, factor_input_mode="algorithm_managed")
+
+    artifact = prepare_raw_wind_sidecar(state=state, engine=engine, root=tmp_path / "raw")
+
+    ready = get_ready_raw_wind_artifact(snapshot=snapshot, root=tmp_path / "raw")
+    assert ready.artifact_id == artifact.artifact_id
+    assert artifact.manifest["generation_id"] == snapshot.generation_id

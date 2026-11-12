@@ -27,6 +27,7 @@ LEGACY_BLACKBOX_GENERATION_SNAPSHOT_CACHE_VERSION = (
     "blackbox-generation-snapshot-v2"
 )
 BLACKBOX_RUNTIME_VIEW_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "runtime_views"
+BLACKBOX_RAW_WIND_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "raw_wind"
 BLACKBOX_SCHEMA_PATH = Path(__file__).resolve().parents[1] / "blackbox_v2" / "data_bridge_v1_schema.json"
 BLACKBOX_SCHEMA_VERSION = "data-bridge-v1"
 BLACKBOX_SCHEMA_CONTRACT_SHA256 = (

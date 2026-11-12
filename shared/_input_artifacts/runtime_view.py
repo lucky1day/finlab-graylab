@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ from shared.blackbox_v2.snapshot import (
     BlackboxInputBundle,
     compose_blackbox_input_bundle,
 )
+from shared.data_bridge.raw_wind import RAW_WIND_FILENAMES, RAW_WIND_TABLES, RawWindError, read_raw_wind_manifest
 from shared.data_bridge.validation import LEGACY_FOUR_FILENAMES
 from shared._input_artifacts.contract import BLACKBOX_RUNTIME_VIEW_ROOT
 from shared._input_artifacts.files import (
@@ -130,12 +132,15 @@ def _materialize_blackbox_runtime_view(view: BlackboxRuntimeView) -> None:
     bundle = view.bundle
     destination = view.data_dir
     sealed_fingerprints = bundle.base_snapshot.sealed_file_fingerprints
+    standard_filenames = tuple(
+        name for name in bundle.expected_filenames if name not in RAW_WIND_FILENAMES
+    )
     if sealed_fingerprints is None:
         _validate_blackbox_snapshot(bundle.base_snapshot)
-    elif not set(bundle.expected_filenames).issubset(sealed_fingerprints):
+    elif not set(standard_filenames).issubset(sealed_fingerprints):
         raise ValueError("producer snapshot file seal is invalid")
 
-    for filename in bundle.expected_filenames:
+    for filename in standard_filenames:
         source = bundle.base_snapshot.data_dir / filename
         target = destination / filename
         source_fingerprint = _copy_ready_snapshot_file(
@@ -172,6 +177,9 @@ def _materialize_blackbox_runtime_view(view: BlackboxRuntimeView) -> None:
                 f"parent snapshot {filename} changed during materialization"
             )
 
+    if bundle.raw_wind is not None:
+        _copy_raw_wind_files(bundle, destination)
+
     actual_filenames = tuple(
         sorted(path.name for path in destination.iterdir())
     )
@@ -182,6 +190,44 @@ def _materialize_blackbox_runtime_view(view: BlackboxRuntimeView) -> None:
     for filename in bundle.expected_filenames:
         (destination / filename).chmod(0o444)
     destination.chmod(0o555)
+
+
+def _copy_raw_wind_files(bundle: BlackboxInputBundle, destination: Path) -> None:
+    """复制原始源表旁路文件：边复制边按 manifest 校验 sha256 与字节数，目标必须是独立的普通文件。"""
+    raw = bundle.raw_wind
+    try:
+        manifest = read_raw_wind_manifest(raw.path)
+    except RawWindError as exc:
+        raise ValueError(f"raw wind artifact is invalid: {exc}") from exc
+    if dict(manifest) != dict(raw.manifest) or manifest["artifact_id"] != raw.artifact_id:
+        raise ValueError("raw wind artifact does not match the bundle composition")
+    read_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    write_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    for table in RAW_WIND_TABLES:
+        info = manifest["tables"][table.name]
+        source, target = raw.path / info["file"], destination / info["file"]
+        digest, size = hashlib.sha256(), 0
+        source_fd = os.open(source, read_flags)
+        try:
+            source_stat = os.fstat(source_fd)
+            if not stat.S_ISREG(source_stat.st_mode):
+                raise ValueError(f"raw wind file is not a regular file: {info['file']}")
+            target_fd = os.open(target, write_flags, 0o600)
+            try:
+                while block := os.read(source_fd, 1 << 20):
+                    digest.update(block)
+                    size += len(block)
+                    os.write(target_fd, block)
+                os.fsync(target_fd)
+            finally:
+                os.close(target_fd)
+        finally:
+            os.close(source_fd)
+        if digest.hexdigest() != info["sha256"] or size != info["bytes"]:
+            raise ValueError(f"raw wind file does not match its manifest: {info['file']}")
+        target_stat = target.lstat()
+        if target_stat.st_nlink != 1 or (target_stat.st_dev, target_stat.st_ino) == (source_stat.st_dev, source_stat.st_ino):
+            raise ValueError(f"runtime view {info['file']} must be an independent file")
 
 
 def _copy_ready_snapshot_file(
@@ -255,20 +301,26 @@ def _validate_trusted_blackbox_input_bundle(
 ) -> BlackboxInputBundle:
     """从受信字段重算 bundle，拒绝 replace/手工构造的派生字段。"""
     try:
-        if bundle.expected_filenames == LEGACY_FOUR_FILENAMES:
+        standard_filenames = tuple(
+            name for name in bundle.expected_filenames if name not in RAW_WIND_FILENAMES
+        )
+        if standard_filenames == LEGACY_FOUR_FILENAMES:
             factor_input_mode = "legacy_v1"
-        elif bundle.expected_filenames == SNAPSHOT_FILENAMES:
+        elif standard_filenames == SNAPSHOT_FILENAMES:
             factor_input_mode = "algorithm_managed"
         else:
             raise ValueError("input bundle file set is invalid")
         trusted = compose_blackbox_input_bundle(
             bundle.base_snapshot,
             factor_input_mode=factor_input_mode,
+            input_profile=bundle.input_profile,
+            raw_wind=bundle.raw_wind,
         )
         matches = (
             bundle.combined_snapshot_id == trusted.combined_snapshot_id
             and bundle.parent_snapshot_id == trusted.parent_snapshot_id
             and bundle.expected_filenames == trusted.expected_filenames
+            and bundle.input_profile == trusted.input_profile
         )
     except (TypeError, ValueError) as exc:
         raise ValueError(

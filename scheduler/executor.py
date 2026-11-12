@@ -20,7 +20,7 @@ from scheduler.blackbox_v2_runner import (
     run_blackbox_backtest,
 )
 from scheduler.blackbox_state import read_state_cutoff
-from scheduler.discovery import SchemeConfig, blackbox_deliveries, discover_schemes
+from scheduler.discovery import SchemeConfig, blackbox_deliveries, blackbox_input_profile, discover_schemes
 from scheduler.process_control import (
     ProcessGroupTerminationError,
     ProcessStartGuard,
@@ -51,6 +51,7 @@ from shared.input_artifacts import (
     EPHEMERAL_NATIVE_INPUT_ROOT_ENV,
     get_ready_blackbox_snapshot,
     open_blackbox_runtime_view,
+    raw_wind_for_profile,
     resolve_blackbox_input_cutoffs,
     validate_blackbox_request_calendar,
 )
@@ -472,9 +473,12 @@ def run_blackbox_scheme_subprocess(
         calendar=calendar,
         cutoffs=cutoffs,
     )
+    input_profile = blackbox_input_profile(cfg)
     input_bundle = compose_blackbox_input_bundle(
         snapshot,
         factor_input_mode=getattr(cfg, "factor_input_mode", None) or DEFAULT_FACTOR_INPUT_MODE,
+        input_profile=input_profile,
+        raw_wind=raw_wind_for_profile(snapshot, input_profile),
     )
     blackbox_env = profile.conda_env if algo_env == DEFAULT_ALGO_ENV else algo_env
     profile = replace(
@@ -652,9 +656,12 @@ def run_blackbox_gray_replay_batch(
             "Blackbox V2 metadata frequency does not match configured scheme"
         )
 
+    input_profile = blackbox_input_profile(cfg)
     input_bundle = compose_blackbox_input_bundle(
         snapshot,
         factor_input_mode=getattr(cfg, "factor_input_mode", None) or DEFAULT_FACTOR_INPUT_MODE,
+        input_profile=input_profile,
+        raw_wind=raw_wind_for_profile(snapshot, input_profile),
     )
     blackbox_env = (
         profile.conda_env if algo_env == DEFAULT_ALGO_ENV else algo_env

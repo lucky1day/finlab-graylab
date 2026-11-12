@@ -15,6 +15,8 @@ from typing import Mapping
 import pandas as pd
 
 from shared.platform_dates import DEFAULT_FACTOR_INPUT_MODE
+from shared.blackbox_v2.contracts import INPUT_PROFILE_RAW_WIND_V1, INPUT_PROFILE_STANDARD
+from shared.data_bridge.raw_wind import RAW_WIND_FILENAMES, RawWindArtifact
 from shared.data_bridge.validation import (
     EXPECTED_FILENAMES as SNAPSHOT_FILENAMES,
     FACTOR_CATALOG_COLUMNS,
@@ -51,6 +53,8 @@ class BlackboxInputBundle:
     parent_snapshot_id: str
     base_snapshot: BlackboxSnapshot
     expected_filenames: tuple[str, ...]
+    input_profile: str = INPUT_PROFILE_STANDARD
+    raw_wind: RawWindArtifact | None = None
 
 
 @dataclass(frozen=True)
@@ -64,8 +68,10 @@ def compose_blackbox_input_bundle(
     base_snapshot: BlackboxSnapshot,
     *,
     factor_input_mode: str = DEFAULT_FACTOR_INPUT_MODE,
+    input_profile: str = INPUT_PROFILE_STANDARD,
+    raw_wind: RawWindArtifact | None = None,
 ) -> BlackboxInputBundle:
-    """将已含标准文件的 generation 快照交给运行视图。"""
+    """将已含标准文件的 generation 快照（及按 profile 声明的原始源表旁路产物）交给运行视图。"""
     if not isinstance(base_snapshot, BlackboxSnapshot):
         raise ValueError("base_snapshot must be a BlackboxSnapshot")
     if factor_input_mode == "legacy_v1":
@@ -74,11 +80,40 @@ def compose_blackbox_input_bundle(
         expected_filenames = SNAPSHOT_FILENAMES
     else:
         raise ValueError(f"unsupported factor_input_mode: {factor_input_mode}")
+    if input_profile == INPUT_PROFILE_STANDARD:
+        if raw_wind is not None:
+            raise ValueError("raw wind artifact is only valid for input_profile raw_wind_v1")
+        return BlackboxInputBundle(
+            combined_snapshot_id=base_snapshot.snapshot_id,
+            parent_snapshot_id=base_snapshot.snapshot_id,
+            base_snapshot=base_snapshot,
+            expected_filenames=expected_filenames,
+        )
+    if input_profile != INPUT_PROFILE_RAW_WIND_V1:
+        raise ValueError(f"unsupported input_profile: {input_profile}")
+    if not isinstance(raw_wind, RawWindArtifact):
+        raise ValueError("input_profile raw_wind_v1 requires a raw wind artifact")
+    manifest = raw_wind.manifest
+    if (
+        base_snapshot.generation_id is None
+        or manifest.get("generation_id") != base_snapshot.generation_id
+        or manifest.get("refresh_date") != base_snapshot.refresh_date
+    ):
+        raise ValueError("raw wind artifact does not belong to this snapshot generation")
+    combined = hashlib.sha256(
+        json.dumps(
+            {"profile": input_profile, "parent": base_snapshot.snapshot_id, "raw_wind": raw_wind.artifact_id},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:24]
     return BlackboxInputBundle(
-        combined_snapshot_id=base_snapshot.snapshot_id,
+        combined_snapshot_id=f"snapshot-combined-{combined}",
         parent_snapshot_id=base_snapshot.snapshot_id,
         base_snapshot=base_snapshot,
-        expected_filenames=expected_filenames,
+        expected_filenames=(*expected_filenames, *RAW_WIND_FILENAMES),
+        input_profile=input_profile,
+        raw_wind=raw_wind,
     )
 
 

@@ -53,6 +53,13 @@ from shared._input_artifacts.generation import (
     get_ready_blackbox_snapshot,
     _generation_snapshot_cache_key,
 )
+from shared._input_artifacts.raw_wind import (
+    RawWindUnavailableError,
+    get_ready_raw_wind_artifact,
+    invalidate_raw_wind_sidecar,
+    prepare_raw_wind_sidecar,
+    raw_wind_for_profile,
+)
 from shared._input_artifacts.runtime_view import (
     BlackboxRuntimeView,
     open_blackbox_runtime_view,
@@ -99,6 +106,11 @@ __all__ = [
     'prepare_blackbox_generation_snapshot',
     'invalidate_ready_blackbox_snapshot',
     'get_ready_blackbox_snapshot',
+    'RawWindUnavailableError',
+    'get_ready_raw_wind_artifact',
+    'invalidate_raw_wind_sidecar',
+    'prepare_raw_wind_sidecar',
+    'raw_wind_for_profile',
     'BlackboxRuntimeView',
     'open_blackbox_runtime_view',
     'cleanup_blackbox_runtime_debris',

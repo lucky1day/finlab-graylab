@@ -22,7 +22,7 @@ from scheduler.blackbox_v2_runner import (
     run_blackbox_backtest,
     state_binding_for_scheme,
 )
-from scheduler.discovery import SchemeConfig, blackbox_deliveries, load_scheme_config
+from scheduler.discovery import SchemeConfig, blackbox_deliveries, blackbox_input_profile, load_scheme_config
 from scheduler.process_control import ProcessGroupTerminationError
 from shared.blackbox_v2.contracts import BlackboxMetadata
 from shared.blackbox_v2.environment_manifest import load_environment_fingerprint
@@ -41,6 +41,7 @@ from shared.blackbox_v2.snapshot import (
 from shared.input_artifacts import (
     get_ready_blackbox_snapshot,
     open_blackbox_runtime_view,
+    raw_wind_for_profile,
 )
 
 
@@ -136,11 +137,14 @@ class BlackboxBacktestGate(Gate):
                 ),
             )
             benchmark_id = f"bbv2-{cfg.scheme_id}-{uuid.uuid4().hex}"
+            input_profile = blackbox_input_profile(cfg)
             bundle = compose_blackbox_input_bundle(
                 snapshot,
                 factor_input_mode=(
                     getattr(cfg, "factor_input_mode", None) or "legacy_v1"
                 ),
+                input_profile=input_profile,
+                raw_wind=raw_wind_for_profile(snapshot, input_profile),
             )
             environment_fingerprint = load_environment_fingerprint(
                 ctx.project_root,
