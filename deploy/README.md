@@ -193,6 +193,25 @@ python -B scripts/release_ops.py probe dashboard-digest --out /tmp/dash.json    
 
 `dashboard-digest` 用于证明展示结果不变：在同一时刻、同一生产库上对新旧 release 各运行一次，哈希必须一致；不同时刻的输出因新事实写入而不同，不能比较。
 
+## 标准迭代流程（开发机）
+
+日常发布用 [`scripts/promote.py`](../scripts/promote.py) 串起已验证的步骤；它不新增机制，只把窗口保护、围栏参数和读回检查固定下来。
+所有会改变主机状态的子命令都先检查调度窗口（任一触发点前 10 分钟到后 60 分钟内拒绝，`--force` 须有明确授权）。
+
+| 步骤 | 命令 | 说明 |
+|---|---|---|
+| 提交并跑测试 | `pytest -m "not mysql_integration"`、`node --test tests/frontend_*.test.js` | 发布来自干净的 `HEAD` |
+| 窗口与现状 | `promote.py window` / `promote.py status` | 两端 current/previous、健康码、Backend cwd、最近一次自然运行结果 |
+| 构建 | `promote.py build` | 确定性 archive 缓存在 `~/.cache/bfl-releases/<commit>/` |
+| 预装 | `promote.py preinstall --host all` | 不切换 current |
+| 验证 | `promote.py validate` | Mac3 上用候选 release 真实重放当日预测，并与当前 release 同时刻比较 Dashboard 摘要，全部一致才通过 |
+| 切换 | `promote.py activate --host ecs`，再 `--host mac3` | `--expected-current` 围栏，重启 Backend，读回 cwd 与四个健康码；候选带待执行迁移时必须加 `--migrate`（先备份全部平台表，再带库名与 server_uuid 围栏应用） |
+| 清理 | `promote.py cleanup --host all --apply` | 只保留 current 与 previous |
+| 观察 | `promote.py status` | 下一个自然窗口之后读回两端最近一次运行结果；自然运行证据以真实宿主时钟产生的 run 为准 |
+
+回滚是 `promote.py activate --host <h> --commit <旧提交>`（旧 release 须已构建）；库 schema 领先于旧 release 时直接拒绝，
+须先按迁移前备份还原平台表。含迁移的发布不能直接回滚，所以迁移与代码须在同一窗口内连续完成，并按 [数据库迁移](#数据库迁移) 做备份。
+
 ## 数据库迁移
 
 [`migrations.runner`](../migrations/runner.py) 是唯一迁移实现，只接收 caller-supplied Engine，负责

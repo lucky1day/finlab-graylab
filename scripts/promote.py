@@ -160,8 +160,7 @@ def cmd_build(args: argparse.Namespace) -> None:
     directory = CACHE / commit
     if not (directory / f"{commit}.source.tar.gz").is_file():
         subprocess.run([sys.executable, "-B", str(ROOT / "scripts" / "build_source_release.py"), "--output-dir", str(directory)], check=True, stdout=subprocess.DEVNULL)
-    manifest = json.loads((directory / f"{commit}.manifest.json").read_text())
-    print(f"built {commit[:8]} archive_sha256 {manifest.get('archive_sha256', '?')[:12]} -> {directory}")
+    print(f"built {commit[:8]} archive_sha256 {_archive_sha(directory, commit)[:12]} -> {directory}")
 
 
 def _archive_sha(directory: Path, commit: str) -> str:
