@@ -334,4 +334,10 @@ ECS 读回尚未取得。
 - **已完成（2026-11-13，未发布，无生产影响）：** ① 合同字段 `input_profile`（`standard` 缺省 | `raw_wind_v1`），严格校验、测试与上游合同文档；② 导出器 `shared/data_bridge/raw_wind.py`：9 张表按二进制实际读取的列确定性导出，内容寻址、只读，manifest 记录每列类型、行数、字节数与 sha256，附参考读取实现 `read_raw_wind_frame`；单元测试 12 项加 MySQL 集成测试（DECIMAL/DATETIME/JSON/NULL 与流式游标）。
 - **G1 在真实数据上通过：** Mac3 生产库副本上导出 16.6 秒，合计 108MB（日 61.2、日衍生 29.3、周 4.6、周衍生 10.0、月 0.5、月衍生 0.3、日期/日历/目录 2.0）；9 张表读回后与 `pandas.read_sql` 的 dtype 与值逐位相同。
 - **格式约定（交付外壳须自行实现等价读取）：** UTF-8、LF、标准 CSV；`\N` 表示 NULL，以反斜杠开头的字符串多加一个反斜杠；浮点按精确解析（逐值 `float()`，不得用 pandas 默认快速解析器）；每列类型见 manifest。
-- **下一步：** 输入组装（`compose_blackbox_input_bundle` 的 `input_profile`、`expected_filenames` 扩展、`combined_snapshot_id`、运行视图封存校验）与生产者钩子（G3、G4），然后是交付外壳（G2）。
+- **输入组装与生产者钩子已完成（2026-11-13，G3/G4）：**
+  - `BlackboxInputBundle` 增加 `input_profile`、`raw_wind`；`compose_blackbox_input_bundle(..., input_profile=, raw_wind=)` 在 `raw_wind_v1` 下把文件集合扩展为标准文件加 9 个 `raw_wind__*.csv`，`combined_snapshot_id = snapshot-combined-<sha24(profile, parent, artifact_id)>`；`standard` 行为与身份不变；旁路产物的 `generation_id/refresh_date` 必须与 ready 快照一致。
+  - 运行视图：旁路文件边复制边按 manifest 校验 sha256 与字节数（沿用独立文件、`O_NOFOLLOW`、`O_EXCL`、nlink=1），目录内容严格等于期望集合；可信校验识别旁路文件与 profile，伪造 profile/文件集/组合身份均被拒绝；篡改后不留 active 视图。
+  - 就绪标记 `<artifacts>/blackbox_v2/raw_wind/ready.json`（generation 配对）；`prepare_raw_wind_sidecar`（一致性快照导出→校验→写标记→保留最新两代）、`invalidate_raw_wind_sidecar`、`get_ready_raw_wind_artifact`（轻量核对身份与文件大小）、`raw_wind_for_profile`（standard 返回 None，raw_wind_v1 未就绪抛 `RawWindUnavailableError`）。执行器两处与回测 gate 按 `blackbox_input_profile(cfg)`（一个方案的各 delivery 必须同 profile）取用。
+  - producer（`scripts/refresh_data_bridge_current.py`）：发布开始时先失效旁路标记；发布与 ready 快照封存之后，**仅当本部署（按 `BFL_DEPLOYMENT_TARGET` 过滤）有声明 `raw_wind_v1` 的方案**才导出，失败只记录、不阻断标准发布。目前两端都没有这类方案，所以生产行为不变，ECS 也不会多导出。
+  - 验证：单元测试 10 项（组合规则、物化、篡改、伪造、就绪配对、保留策略、profile 一致性、钩子隔离）；MySQL 集成测试 30 项（含 `prepare_raw_wind_sidecar`）；全量 987 项通过。Mac3 生产库副本端到端：生产者准备 ready 快照与旁路产物 16.5 秒；`legacy_v1` 运行视图 13 个文件、`algorithm_managed` 14 个文件，合计 133MB，物化 0.1 秒。
+- **下一步：** 交付外壳（G2）：自解压二进制包、读取 `raw_wind__*.csv`、安装无数据库拦截层、进程内运行并映射为 V2 输出；用无数据库原型已验证的 24 项对比复现，再走 V2 全链路对照 Native（G5）。
