@@ -28,7 +28,10 @@ REQUIRED_METADATA_FIELDS = {
     "horizon",
     "target_rule",
 }
-OPTIONAL_METADATA_FIELDS = {"description", "owner"}
+INPUT_PROFILE_STANDARD = "standard"
+INPUT_PROFILE_RAW_WIND_V1 = "raw_wind_v1"
+INPUT_PROFILES = (INPUT_PROFILE_STANDARD, INPUT_PROFILE_RAW_WIND_V1)
+OPTIONAL_METADATA_FIELDS = {"description", "owner", "input_profile"}
 MAX_DESCRIPTION_LENGTH = 300
 REQUEST_FIELDS = (
     "request_id",
@@ -61,6 +64,7 @@ class BlackboxMetadata:
     frequency: str
     description: str | None = None
     owner: str | None = None
+    input_profile: str = INPUT_PROFILE_STANDARD
 
 
 @dataclass(frozen=True)
@@ -150,6 +154,9 @@ def load_metadata_bytes(
         if "owner" in raw
         else None
     )
+    input_profile = raw.get("input_profile", INPUT_PROFILE_STANDARD)
+    if input_profile not in INPUT_PROFILES:
+        raise ValueError(f"unsupported input_profile: {input_profile!r}; expected one of {list(INPUT_PROFILES)}")
     expected_horizon, expected_rule, frequency = combination
     if (horizon, target_rule) != (expected_horizon, expected_rule):
         raise ValueError(
@@ -168,6 +175,7 @@ def load_metadata_bytes(
         frequency=frequency,
         description=description,
         owner=owner,
+        input_profile=input_profile,
     )
 
 

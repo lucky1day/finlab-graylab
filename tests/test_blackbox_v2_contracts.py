@@ -7,6 +7,28 @@ from pathlib import Path
 
 
 class BlackboxV2MetadataContractTests(unittest.TestCase):
+    def test_input_profile_defaults_to_standard_and_accepts_only_known_profiles(
+        self,
+    ) -> None:
+        self.assertEqual(_load_metadata(_metadata_payload()).input_profile, "standard")
+
+        payload = _metadata_payload()
+        for profile in ("standard", "raw_wind_v1"):
+            with self.subTest(profile=profile):
+                payload["input_profile"] = profile
+                self.assertEqual(_load_metadata(payload).input_profile, profile)
+
+        for invalid in ("", "RAW_WIND_V1", "raw_wind_v2", None, 1):
+            with self.subTest(invalid=invalid):
+                payload["input_profile"] = invalid
+                with self.assertRaisesRegex(ValueError, "input_profile"):
+                    _load_metadata(payload)
+
+        payload.pop("input_profile")
+        payload["unknown_field"] = "x"
+        with self.assertRaisesRegex(ValueError, "fields mismatch"):
+            _load_metadata(payload)
+
     def test_owner_is_optional_for_historical_parse_but_validated_when_present(
         self,
     ) -> None:

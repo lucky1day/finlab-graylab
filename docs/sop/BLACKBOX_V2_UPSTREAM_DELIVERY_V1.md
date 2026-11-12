@@ -22,7 +22,7 @@
 
 ## 2. Metadata
 
-`{scheme_id}.json` 为 UTF-8（无 BOM）JSON 对象，恰好包含下表十个字段，不得重复键或增加字段。
+`{scheme_id}.json` 为 UTF-8（无 BOM）JSON 对象，恰好包含下表十个字段，不得重复键或增加字段；唯一例外是下表之后说明的平台批准字段 `input_profile`。
 字符串值的首尾空白会被去除。参考 [`metadata.sample.json`](../blackbox_v2/data_bridge_v1/samples/metadata.sample.json)。
 
 | 字段 | 类型 | 取值规则 | 示例 |
@@ -37,6 +37,8 @@
 | `task_type` | string | 见下表 | `"T+1"` |
 | `horizon` | integer | JSON 整数（不能是字符串或布尔），必须与 `task_type` 匹配 | `1` |
 | `target_rule` | string | 必须与 `task_type` 匹配 | 见下表 |
+
+**`input_profile`（可选，仅限平台批准的交付）。** `"standard"`（缺省，只读 DataBridge 标准数据文件）或 `"raw_wind_v1"`（另挂载平台生成的原始源表旁路文件 `raw_wind__<表名>.csv`，仅用于由平台封装、需要原始数据库表内容的存量二进制算法）。普通上游交付不要声明该字段；它参与脚本 exact，未声明者行为不变。旁路文件的内容、生成与封存规则见[计划与设计](../plans/FRAMEWORK_AUDIT_AND_OPTIMIZATION_PLAN.md#14-原始源表旁路产物raw_wind_v1平台设计)。
 
 `task_type`、`horizon`、`target_rule` 必须整行取自下表：
 
