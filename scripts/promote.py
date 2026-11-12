@@ -6,6 +6,7 @@ docs/operations/DEPLOYMENT_ACCESS.md；两端调度时刻与 deploy/ 下的模�
 
     python -B scripts/promote.py status
     python -B scripts/promote.py window
+    python -B scripts/promote.py observe [--date YYYY-MM-DD]       # 自然窗口之后读回两端 run 结果
     python -B scripts/promote.py build
     python -B scripts/promote.py preinstall --host all
     python -B scripts/promote.py validate
@@ -146,6 +147,16 @@ def cmd_status(args: argparse.Namespace) -> None:
         print("   last natural runs:", *[f"\n     {line}" for line in host.sh(host.cfg["last_runs"]).splitlines()])
 
 
+def cmd_observe(args: argparse.Namespace) -> None:
+    """自然窗口之后读回两端的 run 结果：按阶段与状态计数、仍无成功 run 的方案及错误摘要、当日事实条数。"""
+    day = args.date or datetime.now(TZ).strftime("%Y-%m-%d")
+    for host in hosts_for("all"):
+        current = host.link("current")
+        print(f"== {host.name} (release {current[:8]}) predict_date {day}")
+        print(host.release_ops(current, "probe", "runs", "--date", day))
+        print("   last natural runs:", *[f"\n     {line}" for line in host.sh(host.cfg["last_runs"]).splitlines()])
+
+
 def cmd_window(args: argparse.Namespace) -> None:
     until = busy_until(datetime.now(TZ))
     print("clear" if until is None else f"BUSY until {until:%H:%M}")
@@ -267,6 +278,9 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     for name, func in (("status", cmd_status), ("window", cmd_window), ("build", cmd_build)):
         sub.add_parser(name).set_defaults(func=func)
+    observe = sub.add_parser("observe")
+    observe.set_defaults(func=cmd_observe)
+    observe.add_argument("--date", help="预测日 YYYY-MM-DD，缺省为今天")
     for name, func in (("preinstall", cmd_preinstall), ("validate", cmd_validate), ("activate", cmd_activate),
                        ("cleanup", cmd_cleanup)):
         item = sub.add_parser(name)

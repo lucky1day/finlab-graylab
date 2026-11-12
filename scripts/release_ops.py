@@ -7,6 +7,7 @@
     python -B scripts/release_ops.py probe facts --scheme-id X --since 2026-11-10
     python -B scripts/release_ops.py probe dashboard-digest --out /tmp/dash.json
     python -B scripts/release_ops.py probe db-identity | migration-state | backup-tables --out DIR
+    python -B scripts/release_ops.py probe runs --date YYYY-MM-DD
     python -B scripts/release_ops.py script apply_migrations.py -- --apply --expected-database-name N --expected-server-uuid U
 
 环境来源与部署手册一致：release 的 `.bfl-release.env`（提交、runtime、cache）、本机服务解释器与
@@ -41,7 +42,7 @@ TARGETS = {
         "database_env_file": "/etc/bond-factor-lab/bond-factor-lab.env",
     },
 }
-_PROBES = {"refresh-date", "facts", "dashboard-digest", "db-identity", "migration-state", "backup-tables"}
+_PROBES = {"refresh-date", "facts", "dashboard-digest", "db-identity", "migration-state", "backup-tables", "runs"}
 _SCRIPT_NAME = re.compile(r"[a-z][a-z0-9_]*\.py")
 
 

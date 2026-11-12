@@ -86,6 +86,30 @@ def dashboard_digest(out: Path) -> None:
     print(f"schemes {len(summary['schemes'])} details {len(details)} errors {errors} sha256 {hashlib.sha256(blob.encode()).hexdigest()[:16]}")
 
 
+def runs(predict_date: str) -> None:
+    """汇总某预测日的 run：按阶段与状态计数，并列出失败 run 及错误摘要；再给出当日事实条数与 exact 构成。"""
+    from sqlalchemy import text
+
+    from scheduler.repository import create_engine_from_env
+
+    with create_engine_from_env().connect() as connection:
+        rows = connection.execute(text(
+            "SELECT COALESCE(prediction_phase, '-'), status, COUNT(*) FROM t_scheme_runs "
+            "WHERE predict_date = :d GROUP BY 1, 2 ORDER BY 1, 2"), {"d": predict_date}).all()
+        print("runs:", ", ".join(f"{phase}/{status}={count}" for phase, status, count in rows) or "none")
+        failed = connection.execute(text(
+            "SELECT r.scheme_id, COUNT(*), MAX(LEFT(r.error_message, 140)) FROM t_scheme_runs r "
+            "WHERE r.predict_date = :d AND r.status = 'failed' AND NOT EXISTS ("
+            "  SELECT 1 FROM t_scheme_runs ok WHERE ok.predict_date = r.predict_date AND ok.scheme_id = r.scheme_id "
+            "  AND ok.status = 'success') GROUP BY r.scheme_id ORDER BY r.scheme_id"), {"d": predict_date}).all()
+        print(f"schemes with failed runs and no success: {len(failed)}")
+        for scheme_id, attempts, error in failed:
+            print(f"  {scheme_id} attempts={attempts} {error}")
+        facts = connection.execute(text(
+            "SELECT COUNT(*), COUNT(DISTINCT scheme_id) FROM t_scheme_predictions WHERE predict_date = :d"), {"d": predict_date}).one()
+        print(f"facts with predict_date {predict_date}: {facts[0]} rows, {facts[1]} schemes")
+
+
 def db_identity() -> None:
     """打印本机库名与 server_uuid，供迁移的写入围栏参数使用（运行时输出，不入文档）。"""
     from sqlalchemy import text
@@ -151,10 +175,11 @@ def backup_tables(out: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("name", choices=["refresh-date", "facts", "dashboard-digest", "db-identity", "migration-state", "backup-tables"])
+    parser.add_argument("name", choices=["refresh-date", "facts", "dashboard-digest", "db-identity", "migration-state", "backup-tables", "runs"])
     parser.add_argument("--scheme-id", action="append", default=[])
     parser.add_argument("--since", default="1970-01-01")
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--date", help="runs 探针的预测日 YYYY-MM-DD")
     args = parser.parse_args()
     if args.name == "refresh-date":
         refresh_date()
@@ -162,6 +187,10 @@ def main() -> int:
         if not args.scheme_id:
             parser.error("facts requires --scheme-id")
         facts(args.scheme_id, args.since)
+    elif args.name == "runs":
+        if not args.date:
+            parser.error("runs requires --date")
+        runs(args.date)
     elif args.name == "db-identity":
         db_identity()
     elif args.name == "migration-state":
