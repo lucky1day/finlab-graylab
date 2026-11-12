@@ -283,3 +283,48 @@ ECS 读回尚未取得。
 - **外壳形态。** 交付的 `.py` 须自解压二进制并安装上述拦截层；属于入库 skill 所说"内嵌运行时外壳"，须经批准（本次用户已批准）并做隔离解包审计。
 - **三套共享一次运行。** 二进制一次跑完 D1Y/D5Y/D10Y；若拆成三个独立交付会各自重跑 44 秒（可接受），或在外壳里缓存。
 - **多日对等验证与回测口径。** 下一步用原型对最近若干交易日逐日对比生产事实，再设计 V2 backtest 如何驱动二进制。
+
+### 13.3 多日对等验证结果（2026-11-13）
+
+用无数据库原型对 `daily_0629` 三套在 2026-11-02 至 11-11 共 8 个交易日、24 个事实逐日运行并与生产当时发布的事实比较（方向与 `prob_up` 双精度）：**20 个逐位一致，4 个不一致**（11-02 D1Y、11-03 D10Y、11-04 D1Y、11-05 D5Y），全部集中在较早日期，11-06 之后全部一致。对这 4 个日期，用**原生路径（真实数据库）在同一份当前数据上重跑**，方向与 `prob_up` 与无数据库结果**逐位相同**。结论：差异来自生产当时之后源数据被修订（上游 `*-lastday` 任务会重拉最近一天并替换），不是无数据库层造成的；无数据库层在全部对比中等价于原生路径。该事实同时说明：以"当前数据 + 截止日"回放历史，与当时实盘产出本来就可能不同，V2 回测口径（`current_snapshot_as_of`）对 W4 同样适用，不应以历史实盘事实作为逐日回放的真值。
+
+### 14. 原始源表旁路产物（`raw_wind_v1`）平台设计
+
+**目标。** 让声明需要原始数据的 Blackbox V2 交付，在沙箱里拿到与二进制原先从数据库读到的内容逐位相同的输入；其余方案不受任何影响；输入仍只经 `shared.input_artifacts`，并随快照封存、可追溯。
+
+**约束（已核实）。**
+1. DataBridge 的 `candidate/current` 目录必须**正好是五个数据文件**（`shared/data_bridge/filesystem.py`、`validation.py`），原始数据不能放进去。
+2. 沙箱数据目录必须与 `BlackboxInputBundle.expected_filenames` **严格相等**，并按 producer 的 stat 指纹封存（`runtime_view.py`）。
+3. `BlackboxInputBundle` 已有 `combined_snapshot_id` / `parent_snapshot_id` 两个预留字段，可承载"基础快照 + 旁路产物"的组合身份。
+4. 二进制对 9 张源表的读取形态已用 general_log 确定（见下表），全部是只读 `SELECT`。
+
+| 表 | 导出列 | 过滤 |
+|---|---|---|
+| `api_wind_daily`、`api_wind_derivative_daily`、`api_wind_monthly` | `rdate, indicators_code, indicators_value` | `indicators_value IS NOT NULL` |
+| `api_wind_weekly`、`api_wind_derivative_weekly` | `rdate, week_id, indicators_code, indicators_value` | 同上 |
+| `api_wind_derivative_monthly` | `rdate, month_id, indicators_code, indicators_value` | 同上 |
+| `api_wind_date` | `rdate, week_id` | 两列非空，按 `rdate` 排序 |
+| `t_trade_calendar` | `rdate, trade_flag` | 按 `rdate` 排序 |
+| `api_wind_indicators_all` | 全部 27 列 | 无 |
+
+截止日由二进制自己在 SQL 里按运行日截断，所以导出**不按日期裁剪**（只去掉 NULL 值行），与它原先看到的一致。
+
+**实测（Mac3 生产库副本）。** 9 张表全列全量 CSV 共 408MB、读写 25 秒，逐列往返相等；只导出上表列后约 110MB 量级（待实现后实测）。每次运行复制该旁路文件的开销可忽略。
+
+**设计。**
+1. **导出器** `shared/data_bridge/raw_wind.py`（新增，约 150 行）：在与 DataBridge 同一 REPEATABLE READ 一致性快照里按上表读取，确定性写 CSV（UTF-8、LF、固定列序、按主键稳定排序、空值为空串），生成 `raw_wind_manifest.json`（每文件 sha256/行数/列、源库 `server_uuid` 不入库、关联的 DataBridge `generation_id` 与 `refresh_date`）。产物放在 DataBridge 目录**之外**：`<runtime>/data-bridge/raw/<generation_id>/`，目录内容寻址并只读。
+2. **生产者钩子**：`scripts/refresh_data_bridge_current.py` 在已有的 `prepare_blackbox_generation_snapshot` 之后调用导出器；**失败不影响标准 DataBridge 发布**，只在 state 记录 `raw_wind: unavailable`，声明需要它的交付按 BLOCKED 处理（fail-closed 只针对这些方案）。
+3. **交付合同**：Metadata 增加可选字段 `input_profile`（`standard` 缺省 | `raw_wind_v1`），参与 exact；不声明者行为完全不变。
+4. **输入组装**：`compose_blackbox_input_bundle(..., input_profile=)` 在 `raw_wind_v1` 下把 `expected_filenames` 扩展为标准文件加 `raw_wind__<表名>.csv` 九个文件；`combined_snapshot_id = sha256(parent_snapshot_id + raw_manifest_sha256)`；运行视图沿用现有 stat 指纹封存与拷贝校验；`data_snapshot_id` 证据写组合身份。
+5. **交付外壳**（`daily_5y_lgbm_5y10_0629.py`，须经批准并做隔离解包审计）：自解压二进制包到工作目录，读取 `raw_wind__*.csv`，安装与原型相同的 `pandas.read_sql*`/`create_engine`/`pymysql` 拦截层（未知查询一律报错），进程内调用 `daily.run_daily --dry-run`，再把选中行映射为 V2 输出（映射逻辑复用现有 `daily_0629_predict_adapter` 的方向规则）。
+6. **回测**：`gate backtest` 对该交付使用最新数据日的同一份旁路产物；二进制按各请求日期自行截断。
+
+**验证闸门（每步独立通过才进入下一步）。**
+- G1 CSV 往返：导出→读回的 DataFrame 与 `pandas.read_sql` 结果在 dtype 与值上逐列相等。（已对全量 9 表通过；实现后对只导出列再验证）
+- G2 外壳无数据库复现：旁路 CSV 喂外壳，复现原型已验证的 24 项对比。
+- G3 封存与篡改：旁路文件被改、缺失、多出时运行视图拒绝；`expected_filenames` 与实际严格相等。
+- G4 平台单测与 MySQL 集成测试；不声明 `input_profile` 的方案 Dashboard 摘要与重放逐位不变。
+- G5 在生产库副本上用候选 release 走 V2 全链路（持久化回测→激活→补跑），与 Native 对同一日期的方向、`prob_up` 逐位一致。
+- G6 DataBridge 06:30 窗口耗时与磁盘占用在预算内（旁路产物按 generation 保留最近两代）。
+
+**风险与对策。** 旁路导出耗时拖长 DataBridge 刷新 → 放在标准发布之后、失败不阻断；磁盘占用 → 只保留 current 与 previous 两代；二进制对 Python 3.13 darwin arm64 的绑定 → 与 `forecast_env_blackbox_v1` 同版本，环境指纹已纳入 exact；外壳静态策略 → 经批准的内嵌运行时例外，隔离解包审计后入库。
