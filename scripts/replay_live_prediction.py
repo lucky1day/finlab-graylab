@@ -85,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scheme-id", action="append", required=True, dest="scheme_ids")
     parser.add_argument("--port", type=int, default=3396)
     parser.add_argument("--with-source-tables", action="store_true", help="同时导出大体量 Wind 源表并配置 W4 源库（重放 W4 Native 方案时需要）")
+    parser.add_argument("--gap-fill", action="store_true", help="改用补跑入口 harness signal-gap-fill 补回被删除的当日事实（验证 gap_fill 写入路径），而不是自然调度入口")
     parser.add_argument("--keep", action="store_true", help="结束后保留临时目录与 MySQL 以便排查")
     args = parser.parse_args(argv)
     release = args.release.resolve()
@@ -172,12 +173,27 @@ def main(argv: list[str] | None = None) -> int:
         subprocess.run([SERVICE_PY, "-B", "-c", _PREPARE_SNAPSHOT, str(release), refresh_date], check=True, env=env, cwd=release)
 
         # 4) 以 launchd 同一入口真实运行；任一方案失败即停止（避免重试间隔）
-        cmd = [SERVICE_PY, "-B", "-m", "scheduler.launchd_prediction_runner", "--cadence", "daily", "--predict-date", args.predict_date, "--algo-env", "forecast_env"]
-        for scheme_id in args.scheme_ids:
-            cmd += ["--scheme-id", scheme_id]
+        if args.gap_fill:
+            gap = subprocess.run([SERVICE_PY, "-B", "-m", "harness", "signal-gap-fill", "--predict-date", args.predict_date],
+                                 env=env, cwd=release, capture_output=True, text=True)
+            status = next((line.strip() for line in gap.stdout.splitlines() if '"status"' in line), "")
+            print("signal-gap-fill", gap.returncode, status)
+            if gap.returncode != 0:
+                try:
+                    report = json.loads(gap.stdout)
+                    print("failure_code:", report.get("failure_code"), "errors:", *report.get("errors", []), sep="\n  ", file=sys.stderr)
+                except ValueError:
+                    print(gap.stdout[-1500:], file=sys.stderr)
+                print(gap.stderr[-800:], file=sys.stderr)
+                return 1
+            cmd = None
+        else:
+            cmd = [SERVICE_PY, "-B", "-m", "scheduler.launchd_prediction_runner", "--cadence", "daily", "--predict-date", args.predict_date, "--algo-env", "forecast_env"]
+            for scheme_id in args.scheme_ids:
+                cmd += ["--scheme-id", scheme_id]
         runner_log = work / "runner.log"
-        runner = subprocess.Popen(cmd, env=env, cwd=release, stdout=subprocess.PIPE, stderr=runner_log.open("w"), text=True)
-        while runner.poll() is None:
+        runner = subprocess.Popen(cmd, env=env, cwd=release, stdout=subprocess.PIPE, stderr=runner_log.open("w"), text=True) if cmd else None
+        while runner is not None and runner.poll() is None:
             time.sleep(3)
             failed = _sql(port, f"SELECT scheme_id, LEFT(error_message,200) FROM t_scheme_runs WHERE run_id>{base_run} AND status='failed'")
             if failed:
