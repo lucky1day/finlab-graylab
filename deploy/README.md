@@ -81,7 +81,7 @@ release，再结合健康与资源读回判定。切换瞬间暂时没有 listen
 **发布前实盘重放（Mac3 本机，可替代等待自然窗口）：** 候选 release 预安装后，用
 [`scripts/replay_live_prediction.py`](../scripts/replay_live_prediction.py) 在一次性 MySQL 中载入生产数据副本，
 以候选 release 的 `launchd_prediction_runner` 真实重跑某个已发生的日频预测日（如
-`--predict-date 2026-11-11 --scheme-id t5_daily --scheme-id v8_daily_3y_t5`），并与生产当日结果逐条比对
+`--predict-date <DataBridge current 的 refresh_date> --scheme-id t5_daily --scheme-id v8_daily_3y_t5`，预测日不等于当前数据日时直接拒绝；重放 W4 Native 方案加 `--with-source-tables`），并与生产当日结果逐条比对
 （预测方向、特征日、预测日、exact、结果分区）；全部一致才通过，约 1 分钟。脚本只读生产库与 DataBridge current，
 所有写入都在临时目录与一次性库内，结束自动清理。它不替代 ECS 的自然运行证据。
 
@@ -181,7 +181,17 @@ SOP 中的 `python -B -m harness ...` 只展示操作参数，**不会自动加�
 补齐。未指定文件时才读取当前环境；用户、密码、主机和数据库名缺失或为空直接失败，空密码只允许调用方
 显式选择。开发入口若使用 `.env`，必须在调用配置模块前显式加载。上述核验未通过时，不执行持久化命令。
 
-自然调度的 EnvironmentFile 和 Mac3 launcher 按上文加载环境，但不因此自动覆盖手工 Harness；手工调用也不能靠设置自然控制面标记冒充真实触发。不使用 shell `source` 执行私有配置，不打印整个环境。当前没有供本 SOP 直接调用的通用跨平台手工启动入口；具体调用的环境映射须在操作前可审查，缺少这一环时先停止并补齐，能力缺口见[TODO](../docs/TODO.md#候选-release-手工启动入口)。
+自然调度的 EnvironmentFile 和 Mac3 launcher 按上文加载环境，但不因此自动覆盖手工 Harness；手工调用也不能靠设置自然控制面标记冒充真实触发。不使用 shell `source` 执行私有配置，不打印整个环境。手工入口是 release 内的 [`scripts/release_ops.py`](../scripts/release_ops.py)：在目标机的 `releases/<commit>` 目录里用本机服务 Python 以 `-B` 运行（不加 `-I`），按平台绑定 `BFL_DEPLOYMENT_TARGET`、解释器与 conda、数据库配置文件路径，并读取该 release 经核验的 `.bfl-release.env`；外部 `PYTHONPATH/PYTHONHOME` 直接拒绝，不设置自然控制面标记，不读取或打印凭据。
+
+```bash
+cd <deploy_root>/releases/<commit>
+python -B scripts/release_ops.py harness -- gate backtest --scheme-id X --predict-date D --persist   # 任意 Harness 子命令
+python -B scripts/release_ops.py probe refresh-date                                                      # DataBridge current 的数据日
+python -B scripts/release_ops.py probe facts --scheme-id X --since YYYY-MM-DD                           # 只读读回预测事实与 run
+python -B scripts/release_ops.py probe dashboard-digest --out /tmp/dash.json                            # Dashboard 摘要哈希，新旧 release 同时刻比较
+```
+
+`dashboard-digest` 用于证明展示结果不变：在同一时刻、同一生产库上对新旧 release 各运行一次，哈希必须一致；不同时刻的输出因新事实写入而不同，不能比较。
 
 ## 数据库迁移
 
