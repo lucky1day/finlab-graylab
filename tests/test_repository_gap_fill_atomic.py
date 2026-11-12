@@ -55,26 +55,26 @@ def test_range_checks_every_business_key_before_any_prediction_insert(
     absent = Mock(side_effect=RuntimeError("business key conflict"))
     monkeypatch.setattr(
         prediction_impl,
-        "_normalize_gray_gap_target_keys",
+        "_normalize_gap_fill_target_keys",
         lambda _cfg, targets: targets,
     )
-    monkeypatch.setattr(prediction_impl, "_normalize_gray_gap_source_authority", lambda *_a, **_k: None)
-    monkeypatch.setattr(prediction_impl, "_validate_gray_gap_records", lambda *_a, **_k: None)
+    monkeypatch.setattr(prediction_impl, "_normalize_gap_fill_source_authority", lambda *_a, **_k: None)
+    monkeypatch.setattr(prediction_impl, "_validate_gap_fill_records", lambda *_a, **_k: None)
     monkeypatch.setattr(
         prediction_impl,
-        "_enrich_gray_gap_records",
+        "_enrich_gap_fill_records",
         lambda _cfg, *, records, **_k: records,
     )
-    monkeypatch.setattr(prediction_impl, "_blackbox_gray_gap_snapshot_id", lambda *_a, **_k: None)
+    monkeypatch.setattr(prediction_impl, "_blackbox_gap_fill_snapshot_id", lambda *_a, **_k: None)
     monkeypatch.setattr(prediction_impl, "_read_scheme_run_conn", lambda *_a, **_k: {})
-    monkeypatch.setattr(prediction_impl, "_validate_gray_gap_run", lambda *_a, **_k: None)
-    monkeypatch.setattr(prediction_impl, "_validate_gray_gap_active_version", lambda *_a, **_k: None)
-    monkeypatch.setattr(prediction_impl, "_validate_gray_gap_active_registry", lambda *_a, **_k: None)
-    monkeypatch.setattr(prediction_impl, "_assert_gray_gap_business_keys_absent", absent)
+    monkeypatch.setattr(prediction_impl, "_validate_gap_fill_run", lambda *_a, **_k: None)
+    monkeypatch.setattr(prediction_impl, "_validate_gap_fill_active_version", lambda *_a, **_k: None)
+    monkeypatch.setattr(prediction_impl, "_validate_gap_fill_active_registry", lambda *_a, **_k: None)
+    monkeypatch.setattr(prediction_impl, "_assert_gap_fill_business_keys_absent", absent)
     monkeypatch.setattr(prediction_impl, "_insert_run_predictions_conn", insert)
 
     with pytest.raises(RuntimeError, match="business key conflict"):
-        repository.complete_gray_gap_runs_atomic(
+        repository.complete_gap_fill_runs_atomic(
             engine,
             [
                 _item(101, "2026-05-30", "2026-06-05"),

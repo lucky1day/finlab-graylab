@@ -88,7 +88,7 @@ def _revision_fixture():
         conn.exec_driver_sql(
             "CREATE TABLE t_backtest_runs ("
             "id INTEGER PRIMARY KEY, benchmark_id TEXT, scheme_id TEXT, "
-            "data_source TEXT, status TEXT, run_mode TEXT, code_hash TEXT, "
+            "data_source TEXT, status TEXT, code_hash TEXT, "
             "config_hash TEXT, input_artifact_hash TEXT, summary TEXT)"
         )
         conn.exec_driver_sql(
@@ -115,7 +115,7 @@ def _revision_fixture():
                 "approved_by, approved_at) VALUES "
                 "(:scheme_id, 'version-1', 'blackbox_v2', 'active', 'test', "
                 "'prior-operator', :approved_at), "
-                "(:scheme_id, 'version-shadow', 'blackbox_v2', 'shadow', 'test', "
+                "(:scheme_id, 'version-draft', 'blackbox_v2', 'draft', 'test', "
                 "NULL, NULL)"
             ),
             {
@@ -199,7 +199,7 @@ def _activate_revision_repository(engine, cfg):
         engine,
         cfg,
         prior_scheme_version="version-1",
-        pending_scheme_versions=("version-shadow",),
+        pending_scheme_versions=("version-draft",),
         approved_by="operator",
         approved_at=datetime(2026, 8, 25, 2, 0, tzinfo=timezone.utc),
     )
@@ -237,7 +237,7 @@ def _initial_fixture():
             text(
                 "INSERT INTO t_backtest_runs VALUES "
                 "(42, 'bbv2-test', :scheme_id, "
-                "'blackbox_v2_current_snapshot_as_of', 'success', 'persist', "
+                "'blackbox_v2_current_snapshot_as_of', 'success', "
                 ":code_hash, :config_hash, 'snapshot-1', :summary)"
             ),
             {
@@ -403,7 +403,7 @@ def test_revision_repository_atomically_switches_versions() -> None:
         assert _revision_states(engine) == [
             ("version-1", "retired"),
             ("version-2", "active"),
-            ("version-shadow", "retired"),
+            ("version-draft", "retired"),
         ]
         with engine.begin() as conn:
             assert conn.execute(
@@ -626,7 +626,7 @@ def test_revision_repository_rolls_back_after_mid_transaction_failure() -> None:
 
         assert _revision_states(engine) == [
             ("version-1", "active"),
-            ("version-shadow", "shadow"),
+            ("version-draft", "draft"),
         ]
     finally:
         engine.dispose()

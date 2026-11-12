@@ -115,6 +115,25 @@ def _assert_result_segment(engine: Engine) -> None:
     assert "feature_date" in expression and "2026-06-01" in expression
 
 
+def _column_type(engine: Engine, table: str, column: str) -> str | None:
+    with engine.connect() as connection:
+        return connection.execute(
+            text(
+                "SELECT column_type FROM information_schema.columns WHERE table_schema = DATABASE() "
+                "AND table_name = :t AND column_name = :c"
+            ),
+            {"t": table, "c": column},
+        ).scalar()
+
+
+def _assert_concept_surface(engine: Engine) -> None:
+    """028：补跑阶段改名，常量列删除，版本状态不含从未使用的取值。"""
+    assert _column_type(engine, "t_scheme_runs", "prediction_phase") == "enum('gap_fill','scheduled_live')"
+    assert _column_type(engine, "t_scheme_runs", "run_type") is None
+    assert _column_type(engine, "t_backtest_runs", "run_mode") is None
+    assert _column_type(engine, "t_scheme_versions", "status") == "enum('draft','active','paused','retired')"
+
+
 def test_empty_database_gets_baseline_then_incremental(empty_mysql_engine) -> None:
     apply_pending_migration_files(empty_mysql_engine, PATHS)
 
@@ -125,6 +144,7 @@ def test_empty_database_gets_baseline_then_incremental(empty_mysql_engine) -> No
     assert {row[3] for row in history[25:]} == {0}
     assert not RETIRED_TABLES & _tables(empty_mysql_engine)
     _assert_result_segment(empty_mysql_engine)
+    _assert_concept_surface(empty_mysql_engine)
 
     apply_pending_migration_files(empty_mysql_engine, PATHS)
     assert _history(empty_mysql_engine) == history
@@ -141,6 +161,7 @@ def test_existing_database_at_025_only_runs_new_migrations(empty_mysql_engine) -
     assert [row[1] for row in history[25:]] == [m.path.name for m in PLAN.migrations]
     assert not RETIRED_TABLES & _tables(empty_mysql_engine)
     _assert_result_segment(empty_mysql_engine)
+    _assert_concept_surface(empty_mysql_engine)
 
 
 def test_history_identity_drift_is_refused(empty_mysql_engine) -> None:
@@ -204,3 +225,26 @@ def test_interrupted_rerunnable_migration_recovers_with_digest_fence(
     )
     assert _history(empty_mysql_engine)[-1][2] == "APPLIED"
     assert not RETIRED_TABLES & _tables(empty_mysql_engine)
+
+
+def test_028_rewrites_gray_live_runs_and_is_rerunnable(empty_mysql_engine) -> None:
+    apply_pending_migration_files(empty_mysql_engine, PATHS)
+    migration = next(m for m in PLAN.migrations if m.path.name.startswith("028_"))
+    statements = split_sql_statements(migration.path.read_text())
+    with empty_mysql_engine.begin() as connection:  # 还原 027 时的形态并放入旧取值
+        connection.execute(text("ALTER TABLE t_scheme_runs MODIFY COLUMN prediction_phase ENUM('gray_live','scheduled_live') DEFAULT NULL"))
+        connection.execute(text("ALTER TABLE t_scheme_runs ADD COLUMN run_type ENUM('dry_run','shadow','active','manual') NOT NULL DEFAULT 'active' AFTER runtime_type"))
+        connection.execute(text("ALTER TABLE t_backtest_runs ADD COLUMN run_mode ENUM('no_persist','persist','reproduction','comparison') DEFAULT NULL AFTER input_artifact_hash"))
+        connection.execute(text("ALTER TABLE t_scheme_versions MODIFY COLUMN status ENUM('draft','validated','shadow','active','paused','retired') NOT NULL DEFAULT 'draft'"))
+        connection.execute(text(
+            "INSERT INTO t_scheme_runs (scheme_id, predict_date, prediction_phase) VALUES "
+            "('s', '2026-07-01', 'gray_live'), ('s', '2026-07-02', 'scheduled_live'), ('s', '2026-07-03', NULL)"
+        ))
+    for _ in range(2):  # 第二遍证明可重跑
+        with empty_mysql_engine.begin() as connection:
+            for statement in statements:
+                connection.execute(text(statement))
+        _assert_concept_surface(empty_mysql_engine)
+    with empty_mysql_engine.connect() as connection:
+        phases = connection.execute(text("SELECT predict_date, prediction_phase FROM t_scheme_runs ORDER BY predict_date")).all()
+    assert [row[1] for row in phases] == ["gap_fill", "scheduled_live", None]

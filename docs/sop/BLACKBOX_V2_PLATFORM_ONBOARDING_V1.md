@@ -230,7 +230,7 @@ python -B -m harness gate data-consistency --scheme-id {scheme_id} \
 
 - 单日 live 缺口：`python -B -m harness signal-gap-fill --predict-date YYYY-MM-DD [--scheme-id {scheme_id}]`。
   省略 `--scheme-id` 时扫描当日全部应运行的 active 方案，仅在授权覆盖完整范围时使用。`SKIP_NOT_DUE`、
-  `SKIP_PRESENT` 为无写入的正常结果，仅 `GRAY_LIVE_GAP` 执行；每个 base 独立提交、多 target 组内原子，
+  `SKIP_PRESENT` 为无写入的正常结果，仅 `GAP_FILL` 执行；每个 base 独立提交、多 target 组内原子，
   一个方案失败不回滚其他方案。
 - 产品读回、调度安装、timer/plist 变更、服务重启、Writer 切换：按 3.8、3.9 与调度治理执行。
 

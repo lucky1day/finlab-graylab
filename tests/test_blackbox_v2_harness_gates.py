@@ -268,7 +268,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             connection.exec_driver_sql(
                 "CREATE TABLE t_backtest_runs ("
                 "id INTEGER PRIMARY KEY, benchmark_id TEXT, scheme_id TEXT, "
-                "data_source TEXT, status TEXT, run_mode TEXT, updated_at TEXT, "
+                "data_source TEXT, status TEXT, updated_at TEXT, "
                 "summary TEXT, code_hash TEXT, config_hash TEXT, "
                 "input_artifact_hash TEXT)"
             )
@@ -276,7 +276,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 text(
                     "INSERT INTO t_backtest_runs VALUES "
                     "(1, 'bbv2-test', 'trial_10y', "
-                    "'blackbox_v2_current_snapshot_as_of', 'success', 'persist', "
+                    "'blackbox_v2_current_snapshot_as_of', 'success', "
                     "'2026-07-15 00:00:00', :summary, :code_hash, :config_hash, "
                     "'snapshot-test')"
                 ),

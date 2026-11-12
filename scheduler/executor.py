@@ -944,7 +944,7 @@ def execute_scheme(
     if prediction_phase != "scheduled_live":
         raise ValueError(
             "execute_scheme only supports scheduled_live; "
-            "use signal-gap-fill for gray_live"
+            "use signal-gap-fill for gap_fill"
         )
     configuration_error = (
         scheduled_live_execution_configuration_error(

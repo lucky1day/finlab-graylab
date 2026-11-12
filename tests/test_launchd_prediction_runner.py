@@ -746,12 +746,12 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 data_bridge_config.assert_not_called()
                 create_engine.assert_not_called()
 
-    def test_executor_rejects_gray_live_before_db_access(
+    def test_executor_rejects_gap_fill_before_db_access(
         self,
     ) -> None:
         from scheduler import executor
 
-        cfg = _blackbox_config("gray_live")
+        cfg = _blackbox_config("gap_fill")
         with patch.object(executor, "create_engine_from_env") as create_engine:
             with self.assertRaisesRegex(
                 ValueError,
@@ -760,7 +760,7 @@ class LaunchdPredictionRunnerTests(unittest.TestCase):
                 executor.execute_scheme(
                     cfg,
                     "2026-08-08",
-                    prediction_phase="gray_live",
+                    prediction_phase="gap_fill",
                     scheduled_control_plane="launchd_one_shot",
                 )
 

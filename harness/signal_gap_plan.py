@@ -56,14 +56,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VALID_ACTIONS = (
     "SKIP_PRESENT",
     "SKIP_NOT_DUE",
-    "GRAY_LIVE_GAP",
+    "GAP_FILL",
     "BLOCKED_NO_GENERATION",
     "BLOCKED_DATA_CONTRACT",
 )
 Action = Literal[
     "SKIP_PRESENT",
     "SKIP_NOT_DUE",
-    "GRAY_LIVE_GAP",
+    "GAP_FILL",
     "BLOCKED_NO_GENERATION",
     "BLOCKED_DATA_CONTRACT",
 ]
@@ -525,7 +525,7 @@ def verify_signal_gap_fill_readback(
                 else "VALID_LIVE_RESULT_PRESENT"
             )
         else:
-            action = "GRAY_LIVE_GAP"
+            action = "GAP_FILL"
             reason = "LIVE_BUSINESS_KEY_MISSING"
         readback_actions.append(
             _action_row(
@@ -701,7 +701,7 @@ def _build_signal_gap_plan(
             reason = "OBSERVED_SIGNAL_TARGET_DRIFT"
             input_authority = None
         elif item.runtime_type == "native_adapter":
-            action = "GRAY_LIVE_GAP"
+            action = "GAP_FILL"
             reason = "LIVE_BUSINESS_KEY_MISSING"
             input_authority = None
         else:
@@ -911,7 +911,7 @@ def _plan_counts(
         "active_target": active_target,
         "expected": expected,
         "present": present,
-        "actionable": action_counts["GRAY_LIVE_GAP"],
+        "actionable": action_counts["GAP_FILL"],
         "blocked": blocked,
         **action_counts,
     }
@@ -1026,7 +1026,7 @@ def _blackbox_gap_action(
         )
     cutoff = matching_cutoffs[0]
     return (
-        "GRAY_LIVE_GAP",
+        "GAP_FILL",
         "LIVE_BUSINESS_KEY_MISSING",
         {
             **index.source_identity,
@@ -1113,7 +1113,7 @@ def _action_row(
         "predict_date": item.predict_date,
         "feature_date": item.feature_date,
         "target_date": item.target_date,
-        "prediction_phase": "gray_live",
+        "prediction_phase": "gap_fill",
         "scheme_version": target.scheme_version,
         "business_key": list(item.business_key),
         "action": action,
@@ -1141,7 +1141,7 @@ def _not_due_action(
         "predict_date": predict_date,
         "feature_date": None,
         "target_date": None,
-        "prediction_phase": "gray_live",
+        "prediction_phase": "gap_fill",
         "scheme_version": target.scheme_version,
         "business_key": None,
         "action": "SKIP_NOT_DUE",
@@ -1457,7 +1457,6 @@ def _read_live_signals_for_scope(
                r.predict_date AS run_predict_date,
                p.backtest_run_id,
                br.status AS backtest_status,
-               br.run_mode AS backtest_run_mode,
                br.scheme_id AS backtest_scheme_id
         FROM t_scheme_predictions p
         LEFT JOIN t_scheme_runs r ON r.run_id = p.run_id
@@ -1528,7 +1527,6 @@ def _read_live_signals_for_scope(
             row.get("run_id") is None
             and row.get("backtest_run_id") is not None
             and str(row.get("backtest_status") or "") == "success"
-            and str(row.get("backtest_run_mode") or "") == "persist"
             and str(row.get("backtest_scheme_id") or "")
             == business_key[0]
             and target is not None

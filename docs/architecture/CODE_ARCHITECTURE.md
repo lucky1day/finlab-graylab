@@ -99,7 +99,7 @@ Native core 的输入由 adapter 注入，算法适配层级和历史/live-safe 
 无法确认清理时保留错误并 poison 本批次启动 guard，阻止后续启动。Native IPC 在平台边界校验整数方向与正整数 horizon，
 不以截断或布尔转换补成有效预测。
 
-历史 gap harness 只以 `gray_live` insert-only 修复；宿主 one-shot 自然触发才可以
+历史 gap harness 只以 `gap_fill` insert-only 修复；宿主 one-shot 自然触发才可以
 写 `scheduled_live`。早期失败/跳过只写审计日志，不能伪装为成功完成。
 
 区间/单日入口、支持任务与恢复步骤见[平台 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)。区间 planner 解析本机输入 authority，执行器完成算法与 Result 校验，repository 单事务复核全部键并提交；不能绕过其中任一边界。

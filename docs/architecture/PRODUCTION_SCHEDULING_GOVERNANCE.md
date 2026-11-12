@@ -31,7 +31,7 @@ close-period 复用原 monthly 控制面，按[预测语义](PREDICTION_SEMANTIC
 
 ## 自然信号与手工恢复
 
-自然触发的合格写入使用 `scheduled_live`；受控历史补缺使用 `gray_live`。这两者是 run 来源审计，
+自然触发的合格写入使用 `scheduled_live`；受控历史补缺使用 `gap_fill`。这两者是 run 来源审计，
 不得互相伪装或以日期标签替代 provenance。产品历史/实盘分界及不可变回测事实见预测语义。
 
 历史缺口只经[平台 SOP 的单日/区间入口](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md#5-可选后续动作)修复；支持范围、参数、跳过/重复键行为和输入绑定都在那里维护。先确认授权覆盖的方案与日期、已发生副作用及实际剩余缺口，不把一次失败当作全部未写入。

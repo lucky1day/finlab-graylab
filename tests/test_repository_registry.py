@@ -49,7 +49,7 @@ def case(request, tmp_path, monkeypatch):
             schedule_timezone TEXT, status TEXT, deployed_at TEXT)""",
         """CREATE TABLE t_scheme_runs (
             run_id INTEGER PRIMARY KEY, scheme_id TEXT, scheme_version TEXT,
-            runtime_type TEXT, run_type TEXT, prediction_phase TEXT,
+            runtime_type TEXT, prediction_phase TEXT,
             predict_date TEXT, status TEXT, records_expected INTEGER,
             records_returned INTEGER, records_written INTEGER, data_snapshot_id TEXT,
             started_at TEXT, finished_at TEXT, error_message TEXT)""",
@@ -77,9 +77,9 @@ def case(request, tmp_path, monkeypatch):
             [{"id": f"demo__h1__{tenor}", "runtime": runtime_type, "tenor": tenor}
              for tenor in cfg.tenors])
         conn.execute(text("""INSERT INTO t_scheme_runs
-            (run_id, scheme_id, scheme_version, runtime_type, run_type,
+            (run_id, scheme_id, scheme_version, runtime_type,
              prediction_phase, predict_date, status, records_expected)
-            VALUES (101, 'demo', 'version-1', :runtime, 'active',
+            VALUES (101, 'demo', 'version-1', :runtime,
                     'scheduled_live', '2026-07-20', 'running', 2)"""),
             {"runtime": runtime_type})
     monkeypatch.setattr(prediction_impl, "load_scheme_config", lambda _path: cfg)
@@ -236,11 +236,11 @@ def test_runtime_dispatch_rejects_wrong_config_runtime(case):
     assert _facts(engine) == before
 
 
-def test_ordinary_completion_rejects_gray_live(case):
+def test_ordinary_completion_rejects_gap_fill(case):
     engine, _cfg, records, finish = case
     with engine.begin() as conn:
-        conn.execute(text("UPDATE t_scheme_runs SET prediction_phase = 'gray_live'"))
-    records[:] = [replace(record, prediction_phase="gray_live") for record in records]
+        conn.execute(text("UPDATE t_scheme_runs SET prediction_phase = 'gap_fill'"))
+    records[:] = [replace(record, prediction_phase="gap_fill") for record in records]
     before = _facts(engine)
     with pytest.raises(RuntimeError, match="ordinary completion requires scheduled_live"):
         finish()

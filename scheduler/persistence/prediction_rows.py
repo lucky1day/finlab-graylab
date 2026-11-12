@@ -53,7 +53,7 @@ def _prepare_blackbox_backtest_fact_rows_conn(
     )
     run = conn.execute(
         text(
-            "SELECT id, benchmark_id, scheme_id, data_source, status, run_mode, "
+            "SELECT id, benchmark_id, scheme_id, data_source, status, "
             "code_hash, config_hash, input_artifact_hash, summary "
             "FROM t_backtest_runs WHERE id = :backtest_run_id"
             + lock_clause
@@ -67,7 +67,6 @@ def _prepare_blackbox_backtest_fact_rows_conn(
         "scheme_id": cfg.scheme_id,
         "data_source": "blackbox_v2_current_snapshot_as_of",
         "status": "success",
-        "run_mode": "persist",
         "benchmark_id": backtest_benchmark_id,
         "code_hash": backtest_code_hash,
         "config_hash": backtest_config_hash,
@@ -84,7 +83,6 @@ def _prepare_blackbox_backtest_fact_rows_conn(
         "scheme_id": str(run.get("scheme_id") or ""),
         "data_source": str(run.get("data_source") or ""),
         "status": str(run.get("status") or ""),
-        "run_mode": str(run.get("run_mode") or ""),
         "benchmark_id": str(run.get("benchmark_id") or ""),
         "code_hash": str(run.get("code_hash") or ""),
         "config_hash": str(run.get("config_hash") or ""),

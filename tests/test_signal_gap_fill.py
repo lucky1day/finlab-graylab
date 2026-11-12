@@ -47,11 +47,11 @@ def _action(
     base_scheme_id: str = "demo_native",
     *,
     tenor: str = "5Y",
-    action: str = "GRAY_LIVE_GAP",
+    action: str = "GAP_FILL",
     runtime_type: str = "native_adapter",
 ) -> dict[str, object]:
     authority = None
-    if runtime_type == "blackbox_v2" and action == "GRAY_LIVE_GAP":
+    if runtime_type == "blackbox_v2" and action == "GAP_FILL":
         authority = {
             **_source_identity(),
             "cutoff": {
@@ -74,13 +74,13 @@ def _action(
         "predict_date": PREDICT_DATE,
         "feature_date": FEATURE_DATE,
         "target_date": TARGET_DATE,
-        "prediction_phase": "gray_live",
+        "prediction_phase": "gap_fill",
         "scheme_version": "version-1",
         "business_key": [base_scheme_id, tenor, 5, TARGET_DATE],
         "action": action,
         "reason": (
             "LIVE_BUSINESS_KEY_MISSING"
-            if action == "GRAY_LIVE_GAP"
+            if action == "GAP_FILL"
             else (
                 "VALID_LIVE_RESULT_PRESENT"
                 if action == "SKIP_PRESENT"
@@ -102,11 +102,11 @@ def _plan(
         "active_target": len(actions),
         "expected": sum(row["action"] != "SKIP_NOT_DUE" for row in actions),
         "present": sum(row["action"] == "SKIP_PRESENT" for row in actions),
-        "actionable": sum(row["action"] == "GRAY_LIVE_GAP" for row in actions),
+        "actionable": sum(row["action"] == "GAP_FILL" for row in actions),
         "blocked": int(status == "BLOCKED"),
         "SKIP_PRESENT": sum(row["action"] == "SKIP_PRESENT" for row in actions),
         "SKIP_NOT_DUE": sum(row["action"] == "SKIP_NOT_DUE" for row in actions),
-        "GRAY_LIVE_GAP": sum(row["action"] == "GRAY_LIVE_GAP" for row in actions),
+        "GAP_FILL": sum(row["action"] == "GAP_FILL" for row in actions),
         "BLOCKED_NO_GENERATION": 0,
         "BLOCKED_DATA_CONTRACT": 0,
     }
@@ -125,7 +125,7 @@ def _present(plan: dict[str, object]) -> dict[str, object]:
     actions = []
     for raw in plan["actions"]:
         row = dict(raw)
-        if row["action"] == "GRAY_LIVE_GAP":
+        if row["action"] == "GAP_FILL":
             row.update(
                 action="SKIP_PRESENT",
                 reason="VALID_LIVE_RESULT_PRESENT",
@@ -187,7 +187,7 @@ def _record(action: dict[str, object]) -> PredictionRecord:
         predict_date=str(action["predict_date"]),
         feature_date=str(action["feature_date"]),
         target_date=str(action["target_date"]),
-        prediction_phase="gray_live",
+        prediction_phase="gap_fill",
         scheme_version="version-1",
         predicted_direction=1,
         extra=extra,
@@ -203,8 +203,8 @@ def _repository(*, commit_side_effect: object = 1) -> SimpleNamespace:
     )
     return SimpleNamespace(
         create_scheme_run=Mock(side_effect=lambda *_a, **_k: next(run_ids)),
-        complete_gray_gap_run=complete,
-        complete_gray_gap_runs_atomic=Mock(
+        complete_gap_fill_run=complete,
+        complete_gap_fill_runs_atomic=Mock(
             side_effect=lambda _engine, items: {
                 int(item["run_id"]): len(item["records"])
                 for item in items
@@ -290,7 +290,7 @@ def test_multi_target_scheme_runs_once_and_commits_only_missing_target(
     assert workspace.is_absolute()
     assert not workspace.exists()
     assert "native_generation" not in algorithm.call_args.kwargs
-    commit = repository.complete_gray_gap_run.call_args
+    commit = repository.complete_gap_fill_run.call_args
     assert [record.target_tenor for record in commit.kwargs["records"]] == ["10Y"]
     assert [row["target_tenor"] for row in commit.kwargs["expected_target_keys"]] == [
         "10Y"
@@ -379,7 +379,7 @@ def test_unconfirmed_blackbox_cleanup_aborts_remaining_gap_runs(tmp_path, monkey
     assert "process group cleanup was not confirmed" in result["errors"][0]
     assert len(result["remaining"]) == 3
     native_runner.assert_not_called()
-    repository.complete_gray_gap_run.assert_not_called()
+    repository.complete_gap_fill_run.assert_not_called()
     assert {call.kwargs["scheme_id"] for call in repository.fail_scheme_run_atomic.call_args_list} == {
         "a_blackbox", "b_blackbox", "c_native",
     }
@@ -418,7 +418,7 @@ def test_native_interruption_closes_all_uncommitted_runs(
             databridge_config=SimpleNamespace(),
         )
 
-    repository.complete_gray_gap_run.assert_not_called()
+    repository.complete_gap_fill_run.assert_not_called()
     assert repository.fail_scheme_run_atomic.call_count == 2
     engine.dispose.assert_called_once()
     lock.release.assert_called_once()
@@ -530,7 +530,7 @@ def test_blackbox_target_range_runs_one_batch_and_commits_atomically(
                     predict_date=request.predict_date,
                     feature_date=request.feature_date,
                     target_date=request.target_date,
-                    prediction_phase="gray_live",
+                    prediction_phase="gap_fill",
                     scheme_version="version-1",
                     predicted_direction=1,
                     extra={
@@ -560,9 +560,9 @@ def test_blackbox_target_range_runs_one_batch_and_commits_atomically(
 
     assert report["status"] == "PASSED", report["errors"]
     signal_gap_fill.run_blackbox_gray_replay_batch.assert_called_once()
-    repository.complete_gray_gap_run.assert_not_called()
-    repository.complete_gray_gap_runs_atomic.assert_called_once()
-    assert len(repository.complete_gray_gap_runs_atomic.call_args.args[1]) == 2
+    repository.complete_gap_fill_run.assert_not_called()
+    repository.complete_gap_fill_runs_atomic.assert_called_once()
+    assert len(repository.complete_gap_fill_runs_atomic.call_args.args[1]) == 2
     readback.assert_called_once_with(
         engine,
         actions=plan["actions"],

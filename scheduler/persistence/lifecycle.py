@@ -873,7 +873,7 @@ def activate_blackbox_revision(
                         "UPDATE t_scheme_versions SET status = 'retired' "
                         "WHERE scheme_id = :scheme_id "
                         "AND runtime_type = 'blackbox_v2' "
-                        "AND status IN ('draft', 'validated', 'shadow', 'paused')"
+                        "AND status IN ('draft', 'paused')"
                     ),
                     {"scheme_id": cfg.scheme_id},
                 )
@@ -1082,7 +1082,7 @@ def _read_blackbox_revision_activation_preflight_conn(
     pending_versions = sorted(
         str(row.get("scheme_version"))
         for row in version_rows
-        if row.get("status") in {"draft", "validated", "shadow", "paused"}
+        if row.get("status") in {"draft", "paused"}
     )
     active_rows = [
         row

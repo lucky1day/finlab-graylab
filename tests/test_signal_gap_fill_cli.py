@@ -17,7 +17,7 @@ PREDICT_DATE = "2026-08-10"
 
 def _plan(
     *,
-    action: str = "GRAY_LIVE_GAP",
+    action: str = "GAP_FILL",
     base_scheme_id: str | None = None,
     status: str = "READY",
 ) -> dict[str, object]:
@@ -27,7 +27,7 @@ def _plan(
         "base_scheme_id": base_scheme_id,
         "counts": {
             "expected": int(action not in {"", "SKIP_NOT_DUE"}),
-            "actionable": int(action == "GRAY_LIVE_GAP"),
+            "actionable": int(action == "GAP_FILL"),
             "blocked": int(status == "BLOCKED"),
         },
     }

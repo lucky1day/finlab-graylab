@@ -20,7 +20,7 @@ ALLOWED_TENORS = {"1Y", "3Y", "5Y", "7Y", "10Y"}
 ALLOWED_STATUS = {"active", "paused"}
 ALLOWED_RUNTIME_TYPES = {"native_adapter", "blackbox_v2"}
 ALLOWED_INPUT_SOURCES = {"legacy_db", "data_bridge_current"}
-ALLOWED_VERSION_STATUS = {"draft", "validated", "shadow", "active", "paused", "retired"}
+ALLOWED_VERSION_STATUS = {"draft", "active", "paused", "retired"}
 TASK_TYPE_ERROR = "task_type must be one of " + ", ".join(sorted(ALLOWED_TASK_TYPES))
 MAX_OWNER_LENGTH = 64
 FORBIDDEN_OWNER_PLACEHOLDERS = frozenset({"--", "unknown", "待定"})
@@ -306,7 +306,7 @@ def _validate_blackbox_config(raw: dict) -> list[str]:
     if raw.get("status") not in ALLOWED_STATUS:
         errors.append("status must be active or paused")
     if raw.get("version_status") not in ALLOWED_VERSION_STATUS:
-        errors.append("version_status must be one of draft, validated, shadow, active, paused, retired")
+        errors.append("version_status must be one of draft, active, paused, retired")
     display_name = raw.get("display_name")
     if display_name is not None and (
         not isinstance(display_name, str) or not display_name.strip()

@@ -314,7 +314,6 @@ def verify_passed_blackbox_backtest(
                 WHERE scheme_id = :scheme_id
                   AND data_source = :data_source
                   AND status = 'success'
-                  AND run_mode = 'persist'
                   AND code_hash = :code_hash
                   AND config_hash = :config_hash
                 """

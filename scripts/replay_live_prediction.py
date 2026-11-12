@@ -124,6 +124,14 @@ def main(argv: list[str] | None = None) -> int:
         with dump.open("rb") as handle:
             subprocess.run([str(MYSQL_BIN / "mysql"), "--host=127.0.0.1", f"--port={port}", "--user=root", "bond_db"], check=True, stdin=handle)
 
+        # 1b) 候选 release 带有生产库尚未应用的迁移时先在沙箱库应用（同时在真实数据副本上验证迁移）
+        server_uuid = _sql(port, "SELECT @@server_uuid")[0][0]
+        subprocess.run(
+            [SERVICE_PY, "-B", str(release / "scripts" / "apply_migrations.py"), "--apply",
+             "--expected-database-name", "bond_db", "--expected-server-uuid", server_uuid],
+            check=True, cwd=release, env={**os.environ, "BFL_DATABASE_ENV_FILE": str(db_env)},
+        )
+
         # 2) 存档生产当日结果并删除，让候选 release 重新产生
         _sql(port, f"CREATE TABLE _orig AS SELECT * FROM t_scheme_predictions WHERE predict_date='{args.predict_date}' AND scheme_id IN ({in_list});")
         expected = int(_sql(port, "SELECT COUNT(*) FROM _orig")[0][0])

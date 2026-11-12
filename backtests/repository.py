@@ -116,11 +116,11 @@ def _create_backtest_run_connection(
             f"""
             INSERT INTO t_backtest_runs
                 (benchmark_id, scheme_id, data_source, start_date, end_date, status,
-                 summary, report_path, code_hash, config_hash, input_artifact_hash, run_mode)
+                 summary, report_path, code_hash, config_hash, input_artifact_hash)
             VALUES
                 (:benchmark_id, :scheme_id, :data_source, :start_date, :end_date, :status,
                  {summary_expr}, :report_path, :code_hash, :config_hash,
-                 :input_artifact_hash, :run_mode)
+                 :input_artifact_hash)
             """
         ),
         {
@@ -135,7 +135,6 @@ def _create_backtest_run_connection(
             "code_hash": code_hash,
             "config_hash": config_hash,
             "input_artifact_hash": input_artifact_hash,
-            "run_mode": "persist",
         },
     )
     run_id = getattr(result, "lastrowid", None)

@@ -74,7 +74,7 @@ def _read_scheme_run_conn(
     return _select_mapping_one_or_none(
         conn,
         """
-        SELECT run_id, scheme_id, scheme_version, runtime_type, run_type,
+        SELECT run_id, scheme_id, scheme_version, runtime_type,
                prediction_phase, predict_date, status, records_expected,
                records_returned, records_written, data_snapshot_id,
                started_at, finished_at
@@ -244,10 +244,10 @@ def _create_scheme_run_conn(
         text(
             """
             INSERT INTO t_scheme_runs
-                (scheme_id, scheme_version, runtime_type, run_type,
+                (scheme_id, scheme_version, runtime_type,
                  prediction_phase, predict_date, status, records_expected)
             VALUES
-                (:scheme_id, :scheme_version, :runtime_type, :run_type,
+                (:scheme_id, :scheme_version, :runtime_type,
                  :prediction_phase, :predict_date, :status, :records_expected)
             """
         ),
@@ -255,7 +255,6 @@ def _create_scheme_run_conn(
             "scheme_id": scheme_id,
             "scheme_version": scheme_version,
             "runtime_type": runtime_type,
-            "run_type": "active",
             "prediction_phase": prediction_phase,
             "predict_date": predict_date,
             "status": "running",
@@ -482,7 +481,6 @@ def complete_approved_blackbox_run(
             "scheme_id": cfg.scheme_id,
             "scheme_version": exact_scheme_version,
             "runtime_type": "blackbox_v2",
-            "run_type": "active",
             "predict_date": normalized_run_date,
             "status": "running",
             "records_expected": len(expected_targets),
@@ -625,7 +623,6 @@ def complete_active_native_run(
             "scheme_id": cfg.scheme_id,
             "scheme_version": exact_scheme_version,
             "runtime_type": "native_adapter",
-            "run_type": "active",
             "predict_date": normalized_run_date,
             "status": "running",
             "records_expected": len(expected_targets),
@@ -685,7 +682,7 @@ def complete_active_native_run(
         return status, records_written, error_message
 
 
-def complete_gray_gap_run(
+def complete_gap_fill_run(
     engine: Engine,
     cfg: SchemeConfig,
     *,
@@ -697,8 +694,8 @@ def complete_gray_gap_run(
     run_date: str,
     duration_sec: float,
 ) -> int:
-    """原子提交一个调度日的 ``gray_live`` 历史信号缺口。"""
-    written = complete_gray_gap_runs_atomic(
+    """原子提交一个调度日的 ``gap_fill`` 历史信号缺口。"""
+    written = complete_gap_fill_runs_atomic(
         engine,
         [
             {
@@ -716,11 +713,11 @@ def complete_gray_gap_run(
     return written[int(run_id)]
 
 
-def complete_gray_gap_runs_atomic(
+def complete_gap_fill_runs_atomic(
     engine: Engine,
     items: Iterable[Mapping[str, object]],
 ) -> dict[int, int]:
-    """在一个事务中提交多个调度日的 gray-live run 与 prediction。"""
+    """在一个事务中提交多个调度日的 gap-fill run 与 prediction。"""
     prepared: list[dict[str, object]] = []
     all_business_keys: set[tuple[object, ...]] = set()
     for item in items:
@@ -728,7 +725,7 @@ def complete_gray_gap_runs_atomic(
         run_id = int(item["run_id"])
         records = list(cast(Iterable[PredictionRecord], item["records"]))
         records_returned = int(item["records_returned"])
-        expected_targets = _normalize_gray_gap_target_keys(
+        expected_targets = _normalize_gap_fill_target_keys(
             cfg,
             list(
                 cast(
@@ -739,33 +736,33 @@ def complete_gray_gap_runs_atomic(
         )
         if records_returned != len(records):
             raise RuntimeError(
-                "gray gap records_returned mismatch: "
+                "gap fill records_returned mismatch: "
                 f"returned={records_returned}, records={len(records)}"
             )
         run_date = _require_iso_date(item["run_date"], "run_date")
         duration_sec = float(item["duration_sec"])
         if not math.isfinite(duration_sec) or duration_sec < 0:
             raise ValueError("duration_sec must be a finite non-negative number")
-        execution_dates = _gray_gap_execution_dates(expected_targets)
+        execution_dates = _gap_fill_execution_dates(expected_targets)
         if run_date != execution_dates["predict_date"]:
-            raise ValueError("run_date must equal gray gap execution predict_date")
-        normalized_authority = _normalize_gray_gap_source_authority(
+            raise ValueError("run_date must equal gap fill execution predict_date")
+        normalized_authority = _normalize_gap_fill_source_authority(
             cast(Mapping[str, object] | None, item.get("source_authority")),
             runtime_type=str(cfg.runtime_type),
             feature_date=execution_dates["feature_date"],
             predict_date=execution_dates["predict_date"],
         )
-        _validate_gray_gap_records(
+        _validate_gap_fill_records(
             cfg,
             records=records,
             expected_targets=expected_targets,
         )
-        enriched_records = _enrich_gray_gap_records(
+        enriched_records = _enrich_gap_fill_records(
             cfg,
             records=records,
             source_authority=normalized_authority,
         )
-        snapshot_id = _blackbox_gray_gap_snapshot_id(
+        snapshot_id = _blackbox_gap_fill_snapshot_id(
             cfg,
             records=enriched_records,
         )
@@ -777,7 +774,7 @@ def complete_gray_gap_runs_atomic(
                 target["target_date"],
             )
             if key in all_business_keys:
-                raise RuntimeError("gray gap range contains duplicate business keys")
+                raise RuntimeError("gap fill range contains duplicate business keys")
             all_business_keys.add(key)
         prepared.append(
             {
@@ -792,10 +789,10 @@ def complete_gray_gap_runs_atomic(
             }
         )
     if not prepared:
-        raise ValueError("gray gap atomic completion requires at least one run")
+        raise ValueError("gap fill atomic completion requires at least one run")
     run_ids = [int(item["run_id"]) for item in prepared]
     if len(run_ids) != len(set(run_ids)):
-        raise ValueError("gray gap atomic completion contains duplicate run ids")
+        raise ValueError("gap fill atomic completion contains duplicate run ids")
 
     written_by_run: dict[int, int] = {}
     with engine.begin() as conn:
@@ -806,7 +803,7 @@ def complete_gray_gap_runs_atomic(
             run_id = int(item["run_id"])
             targets = cast(list[Mapping[str, object]], item["expected_targets"])
             run = _read_scheme_run_conn(conn, run_id=run_id)
-            _validate_gray_gap_run(
+            _validate_gap_fill_run(
                 cfg,
                 run_id=run_id,
                 run=run,
@@ -815,12 +812,12 @@ def complete_gray_gap_runs_atomic(
             )
             config_identity = (str(cfg.scheme_id), str(cfg.scheme_version))
             if config_identity not in validated_configs:
-                _validate_gray_gap_active_version(conn, cfg)
-                _validate_gray_gap_active_registry(conn, cfg)
+                _validate_gap_fill_active_version(conn, cfg)
+                _validate_gap_fill_active_registry(conn, cfg)
                 validated_configs.add(config_identity)
             snapshot_id = item["snapshot_id"]
             if snapshot_id is not None:
-                _bind_blackbox_gray_gap_snapshot_conn(
+                _bind_blackbox_gap_fill_snapshot_conn(
                     conn,
                     run_id=run_id,
                     run=run,
@@ -828,7 +825,7 @@ def complete_gray_gap_runs_atomic(
                 )
             all_targets.extend(targets)
 
-        _assert_gray_gap_business_keys_absent(conn, all_targets)
+        _assert_gap_fill_business_keys_absent(conn, all_targets)
 
         for item in prepared:
             cfg = cast(SchemeConfig, item["cfg"])
@@ -842,7 +839,7 @@ def complete_gray_gap_runs_atomic(
             records_written = _insert_run_predictions_conn(conn, prediction_rows)
             if records_written != len(targets):
                 raise RuntimeError(
-                    "gray gap records_written mismatch: "
+                    "gap fill records_written mismatch: "
                     f"expected={len(targets)}, written={records_written}"
                 )
             finished = conn.execute(
@@ -856,8 +853,7 @@ def complete_gray_gap_runs_atomic(
                         error_message = NULL
                     WHERE run_id = :run_id
                       AND status = 'running'
-                      AND run_type = 'active'
-                      AND prediction_phase = 'gray_live'
+                      AND prediction_phase = 'gap_fill'
                     """
                 ),
                 {
@@ -866,7 +862,7 @@ def complete_gray_gap_runs_atomic(
                     "records_written": records_written,
                 },
             )
-            _require_rowcount(finished, "gray gap run finish")
+            _require_rowcount(finished, "gap fill run finish")
             _write_run_log_conn(
                 conn,
                 str(cfg.scheme_id),
@@ -880,18 +876,18 @@ def complete_gray_gap_runs_atomic(
     return written_by_run
 
 
-def _blackbox_gray_gap_snapshot_id(
+def _blackbox_gap_fill_snapshot_id(
     cfg: SchemeConfig,
     *,
     records: Iterable[PredictionRecord],
 ) -> str | None:
-    """提取并核验 Blackbox gray-gap records 的唯一运行输入快照。"""
+    """提取并核验 Blackbox gap-fill records 的唯一运行输入快照。"""
     if str(cfg.runtime_type) != "blackbox_v2":
         return None
     snapshot_ids: set[str] = set()
     for record in records:
         snapshot_ids.add(
-            _blackbox_gray_gap_record_snapshot_id(
+            _blackbox_gap_fill_record_snapshot_id(
                 cfg,
                 scheme_id=record.scheme_id,
                 predict_date=record.predict_date,
@@ -902,13 +898,13 @@ def _blackbox_gray_gap_snapshot_id(
         )
     if len(snapshot_ids) != 1:
         raise RuntimeError(
-            "Blackbox gray gap records must carry exactly one non-empty "
+            "Blackbox gap fill records must carry exactly one non-empty "
             "data_snapshot_id"
         )
     return next(iter(snapshot_ids))
 
 
-def _bind_blackbox_gray_gap_snapshot_conn(
+def _bind_blackbox_gap_fill_snapshot_conn(
     conn: Connection,
     *,
     run_id: int,
@@ -917,10 +913,10 @@ def _bind_blackbox_gray_gap_snapshot_conn(
 ) -> None:
     """在同一 completion 事务中将已核验 snapshot 固定到 running run。"""
     if run is None:
-        raise RuntimeError("Blackbox gray gap run is missing before snapshot bind")
+        raise RuntimeError("Blackbox gap fill run is missing before snapshot bind")
     if run.get("data_snapshot_id") is not None:
         raise RuntimeError(
-            "Blackbox gray gap run already has data_snapshot_id; refusing overwrite"
+            "Blackbox gap fill run already has data_snapshot_id; refusing overwrite"
         )
     result = conn.execute(
         text(
@@ -933,8 +929,7 @@ def _bind_blackbox_gray_gap_snapshot_conn(
               AND scheme_version = :scheme_version
               AND runtime_type = 'blackbox_v2'
               AND status = 'running'
-              AND run_type = 'active'
-              AND prediction_phase = 'gray_live'
+              AND prediction_phase = 'gap_fill'
             """
         ),
         {
@@ -944,10 +939,10 @@ def _bind_blackbox_gray_gap_snapshot_conn(
             "scheme_version": str(run["scheme_version"]),
         },
     )
-    _require_rowcount(result, "Blackbox gray gap run data snapshot bind")
+    _require_rowcount(result, "Blackbox gap fill run data snapshot bind")
 
 
-def _blackbox_gray_gap_record_snapshot_id(
+def _blackbox_gap_fill_record_snapshot_id(
     cfg: SchemeConfig,
     *,
     scheme_id: object,
@@ -956,39 +951,39 @@ def _blackbox_gray_gap_record_snapshot_id(
     target_date: object,
     extra: object,
 ) -> str:
-    """验证单条 Blackbox gray-gap record 的 request/snapshot provenance。"""
+    """验证单条 Blackbox gap-fill record 的 request/snapshot provenance。"""
     if str(scheme_id) != str(cfg.scheme_id):
         raise RuntimeError(
-            "Blackbox gray gap record scheme_id provenance does not match config"
+            "Blackbox gap fill record scheme_id provenance does not match config"
         )
     if not isinstance(extra, Mapping):
         raise RuntimeError(
-            "Blackbox gray gap record provenance requires extra object"
+            "Blackbox gap fill record provenance requires extra object"
         )
     try:
         snapshot_id = _require_nonempty(
             extra.get("data_snapshot_id"),
-            "Blackbox gray gap record data_snapshot_id",
+            "Blackbox gap fill record data_snapshot_id",
         )
         normalized_feature_date = _require_iso_date(
             feature_date or extra.get("feature_date"),
-            "Blackbox gray gap record feature_date",
+            "Blackbox gap fill record feature_date",
         )
         normalized_predict_date = _require_iso_date(
             predict_date,
-            "Blackbox gray gap record predict_date",
+            "Blackbox gap fill record predict_date",
         )
         normalized_target_date = _require_iso_date(
             target_date,
-            "Blackbox gray gap record target_date",
+            "Blackbox gap fill record target_date",
         )
         request_id = _require_nonempty(
             extra.get("request_id"),
-            "Blackbox gray gap record request_id",
+            "Blackbox gap fill record request_id",
         )
     except ValueError as exc:
         raise RuntimeError(
-            "Blackbox gray gap record provenance is invalid"
+            "Blackbox gap fill record provenance is invalid"
         ) from exc
     canonical_request_id = (
         f"{cfg.scheme_id}:{normalized_predict_date}:{normalized_feature_date}:"
@@ -996,12 +991,12 @@ def _blackbox_gray_gap_record_snapshot_id(
     )
     if request_id != canonical_request_id:
         raise RuntimeError(
-            "Blackbox gray gap record request_id provenance is not canonical"
+            "Blackbox gap fill record request_id provenance is not canonical"
         )
     return snapshot_id
 
 
-_GRAY_GAP_TARGET_FIELDS = frozenset(
+_GAP_FILL_TARGET_FIELDS = frozenset(
     {
         "registry_scheme_id",
         "base_scheme_id",
@@ -1015,7 +1010,7 @@ _GRAY_GAP_TARGET_FIELDS = frozenset(
     }
 )
 
-_GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS = frozenset(
+_GAP_FILL_DATABRIDGE_AUTHORITY_FIELDS = frozenset(
     {
         "authority_type",
         "generation_id",
@@ -1027,11 +1022,11 @@ _GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS = frozenset(
     }
 )
 
-_GRAY_GAP_VINTAGE_DISCLAIMER = (
+_GAP_FILL_VINTAGE_DISCLAIMER = (
     "current_snapshot_as_of_not_historical_vintage"
 )
 
-_RETIRED_GRAY_GAP_EXTRA_FIELDS = frozenset(
+_RETIRED_GAP_FILL_EXTRA_FIELDS = frozenset(
     {
         "signal_gap_plan_sha256",
         "execution_group_identity",
@@ -1041,7 +1036,7 @@ _RETIRED_GRAY_GAP_EXTRA_FIELDS = frozenset(
     }
 )
 
-_GRAY_GAP_FIXED_ATOMIC_TARGETS = {
+_GAP_FILL_FIXED_ATOMIC_TARGETS = {
     "t1_daily": frozenset({"5Y", "10Y"}),
     "t5_daily": frozenset({"3Y", "5Y", "7Y", "10Y"}),
 }
@@ -1069,7 +1064,7 @@ def _require_iso_date(value: object, field: str) -> str:
     return normalized
 
 
-def _normalize_gray_gap_target_keys(
+def _normalize_gap_fill_target_keys(
     cfg: SchemeConfig,
     expected_target_keys: list[Mapping[str, object]],
 ) -> list[dict[str, object]]:
@@ -1085,7 +1080,7 @@ def _normalize_gray_gap_target_keys(
         )
     ):
         raise RuntimeError(
-            "gray gap config must be active with active version_status"
+            "gap fill config must be active with active version_status"
         )
     base_scheme_id = _require_nonempty(
         getattr(cfg, "scheme_id", None),
@@ -1098,7 +1093,7 @@ def _normalize_gray_gap_target_keys(
     runtime_type = getattr(cfg, "runtime_type", None)
     if runtime_type not in ALLOWED_RUNTIME_TYPES:
         raise ValueError(
-            "gray gap config runtime_type must be native_adapter or "
+            "gap fill config runtime_type must be native_adapter or "
             "blackbox_v2"
         )
     cfg_horizon = getattr(cfg, "horizon", None)
@@ -1121,7 +1116,7 @@ def _normalize_gray_gap_target_keys(
     ]
     if len(cfg_tenors) != len(set(cfg_tenors)):
         raise ValueError("cfg.tenors must not contain duplicates")
-    fixed_targets = _GRAY_GAP_FIXED_ATOMIC_TARGETS.get(base_scheme_id)
+    fixed_targets = _GAP_FILL_FIXED_ATOMIC_TARGETS.get(base_scheme_id)
     if (
         fixed_targets is not None
         and frozenset(cfg_tenors) != fixed_targets
@@ -1137,10 +1132,10 @@ def _normalize_gray_gap_target_keys(
             raise ValueError(
                 f"expected_target_keys[{index}] must be a mapping"
             )
-        if set(raw) != _GRAY_GAP_TARGET_FIELDS:
+        if set(raw) != _GAP_FILL_TARGET_FIELDS:
             raise ValueError(
                 f"expected_target_keys[{index}] must contain exact fields "
-                f"{sorted(_GRAY_GAP_TARGET_FIELDS)}"
+                f"{sorted(_GAP_FILL_TARGET_FIELDS)}"
             )
         horizon = raw["horizon"]
         if isinstance(horizon, bool) or not isinstance(horizon, int):
@@ -1193,7 +1188,7 @@ def _normalize_gray_gap_target_keys(
             "base_scheme_id": base_scheme_id,
             "horizon": cfg_horizon,
             "task_type": cfg_task_type,
-            "prediction_phase": "gray_live",
+            "prediction_phase": "gap_fill",
         }
         mismatches = [
             field
@@ -1215,12 +1210,12 @@ def _normalize_gray_gap_target_keys(
             f"unknown={unknown_tenors}, configured={sorted(cfg_tenors)}"
         )
     identities = [
-        tuple(row[field] for field in sorted(_GRAY_GAP_TARGET_FIELDS))
+        tuple(row[field] for field in sorted(_GAP_FILL_TARGET_FIELDS))
         for row in normalized
     ]
     if len(identities) != len(set(identities)):
         raise RuntimeError("expected target multiset contains duplicates")
-    _gray_gap_execution_dates(normalized)
+    _gap_fill_execution_dates(normalized)
     return sorted(
         normalized,
         key=lambda row: (
@@ -1230,7 +1225,7 @@ def _normalize_gray_gap_target_keys(
     )
 
 
-def _gray_gap_execution_dates(
+def _gap_fill_execution_dates(
     expected_targets: list[Mapping[str, object]],
 ) -> dict[str, str]:
     fields = ("predict_date", "feature_date", "target_date")
@@ -1243,7 +1238,7 @@ def _gray_gap_execution_dates(
     ]
     if inconsistent:
         raise RuntimeError(
-            "gray gap execution group dates are inconsistent: "
+            "gap fill execution group dates are inconsistent: "
             + ",".join(inconsistent)
         )
     return {
@@ -1252,7 +1247,7 @@ def _gray_gap_execution_dates(
     }
 
 
-def _normalize_gray_gap_source_authority(
+def _normalize_gap_fill_source_authority(
     source_authority: Mapping[str, object] | None,
     *,
     runtime_type: str,
@@ -1265,7 +1260,7 @@ def _normalize_gray_gap_source_authority(
         return None
     if runtime_type != "blackbox_v2":
         raise ValueError(
-            f"unsupported gray gap runtime_type={runtime_type}"
+            f"unsupported gap fill runtime_type={runtime_type}"
         )
     if not isinstance(source_authority, Mapping):
         raise ValueError("Blackbox DataBridge source_authority is required")
@@ -1274,7 +1269,7 @@ def _normalize_gray_gap_source_authority(
         raise ValueError(
             "Blackbox source_authority must be a DataBridge authority"
         )
-    expected_fields = _GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS
+    expected_fields = _GAP_FILL_DATABRIDGE_AUTHORITY_FIELDS
     if set(source_authority) != expected_fields:
         raise ValueError(
             "source_authority must contain exact fields "
@@ -1294,7 +1289,7 @@ def _normalize_gray_gap_source_authority(
         )
     if (
         source_authority["vintage_disclaimer"]
-        != _GRAY_GAP_VINTAGE_DISCLAIMER
+        != _GAP_FILL_VINTAGE_DISCLAIMER
     ):
         raise ValueError("source_authority vintage_disclaimer is invalid")
     normalized["generation_id"] = _require_nonempty(
@@ -1315,7 +1310,7 @@ def _normalize_gray_gap_source_authority(
     return normalized
 
 
-def _validate_gray_gap_records(
+def _validate_gap_fill_records(
     cfg: SchemeConfig,
     *,
     records: list[PredictionRecord],
@@ -1357,28 +1352,28 @@ def _validate_gray_gap_records(
             )
         except (TypeError, ValueError) as exc:
             raise RuntimeError(
-                "gray gap record identity mismatch"
+                "gap fill record identity mismatch"
             ) from exc
         if record.run_id is not None:
             raise RuntimeError(
-                "gray gap records must not carry a pre-bound run_id"
+                "gap fill records must not carry a pre-bound run_id"
             )
         if (
             record.scheme_version is not None
             and record.scheme_version != str(cfg.scheme_version)
         ):
             raise RuntimeError(
-                "gray gap record scheme_version identity mismatch"
+                "gap fill record scheme_version identity mismatch"
             )
         actual[identity] += 1
     if actual != expected:
         raise RuntimeError(
-            "gray gap record target multiset or identity mismatch: "
+            "gap fill record target multiset or identity mismatch: "
             f"expected={dict(expected)}, actual={dict(actual)}"
         )
 
 
-def _enrich_gray_gap_records(
+def _enrich_gap_fill_records(
     cfg: SchemeConfig,
     *,
     records: list[PredictionRecord],
@@ -1391,7 +1386,7 @@ def _enrich_gray_gap_records(
         common_extra.update(
             {
                 "source_authority": dict(source_authority),
-                "replay_semantics": _GRAY_GAP_VINTAGE_DISCLAIMER,
+                "replay_semantics": _GAP_FILL_VINTAGE_DISCLAIMER,
                 "source_generation_id": source_authority["generation_id"],
                 "source_generation_manifest_sha256":
                     source_authority["manifest_sha256"],
@@ -1402,13 +1397,13 @@ def _enrich_gray_gap_records(
     return [
         replace(
             record,
-            prediction_phase="gray_live",
+            prediction_phase="gap_fill",
             scheme_version=str(cfg.scheme_version),
             extra={
                 **{
                     key: value
                     for key, value in dict(record.extra or {}).items()
-                    if key not in _RETIRED_GRAY_GAP_EXTRA_FIELDS
+                    if key not in _RETIRED_GAP_FILL_EXTRA_FIELDS
                 },
                 **common_extra,
             },
@@ -1417,7 +1412,7 @@ def _enrich_gray_gap_records(
     ]
 
 
-def _validate_gray_gap_run(
+def _validate_gap_fill_run(
     cfg: SchemeConfig,
     *,
     run_id: int,
@@ -1426,13 +1421,12 @@ def _validate_gray_gap_run(
     predict_date: str,
 ) -> None:
     if run is None:
-        raise RuntimeError(f"gray gap scheme run not found: {run_id}")
+        raise RuntimeError(f"gap fill scheme run not found: {run_id}")
     expected_fields = {
         "scheme_id": str(cfg.scheme_id),
         "scheme_version": str(cfg.scheme_version),
         "runtime_type": str(cfg.runtime_type),
-        "run_type": "active",
-        "prediction_phase": "gray_live",
+        "prediction_phase": "gap_fill",
         "predict_date": predict_date,
         "status": "running",
     }
@@ -1442,17 +1436,17 @@ def _validate_gray_gap_run(
     )
     if not identity_matches:
         raise RuntimeError(
-            "gray gap completion requires a gray_live running run with exact "
+            "gap fill completion requires a gap_fill running run with exact "
             f"config identity: run_id={run_id}"
         )
     if int(run.get("records_expected") or 0) != expected_count:
         raise RuntimeError(
-            "gray gap run records_expected mismatch: "
+            "gap fill run records_expected mismatch: "
             f"expected={expected_count}, actual={run.get('records_expected')}"
         )
 
 
-def _validate_gray_gap_active_version(
+def _validate_gap_fill_active_version(
     conn: Connection,
     cfg: SchemeConfig,
 ) -> None:
@@ -1468,11 +1462,11 @@ def _validate_gray_gap_active_version(
         for field, value in expected.items()
     ):
         raise RuntimeError(
-            "gray gap completion requires the exact active version"
+            "gap fill completion requires the exact active version"
         )
 
 
-def _validate_gray_gap_active_registry(
+def _validate_gap_fill_active_registry(
     conn: Connection,
     cfg: SchemeConfig,
 ) -> None:
@@ -1527,12 +1521,12 @@ def _validate_gray_gap_active_registry(
     )
     if actual != expected:
         raise RuntimeError(
-            "gray gap active Registry target multiset mismatch: "
+            "gap fill active Registry target multiset mismatch: "
             f"expected={dict(expected)}, actual={dict(actual)}"
         )
 
 
-def _assert_gray_gap_business_keys_absent(
+def _assert_gap_fill_business_keys_absent(
     conn: Connection,
     expected_targets: list[Mapping[str, object]],
 ) -> None:
@@ -1558,7 +1552,7 @@ def _assert_gray_gap_business_keys_absent(
     for row, key in zip(sorted_rows, keys):
         if key in existing:
             raise RuntimeError(
-                "gray gap business key already exists; entire group "
+                "gap fill business key already exists; entire group "
                 "rejected: "
                 f"{row['base_scheme_id']}/{row['target_tenor']}/"
                 f"h{row['horizon']}/{row['target_date']}"

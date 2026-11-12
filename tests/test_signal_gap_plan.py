@@ -117,7 +117,7 @@ def _case(
 def _observed(
     scheme_id: str = "demo_blackbox",
     *,
-    phase: str = "gray_live",
+    phase: str = "gap_fill",
     scheme_version: str = "version-1",
     target_tenor: str = "5Y",
     horizon: int = 5,
@@ -331,7 +331,7 @@ def _plan(
     return plan, engine, captured
 
 
-@pytest.mark.parametrize("phase", ["gray_live", "scheduled_live"])
+@pytest.mark.parametrize("phase", ["gap_fill", "scheduled_live"])
 def test_valid_existing_live_signal_is_skip_present(
     monkeypatch: pytest.MonkeyPatch,
     phase: str,
@@ -534,7 +534,7 @@ def test_range_readback_uses_one_snapshot_and_pinpoints_tampered_key(
         signal_gap_plan._action_row(
             case,
             target=target,
-            action="GRAY_LIVE_GAP",
+            action="GAP_FILL",
             reason="LIVE_BUSINESS_KEY_MISSING",
             input_authority=None,
             business_key_present=False,
@@ -586,7 +586,7 @@ def test_range_readback_blocks_unexpected_row_selected_by_target_date(
     action = signal_gap_plan._action_row(
         case,
         target=target,
-        action="GRAY_LIVE_GAP",
+        action="GAP_FILL",
         reason="LIVE_BUSINESS_KEY_MISSING",
         input_authority=None,
         business_key_present=False,
@@ -673,14 +673,14 @@ def _live_row(**overrides: Any) -> dict[str, Any]:
         "predict_date": date(2026, 8, 15),
         "feature_date": date(2026, 8, 14),
         "target_date": date(2026, 8, 21),
-        "prediction_phase": "gray_live",
+        "prediction_phase": "gap_fill",
         "scheme_version": "e50ad79a6c2f",
         "run_id": 3211,
         "run_status": "success",
         "run_scheme_id": "weekly_10y_d_overlay_0529",
         "run_scheme_version": "e50ad79a6c2f",
         "run_runtime_type": "native_adapter",
-        "run_prediction_phase": "gray_live",
+        "run_prediction_phase": "gap_fill",
         "run_predict_date": date(2026, 8, 15),
     }
     row.update(overrides)
@@ -702,7 +702,6 @@ def _baseline_row(**overrides: Any) -> dict[str, Any]:
         run_predict_date=None,
         backtest_run_id=254,
         backtest_status="success",
-        backtest_run_mode="persist",
         backtest_scheme_id="weekly_10y_full_action_vote0546_v3",
     )
     row.update(overrides)

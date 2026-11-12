@@ -57,7 +57,7 @@ _TARGET_KEY_FIELDS = (
     "target_date",
     "prediction_phase",
 )
-_DUE_ACTIONS = frozenset({"GRAY_LIVE_GAP", "SKIP_PRESENT"})
+_DUE_ACTIONS = frozenset({"GAP_FILL", "SKIP_PRESENT"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,7 +329,7 @@ def _complete_single_date(
             return
         records = item.records or []
         try:
-            written = repository.complete_gray_gap_run(
+            written = repository.complete_gap_fill_run(
                 engine,
                 item.cfg,
                 run_id=item.run_id,
@@ -351,7 +351,7 @@ def _complete_single_date(
                     (item,),
                     engine=engine,
                     repository=repository,
-                    default_error="GRAY_GAP_COMMIT_FAILED",
+                    default_error="GAP_FILL_COMMIT_FAILED",
                 )
             )
             return
@@ -431,7 +431,7 @@ def _complete_single_date(
     if algorithm_errors:
         failure_code = "ALGORITHM_EXECUTION_FAILED"
     elif commit_errors:
-        failure_code = "GRAY_GAP_COMMIT_FAILED"
+        failure_code = "GAP_FILL_COMMIT_FAILED"
     elif remaining_groups:
         failure_code = "POSTFILL_GAPS_REMAIN"
     else:
@@ -491,7 +491,7 @@ def _complete_range(
             }
         )
     try:
-        written_by_run = repository.complete_gray_gap_runs_atomic(
+        written_by_run = repository.complete_gap_fill_runs_atomic(
             engine,
             payloads,
         )
@@ -502,13 +502,13 @@ def _complete_range(
             executions,
             engine=engine,
             repository=repository,
-            default_error="GRAY_GAP_RANGE_COMMIT_FAILED",
+            default_error="GAP_FILL_RANGE_COMMIT_FAILED",
         )
         return _report(
             "FAILED",
             plan,
             groups=groups,
-            failure_code="GRAY_GAP_RANGE_COMMIT_FAILED",
+            failure_code="GAP_FILL_RANGE_COMMIT_FAILED",
             errors=[f"{type(exc).__name__}: {exc}", *cleanup_errors],
             remaining=_remaining(groups),
         )
@@ -608,9 +608,9 @@ def _build_groups(plan: Mapping[str, Any]) -> tuple[_GapGroup, ...]:
             continue
         if action not in _DUE_ACTIONS:
             raise ValueError(f"signal gap plan action is not executable: {action}")
-        if row.get("prediction_phase") != "gray_live":
-            raise ValueError("signal gap action must use gray_live")
-        if action == "GRAY_LIVE_GAP" and row.get(
+        if row.get("prediction_phase") != "gap_fill":
+            raise ValueError("signal gap action must use gap_fill")
+        if action == "GAP_FILL" and row.get(
             "business_key_present"
         ) is not False:
             raise ValueError("signal gap action is not missing")
@@ -650,7 +650,7 @@ def _build_groups(plan: Mapping[str, Any]) -> tuple[_GapGroup, ...]:
         if len({_target_identity(row) for row in expected}) != len(expected):
             raise ValueError("signal gap group target set contains duplicates")
         missing_actions = tuple(
-            row for row in ordered if row["action"] == "GRAY_LIVE_GAP"
+            row for row in ordered if row["action"] == "GAP_FILL"
         )
         if not missing_actions:
             continue
@@ -752,7 +752,7 @@ def _create_runs(
                 predict_date=group.predict_date,
                 scheme_version=group.scheme_version,
                 runtime_type=group.runtime_type,
-                prediction_phase="gray_live",
+                prediction_phase="gap_fill",
                 records_expected=len(group.missing_target_keys),
             )
             executions.append(
@@ -922,7 +922,7 @@ def _run_native_algorithm(
     normalized = [
         replace(
             record,
-            prediction_phase="gray_live",
+            prediction_phase="gap_fill",
             scheme_version=(
                 item.group.scheme_version
                 if record.scheme_version is None
@@ -1072,7 +1072,7 @@ def _fan_out_blackbox_batch_records(
     for request_id, item in expected.items():
         normalized = replace(
             by_request[request_id],
-            prediction_phase="gray_live",
+            prediction_phase="gap_fill",
             scheme_version=(
                 item.group.scheme_version
                 if by_request[request_id].scheme_version is None
@@ -1099,7 +1099,7 @@ def _validate_and_select_missing_records(
         if (
             record.scheme_id != group.base_scheme_id
             or record.scheme_version != group.scheme_version
-            or record.prediction_phase != "gray_live"
+            or record.prediction_phase != "gap_fill"
         ):
             raise ValueError("algorithm record execution identity is invalid")
         if group.runtime_type == "blackbox_v2":
@@ -1387,8 +1387,8 @@ def _repository_module() -> Any:
 
     required = (
         "create_scheme_run",
-        "complete_gray_gap_run",
-        "complete_gray_gap_runs_atomic",
+        "complete_gap_fill_run",
+        "complete_gap_fill_runs_atomic",
         "fail_scheme_run_atomic",
     )
     missing = [name for name in required if not hasattr(repository, name)]

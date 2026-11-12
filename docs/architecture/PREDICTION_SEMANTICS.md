@@ -77,7 +77,7 @@ Source-backed 方案还必须遵守 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORI
 | 来源 | 识别方式 | 常见 `predict_date` | 用途 |
 |---|---|---|---|
 | 入库回测发布 | `backtest_run_id` 非空 | `T`（等于 `feature_date`） | 追溯产生该事实的 immutable 回测证据 |
-| 实盘运行 | `run_id` 非空；run `prediction_phase` 为 `scheduled_live`（自然调度）或 `gray_live`（漏跑补跑） | 日频通常为 `T + 1` | 追溯产生该事实的运行记录 |
+| 实盘运行 | `run_id` 非空；run `prediction_phase` 为 `scheduled_live`（自然调度）或 `gap_fill`（漏跑补跑；2026-11-12 迁移 028 前称 `gray_live`） | 日频通常为 `T + 1` | 追溯产生该事实的运行记录 |
 
 来源字段只用于审计与问题定位，**不参与**结果分区、统计、去重、gate 判定或入库步骤。同一业务键
 （`scheme_id + target_tenor + horizon + target_date`）只能有一条产品事实，先发布者保留（insert-only）。
@@ -119,7 +119,7 @@ legacy/core 的 `current_date`、`date` 或 `predict_date` 不一定对应同名
 ## 3. 补跑规则（修复漏跑）
 
 `signal-gap-fill` 只用于补齐方案上线后本应由自然调度发出、但因故障漏跑的点，不再作为入库步骤。
-它只写 `target_date >= 2026-06-01`（`harness/signal_gap_plan.py` 的 `PLATFORM_LIVE_TARGET_START_DATE`）且尚无产品事实的业务键，run 标记为 `prediction_phase = gray_live`。补跑必须满足：
+它只写 `target_date >= 2026-06-01`（`harness/signal_gap_plan.py` 的 `PLATFORM_LIVE_TARGET_START_DATE`）且尚无产品事实的业务键，run 标记为 `prediction_phase = gap_fill`。补跑必须满足：
 
 1. 记录的 `predict_date` 是本应发出信号的调度日，日频通常为 `T + 1`；`feature_date` 必须是 `T`。
 2. 所有输入 artifact、辅助输入映射和模型训练窗口都不得越过 `feature_date`；数据库在事后可能已有更晚的数据，补跑逻辑必须显式按 `feature_date` 截止，不能依赖当前最新状态。
@@ -269,7 +269,7 @@ Dashboard V7 以 `feature_date`（特征基准日）统一确定筛选、区间�
 - `feature_date < 2026-06-01`：`backtest` / 回测。
 - `feature_date >= 2026-06-01`：`live` / 实盘。
 
-这是产品展示分区，不代表真实执行来源；原始 `run_id`、`backtest_run_id`、run `prediction_phase` 及其审计证据保持不变。公开 API 和前端不使用物理来源、`predict_date` 或 run phase 判断结果类型，也不返回灰度/正式实盘阶段。`gray_live` 与 `scheduled_live` 只保留在 scheduler/gap-fill run 审计中。Dashboard 逐点只读取 `t_scheme_predictions`，不存在跨表 preferred/fallback 或第二套去重逻辑。
+这是产品展示分区，不代表真实执行来源；原始 `run_id`、`backtest_run_id`、run `prediction_phase` 及其审计证据保持不变。公开 API 和前端不使用物理来源、`predict_date` 或 run phase 判断结果类型，也不返回灰度/正式实盘阶段。`gap_fill` 与 `scheduled_live` 只保留在 scheduler/gap-fill run 审计中。Dashboard 逐点只读取 `t_scheme_predictions`，不存在跨表 preferred/fallback 或第二套去重逻辑。
 
 前端与业务不读取 `anchor_date`。所有任务的展示月份均为 `feature_date` 的自然月，包括月中收、月均、季均、年均；月均不再使用目标月份加一个月的展示映射。Summary 与 Detail 必须使用同一月份及 source 规则；Detail 将特征月份半开区间与展示分区求交后筛选。展示样本要求 `feature_date >= 2025-01-01`，且 `predict_date` 不得晚于上海当前日；已发出但目标尚未验证的预测保留在其特征月份。
 

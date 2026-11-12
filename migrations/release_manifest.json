@@ -142,6 +142,11 @@
       "version": 27,
       "filename": "027_add_result_segment.sql",
       "sha256": "1091f9a1aa71d7540b9d6d3a1798bede5c4e56bc0819aa8de13c47a9e006d4a9"
+    },
+    {
+      "version": 28,
+      "filename": "028_reduce_concept_surface.sql",
+      "sha256": "48dfa818c6acf050aa5c022c382ad54273090a1a580c3264861104a916d38720"
     }
   ]
 }
