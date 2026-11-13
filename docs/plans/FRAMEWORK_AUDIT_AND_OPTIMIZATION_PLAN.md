@@ -341,3 +341,19 @@ ECS 读回尚未取得。
   - producer（`scripts/refresh_data_bridge_current.py`）：发布开始时先失效旁路标记；发布与 ready 快照封存之后，**仅当本部署（按 `BFL_DEPLOYMENT_TARGET` 过滤）有声明 `raw_wind_v1` 的方案**才导出，失败只记录、不阻断标准发布。目前两端都没有这类方案，所以生产行为不变，ECS 也不会多导出。
   - 验证：单元测试 10 项（组合规则、物化、篡改、伪造、就绪配对、保留策略、profile 一致性、钩子隔离）；MySQL 集成测试 30 项（含 `prepare_raw_wind_sidecar`）；全量 987 项通过。Mac3 生产库副本端到端：生产者准备 ready 快照与旁路产物 16.5 秒；`legacy_v1` 运行视图 13 个文件、`algorithm_managed` 14 个文件，合计 133MB，物化 0.1 秒。
 - **下一步：** 交付外壳（G2）：自解压二进制包、读取 `raw_wind__*.csv`、安装无数据库拦截层、进程内运行并映射为 V2 输出；用无数据库原型已验证的 24 项对比复现，再走 V2 全链路对照 Native（G5）。
+
+### 14.2 交付外壳（G2，2026-11-13）
+
+**产物与位置。** 模板 `deploy/blackbox_v2/w4_wrapper/shell_template.py`（可读、可单测的普通模块）、生成器 `build_delivery.py`（确定性：同源码包与参数生成字节相同的 `{scheme_id}.py` + `.json`；生成时即用平台静态策略 `validate_delivery_script` 与 `load_metadata` 校验，任何一项不过都不写出）。`daily_5y_lgbm_5y10_0629` 的交付约 984KB（二进制包 lzma 压缩后 base64 内嵌）。
+
+**设计决定与依据。**
+- **口令不进入交付。** 源码包 `db_config.py` 含明文 root 口令；生成器换成"键齐全但无凭据"的占位（二进制启动时会校验这些键存在，空字典会报 `database config missing required keys`），主机用不可解析的 `database.disabled.invalid`，即使拦截层有遗漏也不可能连到真实库。交付文件经程序比对不含该口令。
+- **子进程与目录上限。** 二进制会自行拉起子进程写大量中间文件（`candidate_stdout.log`、`backtest/5y10/*.csv` 等，单次 D5Y 运行约 203MB、41 个文件），无法在进程内限制写入；运行器对运行目录是**运行中轮询**。因此仅对 `raw_wind_v1` 通过 `profile_for_input_profile` 把 `max_run_dir_bytes` 放宽到 4GiB（时限、内存、网络/数据库禁用不变），并把 manifest 随旁路文件一起放进数据目录（外壳据此还原列类型、校验哈希）。
+- **严格白名单假模块。** 二进制只向 `sqlalchemy` 要 `create_engine`、向 `sqlalchemy.engine` 要 `URL`，从不触碰 `pymysql`；外壳用 `sys.meta_path` 查找器放行这两个名字，其余一律 `AttributeError: database access is disabled`。`pandas.read_sql*` 只回答 SELECT 选列加 `IN`/`IS NOT NULL`/比较/`BETWEEN`/`ORDER BY` 这一族，未知形态一律报错。
+- **运行日取 `target_date`。** 原生适配器以运行日为被预测日；V2 回测请求里 `predict_date = feature_date`，被预测日是 `target_date`。外壳以 `target_date` 为运行日，并要求源行的 `prediction_date == feature_date`、`rdate == target_date`，方向取 `pred_label/candidate_pred/vote_pred/model_pred` 中第一个非空整数（与原生适配器同规则）。
+- **二进制有模块级状态。** 每个请求之后清除其模块（变异检验：禁用清除后测试失败），保证结果与请求顺序、同进程内次数无关；`backtest` 用 `spawn` 多进程（上限 6），每个 worker 独立解压与装载数据。
+- **批量回测入口不可用。** `daily.run_backtest` 在一个月区间上已写出 5GB，且是 source-original 批处理；V2 回测改为逐请求走实盘入口（与活跃实盘同一路径）。
+
+**验证。** 桩二进制包端到端测试 10 项（生成确定性与策略合规、无口令、无数据库运行且 stdout 为空、运行目录只剩输出、回测与单次预测一致且与请求顺序无关、非交易日/数据被篡改/日期非法/多余字段/源日期不一致均非 0 退出且不写部分结果、外壳装载的表与平台参考读取实现逐列相等、未知查询与数据库访问 fail-closed）；真实二进制与真实数据（Mac3 生产库副本导出的旁路产物，`forecast_env_blackbox_v1` Python 3.13.12，`python -I` 与受控环境）：`predict` 2026-11-12 用时 29 秒，方向 -1，与生产当日事实一致；`backtest` 8 个请求（11-02 至 11-11）69 秒、运行目录峰值 1.15GB，8/8 与已对过账的无数据库原型逐日一致。按约 460 个请求估算回测约 66 分钟，在 7200 秒预算内。
+
+**还没做（下一步）。** ① 将 `daily_5y_lgbm_5y10_0629` 的 config 与交付落到 `schemes/`，走 SOP 第 4 节的同 ID 修订（需确认从 `native_adapter` 到 `blackbox_v2` 的 exact 修订路径在 lifecycle/activation 中是否被支持）；② `intake-blackbox` 与各 Gate 对 `raw_wind_v1` 的适配；③ 在生产库副本上用候选 release 走 V2 全链路（持久化回测、激活、补跑）并与 Native 对照（G5）；④ 复制到另外两套 daily，再处理 monthly 与 weekly_average 两个二进制包。

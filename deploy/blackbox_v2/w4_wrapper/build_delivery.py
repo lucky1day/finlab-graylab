@@ -28,8 +28,11 @@ from shared.blackbox_v2.contracts import load_metadata  # noqa: E402
 
 TEMPLATE_PATH = Path(__file__).with_name("shell_template.py")
 CREDENTIAL_FREE_DB_CONFIG = (
-    '"""Credentials were removed by the wrapper builder; the wrapped process never connects to a database."""\n'
-    "DB_CONFIG: dict = {}\n"
+    '"""Credentials were removed by the wrapper builder; the wrapped process never connects to a database.\n\n'
+    "The binary only checks that these keys exist. The host cannot resolve, so even a missed interception\n"
+    'could not reach any real database."""\n'
+    'DB_CONFIG: dict = {"user": "disabled", "password": "disabled", "host": "database.disabled.invalid", '
+    '"port": 3306, "database": "bond_db", "charset": "utf8mb4"}\n'
 )
 _EXCLUDED_NAMES = {"__pycache__", ".DS_Store"}
 _PLACEHOLDERS = ("SCHEME_ID", "FREQUENCY", "PACKAGE_SHA256", "SOURCE_PACKAGE_IDENTITY", "PAYLOAD_B64")
