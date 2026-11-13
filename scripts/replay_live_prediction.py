@@ -78,6 +78,20 @@ def _sql(port: int, statement: str) -> list[list[str]]:
     return [line.split("\t") for line in out.splitlines() if line]
 
 
+def _free_port(preferred: int) -> int:
+    """首选端口被占用时（例如上一次留存的现场）换一个空闲端口，避免 mysqld 启动超时。"""
+    import socket
+
+    for candidate in (preferred, 0):
+        with socket.socket() as probe:
+            try:
+                probe.bind(("127.0.0.1", candidate))
+            except OSError:
+                continue
+            return probe.getsockname()[1]
+    raise RuntimeError("no free local port for the disposable MySQL")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release", type=Path, default=(PROD / "current").resolve())
@@ -95,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"--predict-date {args.predict_date} 与 DataBridge current 的 refresh_date {current_refresh} 不一致：重放只能使用当前数据日", file=sys.stderr)
         return 2
     work = Path(tempfile.mkdtemp(prefix="bfl-replay-", dir=Path.home() / ".cache"))
-    port, mysqld = args.port, None
+    port, mysqld = _free_port(args.port), None
     in_list = ",".join(f"'{s}'" for s in args.scheme_ids)
     try:
         data, sock = work / "mysql", work / "mysql.sock"

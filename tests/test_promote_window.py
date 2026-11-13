@@ -35,3 +35,21 @@ def test_busy(when, safe_at):
 @pytest.mark.parametrize("when", ["2026-11-11 10:00", "2026-11-15 11:40", "2026-11-15 07:40", "2026-11-12 16:30"])
 def test_clear(when):
     assert promote.busy_until(at(when)) is None
+
+
+def test_activation_requires_a_passing_validation_record(tmp_path):
+    commit = "a" * 40
+    with pytest.raises(SystemExit, match="no passing"):
+        promote.require_validated(tmp_path, commit, skip=False)
+
+    (tmp_path / promote.VALIDATED_MARKER).write_text('{"commit": "%s", "result": "FAIL"}' % commit)
+    with pytest.raises(SystemExit, match="no passing"):
+        promote.require_validated(tmp_path, commit, skip=False)
+
+    (tmp_path / promote.VALIDATED_MARKER).write_text('{"commit": "%s", "result": "PASS"}' % ("b" * 40))
+    with pytest.raises(SystemExit, match="no passing"):  # 标记属于另一个提交
+        promote.require_validated(tmp_path, commit, skip=False)
+
+    (tmp_path / promote.VALIDATED_MARKER).write_text('{"commit": "%s", "result": "PASS"}' % commit)
+    promote.require_validated(tmp_path, commit, skip=False)
+    promote.require_validated(tmp_path / "missing", commit, skip=True)

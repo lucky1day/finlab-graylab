@@ -131,6 +131,22 @@ def built(commit: str | None) -> tuple[str, Path]:
     return commit, directory
 
 
+VALIDATED_MARKER = "validated.json"
+
+
+def require_validated(directory: Path, commit: str, skip: bool) -> None:
+    """切换前必须有该提交的验证通过标记；防止把验证失败当成可继续（例如管道吞掉退出码）。"""
+    if skip:
+        return
+    marker = directory / VALIDATED_MARKER
+    try:
+        recorded = json.loads(marker.read_text())
+    except (OSError, ValueError):
+        recorded = {}
+    if recorded.get("commit") != commit or recorded.get("result") != "PASS":
+        raise SystemExit(f"refusing: {commit[:8]} has no passing `promote.py validate` on record (use --skip-validation only with explicit authorization)")
+
+
 def guard_window(force: bool) -> None:
     until = busy_until(datetime.now(TZ))
     if until and not force:
@@ -219,6 +235,11 @@ def cmd_validate(args: argparse.Namespace) -> None:
     print("dashboard digest:", digest)
     same = digest["candidate"] == digest["current"] != "unavailable"
     print("RESULT", "PASS" if replay_ok and same else "FAIL (replay identical: %s, digest identical: %s)" % (replay_ok, same))
+    marker = CACHE / commit / VALIDATED_MARKER
+    if replay_ok and same:
+        marker.write_text(json.dumps({"commit": commit, "result": "PASS", "at": datetime.now(TZ).isoformat(timespec="seconds")}))
+    else:
+        marker.unlink(missing_ok=True)
     raise SystemExit(0 if replay_ok and same else 1)
 
 
@@ -238,6 +259,7 @@ def _migrate(host: Host, commit: str, stamp: str) -> None:
 def cmd_activate(args: argparse.Namespace) -> None:
     guard_window(args.force)
     commit, directory = built(args.commit)
+    require_validated(directory, commit, args.skip_validation)
     host = Host(args.host)
     previous_current = host.link("current")
     if previous_current == commit:
@@ -291,6 +313,7 @@ def main(argv: list[str] | None = None) -> int:
         if name == "activate":
             item.add_argument("--host", choices=["ecs", "mac3"], required=True)
             item.add_argument("--force", action="store_true", help="跳过调度窗口保护（须有明确授权）")
+            item.add_argument("--skip-validation", action="store_true", help="跳过\"已验证\"标记检查（须有明确授权，例如回滚到已运行过的旧 release）")
         if name == "activate":
             item.add_argument("--migrate", action="store_true", help="先备份全部平台表并应用候选 release 的待执行迁移")
         if name == "validate":
