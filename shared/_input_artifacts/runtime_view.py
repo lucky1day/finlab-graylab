@@ -18,7 +18,7 @@ from shared.blackbox_v2.snapshot import (
     BlackboxInputBundle,
     compose_blackbox_input_bundle,
 )
-from shared.data_bridge.raw_wind import RAW_WIND_FILENAMES, RAW_WIND_TABLES, RawWindError, read_raw_wind_manifest
+from shared.data_bridge.raw_wind import MANIFEST_FILENAME, RAW_WIND_DATA_FILENAMES, RAW_WIND_TABLES, RawWindError, read_raw_wind_manifest
 from shared.data_bridge.validation import LEGACY_FOUR_FILENAMES
 from shared._input_artifacts.contract import BLACKBOX_RUNTIME_VIEW_ROOT
 from shared._input_artifacts.files import (
@@ -133,7 +133,7 @@ def _materialize_blackbox_runtime_view(view: BlackboxRuntimeView) -> None:
     destination = view.data_dir
     sealed_fingerprints = bundle.base_snapshot.sealed_file_fingerprints
     standard_filenames = tuple(
-        name for name in bundle.expected_filenames if name not in RAW_WIND_FILENAMES
+        name for name in bundle.expected_filenames if name not in RAW_WIND_DATA_FILENAMES
     )
     if sealed_fingerprints is None:
         _validate_blackbox_snapshot(bundle.base_snapshot)
@@ -228,6 +228,16 @@ def _copy_raw_wind_files(bundle: BlackboxInputBundle, destination: Path) -> None
         target_stat = target.lstat()
         if target_stat.st_nlink != 1 or (target_stat.st_dev, target_stat.st_ino) == (source_stat.st_dev, source_stat.st_ino):
             raise ValueError(f"runtime view {info['file']} must be an independent file")
+    # manifest 一并交给算法进程：读取方据此还原列类型并校验各文件哈希；内容必须与已校验的 manifest 完全一致
+    manifest_payload = (raw.path / MANIFEST_FILENAME).read_bytes()
+    if json.loads(manifest_payload) != dict(manifest):
+        raise ValueError("raw wind manifest changed during materialization")
+    manifest_fd = os.open(destination / MANIFEST_FILENAME, write_flags, 0o600)
+    try:
+        os.write(manifest_fd, manifest_payload)
+        os.fsync(manifest_fd)
+    finally:
+        os.close(manifest_fd)
 
 
 def _copy_ready_snapshot_file(
@@ -302,7 +312,7 @@ def _validate_trusted_blackbox_input_bundle(
     """从受信字段重算 bundle，拒绝 replace/手工构造的派生字段。"""
     try:
         standard_filenames = tuple(
-            name for name in bundle.expected_filenames if name not in RAW_WIND_FILENAMES
+            name for name in bundle.expected_filenames if name not in RAW_WIND_DATA_FILENAMES
         )
         if standard_filenames == LEGACY_FOUR_FILENAMES:
             factor_input_mode = "legacy_v1"

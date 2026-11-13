@@ -16,7 +16,7 @@ import pandas as pd
 
 from shared.platform_dates import DEFAULT_FACTOR_INPUT_MODE
 from shared.blackbox_v2.contracts import INPUT_PROFILE_RAW_WIND_V1, INPUT_PROFILE_STANDARD
-from shared.data_bridge.raw_wind import RAW_WIND_FILENAMES, RawWindArtifact
+from shared.data_bridge.raw_wind import RAW_WIND_DATA_FILENAMES, RawWindArtifact
 from shared.data_bridge.validation import (
     EXPECTED_FILENAMES as SNAPSHOT_FILENAMES,
     FACTOR_CATALOG_COLUMNS,
@@ -111,7 +111,7 @@ def compose_blackbox_input_bundle(
         combined_snapshot_id=f"snapshot-combined-{combined}",
         parent_snapshot_id=base_snapshot.snapshot_id,
         base_snapshot=base_snapshot,
-        expected_filenames=(*expected_filenames, *RAW_WIND_FILENAMES),
+        expected_filenames=(*expected_filenames, *RAW_WIND_DATA_FILENAMES),
         input_profile=input_profile,
         raw_wind=raw_wind,
     )

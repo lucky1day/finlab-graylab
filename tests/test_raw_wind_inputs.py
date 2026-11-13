@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from shared.blackbox_v2.snapshot import SNAPSHOT_FILENAMES, compose_blackbox_input_bundle
-from shared.data_bridge.raw_wind import RAW_WIND_FILENAMES, export_raw_wind
+from shared.data_bridge.raw_wind import RAW_WIND_DATA_FILENAMES, RAW_WIND_FILENAMES, export_raw_wind
 from shared.input_artifacts import (
     RawWindUnavailableError,
     get_ready_blackbox_snapshot,
@@ -53,7 +53,7 @@ def test_raw_profile_bundle_extends_the_file_set_and_has_a_combined_identity(tmp
     bundle = _compose(snapshot, artifact)
     standard = compose_blackbox_input_bundle(snapshot, factor_input_mode="algorithm_managed")
 
-    assert bundle.expected_filenames == (*SNAPSHOT_FILENAMES, *RAW_WIND_FILENAMES)
+    assert bundle.expected_filenames == (*SNAPSHOT_FILENAMES, *RAW_WIND_DATA_FILENAMES)
     assert bundle.parent_snapshot_id == snapshot.snapshot_id == standard.combined_snapshot_id
     assert bundle.combined_snapshot_id.startswith("snapshot-combined-")
     assert bundle.combined_snapshot_id != snapshot.snapshot_id
@@ -81,8 +81,8 @@ def test_runtime_view_materializes_exactly_the_expected_independent_readonly_fil
 
     with open_blackbox_runtime_view(_compose(snapshot, artifact), runtime_root=tmp_path / "views") as view:
         names = sorted(p.name for p in view.data_dir.iterdir())
-        assert names == sorted((*SNAPSHOT_FILENAMES, *RAW_WIND_FILENAMES))
-        for name in RAW_WIND_FILENAMES:
+        assert names == sorted((*SNAPSHOT_FILENAMES, *RAW_WIND_DATA_FILENAMES))
+        for name in RAW_WIND_DATA_FILENAMES:
             copy, source = view.data_dir / name, artifact.path / name
             assert copy.read_bytes() == source.read_bytes()
             assert copy.stat().st_ino != source.stat().st_ino and copy.stat().st_nlink == 1
@@ -198,3 +198,16 @@ def test_producer_hook_is_conditional_and_never_blocks_the_standard_publication(
 
     monkeypatch.setattr(refresh, "prepare_raw_wind_sidecar", boom)
     assert refresh._prepare_raw_wind_sidecar_best_effort(state={}, engine=None, schema_path="s") is None
+
+
+def test_raw_profile_raises_the_run_directory_limit_only_for_raw_wind_v1():
+    from dataclasses import replace as dc_replace
+    from scheduler.blackbox_v2_runner import DEFAULT_RUNTIME_PROFILE, RAW_WIND_MAX_RUN_DIR_BYTES, profile_for_input_profile
+
+    standard = profile_for_input_profile(DEFAULT_RUNTIME_PROFILE, "standard")
+    raw = profile_for_input_profile(DEFAULT_RUNTIME_PROFILE, "raw_wind_v1")
+
+    assert standard is DEFAULT_RUNTIME_PROFILE
+    assert raw.max_run_dir_bytes == RAW_WIND_MAX_RUN_DIR_BYTES > DEFAULT_RUNTIME_PROFILE.max_run_dir_bytes
+    assert dc_replace(raw, max_run_dir_bytes=DEFAULT_RUNTIME_PROFILE.max_run_dir_bytes) == DEFAULT_RUNTIME_PROFILE  # 其余限制不变
+    assert raw.network_access is False and raw.database_access is False

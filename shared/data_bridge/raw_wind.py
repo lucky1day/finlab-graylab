@@ -57,6 +57,8 @@ RAW_WIND_TABLES: tuple[RawWindTable, ...] = (
     RawWindTable("api_wind_indicators_all", None, (), ("id",)),
 )
 RAW_WIND_FILENAMES: tuple[str, ...] = tuple(f"raw_wind__{table.name}.csv" for table in RAW_WIND_TABLES)
+# 进入沙箱数据目录的文件：9 个数据文件加 manifest（读取方据此还原列类型并校验哈希）
+RAW_WIND_DATA_FILENAMES: tuple[str, ...] = (*RAW_WIND_FILENAMES, MANIFEST_FILENAME)
 
 
 class RawWindError(ValueError):

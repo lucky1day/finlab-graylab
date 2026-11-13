@@ -17,6 +17,7 @@ from typing import Any, Callable, ContextManager, Mapping, Sequence
 from scheduler.blackbox_v2_runner import (
     DEFAULT_RUNTIME_PROFILE,
     RuntimeProfile,
+    profile_for_input_profile,
     run_blackbox_backtest,
 )
 from scheduler.blackbox_state import read_state_cutoff
@@ -481,9 +482,12 @@ def run_blackbox_scheme_subprocess(
         raw_wind=raw_wind_for_profile(snapshot, input_profile),
     )
     blackbox_env = profile.conda_env if algo_env == DEFAULT_ALGO_ENV else algo_env
-    profile = replace(
-        profile,
-        conda_env=blackbox_env,
+    profile = profile_for_input_profile(
+        replace(
+            profile,
+            conda_env=blackbox_env,
+        ),
+        input_profile,
     )
     records = []
     deadline = time.monotonic() + (timeout_sec or profile.predict_timeout_sec)
@@ -666,13 +670,16 @@ def run_blackbox_gray_replay_batch(
     blackbox_env = (
         profile.conda_env if algo_env == DEFAULT_ALGO_ENV else algo_env
     )
-    effective_profile = replace(
-        profile,
-        conda_env=blackbox_env,
-        backtest_timeout_sec=min(
-            profile.backtest_timeout_sec,
-            timeout_sec,
+    effective_profile = profile_for_input_profile(
+        replace(
+            profile,
+            conda_env=blackbox_env,
+            backtest_timeout_sec=min(
+                profile.backtest_timeout_sec,
+                timeout_sec,
+            ),
         ),
+        input_profile,
     )
     with open_blackbox_runtime_view(input_bundle) as runtime_view:
         trusted_bundle = runtime_view.bundle

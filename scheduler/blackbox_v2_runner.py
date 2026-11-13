@@ -232,6 +232,16 @@ def _validate_runtime_profile(profile: RuntimeProfile, *, source: str) -> None:
 
 
 DEFAULT_RUNTIME_PROFILE = _load_runtime_profile(_RUNTIME_PROFILE_PATH)
+# 声明 raw_wind_v1 的获批封装交付（存量二进制算法）会在运行目录里产生大量中间文件，且由其自行拉起子进程，
+# 无法在进程内限制写入量；因此仅对该 profile 放宽运行目录总量，其余限制（时限、内存、网络/数据库禁用）不变。
+RAW_WIND_MAX_RUN_DIR_BYTES = 4 * 1024**3
+
+
+def profile_for_input_profile(profile: RuntimeProfile, input_profile: str) -> RuntimeProfile:
+    """按交付声明的 input_profile 调整运行目录上限；standard 返回原 profile。"""
+    if input_profile == "raw_wind_v1":
+        return replace(profile, max_run_dir_bytes=max(profile.max_run_dir_bytes, RAW_WIND_MAX_RUN_DIR_BYTES))
+    return profile
 
 STATEFUL_MEMORY_LIMIT_ENV = "BFL_BLACKBOX_STATEFUL_MEMORY_LIMIT_BYTES"
 _STATEFUL_MEMORY_LIMIT_DEFAULT_BYTES = 4 * 1024**3

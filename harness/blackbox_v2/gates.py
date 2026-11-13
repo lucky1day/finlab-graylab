@@ -19,6 +19,7 @@ from harness.operation import (
 from harness.result import Evidence, GateResult, GateStatus
 from scheduler.blackbox_v2_runner import (
     DEFAULT_RUNTIME_PROFILE,
+    profile_for_input_profile,
     run_blackbox_backtest,
     state_binding_for_scheme,
 )
@@ -128,7 +129,8 @@ class BlackboxBacktestGate(Gate):
                 delivery.metadata, snapshot, engine,
                 target_date_before=ctx.predict_date, predict_date_from=ctx.backtest_start_date,
             ) for delivery in deliveries]
-            profile = DEFAULT_RUNTIME_PROFILE
+            input_profile = blackbox_input_profile(cfg)
+            profile = profile_for_input_profile(DEFAULT_RUNTIME_PROFILE, input_profile)
             execution_profile = replace(
                 profile,
                 backtest_timeout_sec=min(
@@ -137,7 +139,6 @@ class BlackboxBacktestGate(Gate):
                 ),
             )
             benchmark_id = f"bbv2-{cfg.scheme_id}-{uuid.uuid4().hex}"
-            input_profile = blackbox_input_profile(cfg)
             bundle = compose_blackbox_input_bundle(
                 snapshot,
                 factor_input_mode=(
